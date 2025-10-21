@@ -147,7 +147,7 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, key: [16]u8, config: BenchC
         "Throughput",
         "Time (mean ± stddev)",
     });
-    std.debug.print("  {s:-<12}-+-{s:-<11}-+-{s:-<11}-+-{s:-<14}-+-{s:-<100}\n", .{ "", "", "", "", "" });
+    std.debug.print("  {s:-<12}-+-{s:-<11}-+-{s:-<11}-+-{s:-<14}-+-{s:-<40}\n", .{ "", "", "", "", "" });
 
     const test_sizes = [_]usize{
         1 * 1024 * 1024, // 1 MB
@@ -265,7 +265,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
         "Throughput",
         "Time (mean ± stddev)",
     });
-    std.debug.print("  {s:-<12}-+-{s:-<11}-+-{s:-<11}-+-{s:-<14}-+-{s:-<100}\n", .{ "", "", "", "", "" });
+    std.debug.print("  {s:-<12}-+-{s:-<11}-+-{s:-<11}-+-{s:-<14}-+-{s:-<40}\n", .{ "", "", "", "", "" });
 
     // Test configuration: N chunks per thread
     const chunk_size = 50 * 1024 * 1024; // 50 MB per chunk
@@ -506,7 +506,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, key: [16]u8, tmp_dir: []cons
         "Throughput",
         "Time (mean ± stddev)",
     });
-    std.debug.print("  {s:-<12}-+-{s:-<11}-+-{s:-<11}-+-{s:-<14}-+-{s:-<100}\n", .{ "", "", "", "", "" });
+    std.debug.print("  {s:-<12}-+-{s:-<11}-+-{s:-<11}-+-{s:-<14}-+-{s:-<40}\n", .{ "", "", "", "", "" });
 
     // Test configuration: 20 files of 50 MB each = 1000 MB total
     // Larger dataset ensures accurate timing even with fast multi-threading
