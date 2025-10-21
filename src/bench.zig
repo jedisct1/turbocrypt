@@ -741,7 +741,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     // Configure benchmark iterations - in-memory tests need more iterations since they're fast
     const in_memory_config = BenchConfig{
         .warmup_iterations = 10,
-        .measured_iterations = 1000,
+        .measured_iterations = 250,
     };
 
     const file_io_config = BenchConfig{
