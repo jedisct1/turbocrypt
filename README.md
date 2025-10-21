@@ -269,28 +269,17 @@ Options available for most commands:
 - `--force` - Overwrite existing files without asking
 - `--buffer-size <bytes>` - Set I/O buffer size (default: 4MB)
 
-## How It Works
+## File Portability
 
-### Encryption Process
-
-1. Each file gets a unique random 16-byte nonce
-2. Header MAC: A message authentication code is generated for the nonce and version, providing fast verification of the key before attempting decryption
-3. The file contents are encrypted using AEGIS-128X2, which simultaneously provides confidentiality and authenticity
-4. Authentication Tag: A 16-byte tag is appended to verify the file hasn't been tampered with
-
-Total overhead: 48 bytes per file (32-byte header + 16-byte authentication tag)
-
-**File Portability**: Encrypted files can be freely moved between directories. The encryption is based only on the file contents and a random nonce - it does not depend on the file's path or parent directories. This means you can reorganize your encrypted files however you like without needing to re-encrypt them.
+Encrypted files can be freely moved between directories. The encryption intentionally does not depend on the file's path or parent directories. This means you can reorganize your encrypted files however you like without needing to re-encrypt them.
 
 ### Filename Encryption
 
 When using `--encrypt-filenames`:
 
 - Each path component (directory or filename) is encrypted separately
-- Uses HCTR2, a wide-block cipher designed for encrypting data of varying lengths
 - Encoded with base91 to ensure filesystem compatibility
 - Preserves directory structure (you still see folders, just with encrypted names)
-- Special entries (`.` and `..`) are never encrypted
 
 ## Configuration File
 
