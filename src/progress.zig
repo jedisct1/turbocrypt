@@ -36,6 +36,11 @@ pub const ProgressTracker = struct {
         _ = self.files_processed.fetchAdd(1, .monotonic);
     }
 
+    /// Add multiple files to processed counter (batch update)
+    pub fn addFilesProcessed(self: *Self, count: u64) void {
+        _ = self.files_processed.fetchAdd(count, .monotonic);
+    }
+
     /// Increment files failed counter
     pub fn addFileFailed(self: *Self) void {
         _ = self.files_failed.fetchAdd(1, .monotonic);

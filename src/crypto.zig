@@ -27,6 +27,39 @@ fn computeHeaderMac(nonce: [nonce_length]u8, key: [key_length]u8) [mac_length]u8
     return mac;
 }
 
+/// Parsed encrypted data structure
+const ParsedEncrypted = struct {
+    nonce: *const [nonce_length]u8,
+    stored_mac: *const [mac_length]u8,
+    ciphertext: []const u8,
+    tag: *const [tag_length]u8,
+};
+
+/// Parse and validate encrypted data structure
+/// Returns parsed components or error if invalid
+fn parseEncrypted(encrypted: []const u8) !ParsedEncrypted {
+    // Validate minimum file size
+    if (encrypted.len < overhead_size) {
+        return error.InvalidFileSize;
+    }
+
+    // Parse header
+    const nonce = encrypted[0..nonce_length];
+    const stored_mac = encrypted[nonce_length..header_size];
+
+    // Parse body
+    const ciphertext_len = encrypted.len - overhead_size;
+    const ciphertext = encrypted[header_size..][0..ciphertext_len];
+    const tag = encrypted[header_size + ciphertext_len ..][0..tag_length];
+
+    return ParsedEncrypted{
+        .nonce = nonce,
+        .stored_mac = stored_mac,
+        .ciphertext = ciphertext,
+        .tag = tag,
+    };
+}
+
 /// Encrypt plaintext and return encrypted data with TurboCrypt file format
 /// Format: nonce (16) || header_mac (16) || ciphertext (len) || tag (16)
 /// Total size: plaintext.len + 48
@@ -118,37 +151,26 @@ pub fn decrypt(
     key: [key_length]u8,
     allocator: std.mem.Allocator,
 ) ![]u8 {
-    // Validate minimum file size
-    if (encrypted.len < overhead_size) {
-        return error.InvalidFileSize;
-    }
-
-    // Parse header
-    const nonce = encrypted[0..nonce_length];
-    const stored_mac = encrypted[nonce_length..header_size];
+    // Parse encrypted data
+    const parsed = try parseEncrypted(encrypted);
 
     // Verify header MAC
-    const expected_mac = computeHeaderMac(nonce.*, key);
-    if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, stored_mac.*)) {
+    const expected_mac = computeHeaderMac(parsed.nonce.*, key);
+    if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
         return error.InvalidHeaderMAC;
     }
 
-    // Parse body
-    const ciphertext_len = encrypted.len - overhead_size;
-    const ciphertext = encrypted[header_size..][0..ciphertext_len];
-    const tag = encrypted[header_size + ciphertext_len ..][0..tag_length];
-
     // Allocate plaintext buffer
-    const plaintext = try allocator.alloc(u8, ciphertext_len);
+    const plaintext = try allocator.alloc(u8, parsed.ciphertext.len);
     errdefer allocator.free(plaintext);
 
     // Decrypt
     try Aegis128X2.decrypt(
         plaintext,
-        ciphertext,
-        tag.*,
+        parsed.ciphertext,
+        parsed.tag.*,
         &[_]u8{}, // empty associated data
-        nonce.*,
+        parsed.nonce.*,
         key,
     );
 
@@ -162,37 +184,25 @@ pub fn decryptZeroCopy(
     encrypted: []const u8,
     key: [key_length]u8,
 ) !void {
-    // Validate minimum file size
-    if (encrypted.len < overhead_size) {
-        return error.InvalidFileSize;
-    }
+    // Parse encrypted data
+    const parsed = try parseEncrypted(encrypted);
 
     // Verify output buffer size
-    const expected_output_size = encrypted.len - overhead_size;
-    std.debug.assert(output.len == expected_output_size);
-
-    // Parse header
-    const nonce = encrypted[0..nonce_length];
-    const stored_mac = encrypted[nonce_length..header_size];
+    std.debug.assert(output.len == parsed.ciphertext.len);
 
     // Verify header MAC
-    const expected_mac = computeHeaderMac(nonce.*, key);
-    if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, stored_mac.*)) {
+    const expected_mac = computeHeaderMac(parsed.nonce.*, key);
+    if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
         return error.InvalidHeaderMAC;
     }
-
-    // Parse body
-    const ciphertext_len = encrypted.len - overhead_size;
-    const ciphertext = encrypted[header_size..][0..ciphertext_len];
-    const tag = encrypted[header_size + ciphertext_len ..][0..tag_length];
 
     // Decrypt directly to output buffer
     try Aegis128X2.decrypt(
         output,
-        ciphertext,
-        tag.*,
+        parsed.ciphertext,
+        parsed.tag.*,
         &[_]u8{}, // empty associated data
-        nonce.*,
+        parsed.nonce.*,
         key,
     );
 }
@@ -205,38 +215,27 @@ pub fn verify(
     key: [key_length]u8,
     allocator: std.mem.Allocator,
 ) !void {
-    // Validate minimum file size
-    if (encrypted.len < overhead_size) {
-        return error.InvalidFileSize;
-    }
-
-    // Parse header
-    const nonce = encrypted[0..nonce_length];
-    const stored_mac = encrypted[nonce_length..header_size];
+    // Parse encrypted data
+    const parsed = try parseEncrypted(encrypted);
 
     // Verify header MAC
-    const expected_mac = computeHeaderMac(nonce.*, key);
-    if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, stored_mac.*)) {
+    const expected_mac = computeHeaderMac(parsed.nonce.*, key);
+    if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
         return error.InvalidHeaderMAC;
     }
 
-    // Parse body
-    const ciphertext_len = encrypted.len - overhead_size;
-    const ciphertext = encrypted[header_size..][0..ciphertext_len];
-    const tag = encrypted[header_size + ciphertext_len ..][0..tag_length];
-
     // Allocate temporary plaintext buffer for verification
     // AEGIS-128X2 requires decryption to verify the tag (no separate verify API)
-    const plaintext = try allocator.alloc(u8, ciphertext_len);
+    const plaintext = try allocator.alloc(u8, parsed.ciphertext.len);
     defer allocator.free(plaintext);
 
     // Decrypt to verify tag (plaintext is discarded)
     try Aegis128X2.decrypt(
         plaintext,
-        ciphertext,
-        tag.*,
+        parsed.ciphertext,
+        parsed.tag.*,
         &[_]u8{}, // empty associated data
-        nonce.*,
+        parsed.nonce.*,
         key,
     );
 

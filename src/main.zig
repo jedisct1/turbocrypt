@@ -264,6 +264,29 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
     };
 }
 
+/// Prompt for password if needed (based on key file protection status or --password flag)
+/// Returns owned password buffer that caller must zero and free
+fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options) !?[]u8 {
+    const key_path = try keyloader.resolveKeyPath(allocator, opts.key);
+    if (key_path) |path| {
+        defer allocator.free(path);
+        const is_protected = try prompt.isKeyPasswordProtected(path);
+        if (is_protected or opts.password) {
+            return try prompt.promptPassword(allocator, "Enter key password", false);
+        }
+    } else if (opts.password) {
+        return try prompt.promptPassword(allocator, "Enter key password", false);
+    }
+    return null;
+}
+
+/// Get thread count from options or use default (min(CPU count, 16), capped at 64)
+fn getThreadCount(opts: Options) !u32 {
+    if (opts.threads) |t| return @min(t, 64);
+    const cpu_count = try std.Thread.getCpuCount();
+    return @as(u32, @intCast(@min(cpu_count, 16)));
+}
+
 fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator) !void {
     // Parse options (to support --password flag)
     const parsed = try parseOptions(args, allocator);
@@ -569,24 +592,11 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     };
 
     // Check if we need password (only for file-based keys)
-    var password_buf: ?[]u8 = null;
+    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts);
     defer if (password_buf) |buf| {
         @memset(buf, 0);
         allocator.free(buf);
     };
-
-    // If using --key flag or --password flag, check if password-protected
-    const key_path = try keyloader.resolveKeyPath(allocator, opts.key);
-    if (key_path) |path| {
-        defer allocator.free(path);
-        const is_protected = try prompt.isKeyPasswordProtected(path);
-        if (is_protected or opts.password) {
-            password_buf = try prompt.promptPassword(allocator, "Enter key password", false);
-        }
-    } else if (opts.password) {
-        // Loading from config with --password flag
-        password_buf = try prompt.promptPassword(allocator, "Enter key password", false);
-    }
 
     // Load key (from file or config)
     const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
@@ -616,13 +626,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         try utils.ensureDirectory(dest_path);
 
         // Determine thread count (use option or default)
-        const thread_count = if (opts.threads) |t|
-            @min(t, 64) // Cap at 64 threads
-        else blk: {
-            const cpu_count = try std.Thread.getCpuCount();
-            // Default: min(CPU count, 16) for optimal SSD performance
-            break :blk @as(u32, @intCast(@min(cpu_count, 16)));
-        };
+        const thread_count = try getThreadCount(opts);
 
         // For in-place operations, use two-phase approach to avoid race conditions
         if (opts.in_place) {
@@ -793,24 +797,11 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
     const source_path = parsed.positional[0];
 
     // Check if we need password (only for file-based keys)
-    var password_buf: ?[]u8 = null;
+    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts);
     defer if (password_buf) |buf| {
         @memset(buf, 0);
         allocator.free(buf);
     };
-
-    // If using --key flag or --password flag, check if password-protected
-    const key_path = try keyloader.resolveKeyPath(allocator, opts.key);
-    if (key_path) |path| {
-        defer allocator.free(path);
-        const is_protected = try prompt.isKeyPasswordProtected(path);
-        if (is_protected or opts.password) {
-            password_buf = try prompt.promptPassword(allocator, "Enter key password", false);
-        }
-    } else if (opts.password) {
-        // Loading from config with --password flag
-        password_buf = try prompt.promptPassword(allocator, "Enter key password", false);
-    }
 
     // Load key (from file or config)
     const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
@@ -837,12 +828,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
         std.debug.print("Verifying directory: {s}\n", .{source_path});
 
         // Determine thread count
-        const thread_count = if (opts.threads) |t|
-            @min(t, 64)
-        else blk: {
-            const cpu_count = try std.Thread.getCpuCount();
-            break :blk @as(u32, @intCast(@min(cpu_count, 16)));
-        };
+        const thread_count = try getThreadCount(opts);
 
         std.debug.print("Scanning files...\n", .{});
 

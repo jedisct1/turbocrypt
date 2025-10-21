@@ -55,6 +55,25 @@ pub fn printErrorDetails(err: anyerror, is_encrypt: bool) void {
     }
 }
 
+/// Handle job processing error with consistent error reporting
+fn handleJobError(
+    worker: *WorkerPool,
+    job: FileJob,
+    err: anyerror,
+    error_prefix: []const u8,
+    is_encrypt: bool,
+) void {
+    // Do I/O outside the mutex to avoid deadlock
+    std.debug.print("\n{s} {s}\n", .{ error_prefix, job.source_path });
+    printErrorDetails(err, is_encrypt);
+
+    // Only hold mutex for state updates
+    worker.error_mutex.lock();
+    worker.has_errors = true;
+    worker.progress_tracker.addFileFailed();
+    worker.error_mutex.unlock();
+}
+
 /// Operation type for file processing
 pub const Operation = enum {
     encrypt,
@@ -230,16 +249,7 @@ pub const WorkerPool = struct {
                             worker.key,
                             thread_allocator,
                         ) catch |err| {
-                            // Do I/O outside the mutex to avoid deadlock
-                            std.debug.print("\n[ERROR] Failed to encrypt: {s}\n", .{job.source_path});
-                            printErrorDetails(err, true);
-
-                            // Only hold mutex for state updates
-                            worker.error_mutex.lock();
-                            worker.has_errors = true;
-                            worker.progress_tracker.addFileFailed();
-                            worker.error_mutex.unlock();
-
+                            handleJobError(worker, job, err, "[ERROR] Failed to encrypt:", true);
                             continue; // Continue with remaining files in batch
                         };
                     },
@@ -250,16 +260,7 @@ pub const WorkerPool = struct {
                             worker.key,
                             thread_allocator,
                         ) catch |err| {
-                            // Do I/O outside the mutex to avoid deadlock
-                            std.debug.print("\n[ERROR] Failed to decrypt: {s}\n", .{job.source_path});
-                            printErrorDetails(err, false);
-
-                            // Only hold mutex for state updates
-                            worker.error_mutex.lock();
-                            worker.has_errors = true;
-                            worker.progress_tracker.addFileFailed();
-                            worker.error_mutex.unlock();
-
+                            handleJobError(worker, job, err, "[ERROR] Failed to decrypt:", false);
                             continue; // Continue with remaining files in batch
                         };
                     },
@@ -269,16 +270,7 @@ pub const WorkerPool = struct {
                             worker.key,
                             thread_allocator,
                         ) catch |err| {
-                            // Do I/O outside the mutex to avoid deadlock
-                            std.debug.print("\n[VERIFY FAILED] {s}\n", .{job.source_path});
-                            printErrorDetails(err, false);
-
-                            // Only hold mutex for state updates
-                            worker.error_mutex.lock();
-                            worker.has_errors = true;
-                            worker.progress_tracker.addFileFailed();
-                            worker.error_mutex.unlock();
-
+                            handleJobError(worker, job, err, "[VERIFY FAILED]", false);
                             continue; // Continue with remaining files in batch
                         };
                     },
@@ -291,11 +283,7 @@ pub const WorkerPool = struct {
                 // Periodically flush progress to global tracker
                 if ((idx + 1) % PROGRESS_UPDATE_INTERVAL == 0 or idx == batch.len - 1) {
                     if (local_files_processed > 0) {
-                        // Call addFileProcessed() once per file (it increments by 1 each time)
-                        var i: u64 = 0;
-                        while (i < local_files_processed) : (i += 1) {
-                            worker.progress_tracker.addFileProcessed();
-                        }
+                        worker.progress_tracker.addFilesProcessed(local_files_processed);
                         worker.progress_tracker.addBytesProcessed(local_bytes_processed);
                         local_files_processed = 0;
                         local_bytes_processed = 0;
@@ -309,10 +297,7 @@ pub const WorkerPool = struct {
 
         // Flush any remaining local progress
         if (local_files_processed > 0) {
-            var i: u64 = 0;
-            while (i < local_files_processed) : (i += 1) {
-                worker.progress_tracker.addFileProcessed();
-            }
+            worker.progress_tracker.addFilesProcessed(local_files_processed);
             worker.progress_tracker.addBytesProcessed(local_bytes_processed);
         }
     }
