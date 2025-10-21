@@ -1,0 +1,7 @@
+.DS_Store
+*~
+.zig-cache
+zig-out
+api-faq.md
+secret.key
+tmp
