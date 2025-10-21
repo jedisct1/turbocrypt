@@ -82,7 +82,7 @@ const usage_text =
     \\  turbocrypt encrypt documents/ encrypted/
     \\  turbocrypt decrypt encrypted/ decrypted/
     \\  turbocrypt verify encrypted/
-    \\  turbocrypt encrypt --password documents/ encrypted/
+    \\  turbocrypt encrypt documents/ encrypted/
     \\  turbocrypt encrypt --key other.key documents/ encrypted/
     \\  turbocrypt encrypt --in-place --threads 8 sensitive-data/
     \\  turbocrypt encrypt --exclude "*.log" --exclude ".git/" source/ dest/
@@ -1009,7 +1009,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
             std.debug.print("           You will need to use --password flag when using this key.\n", .{});
             std.debug.print("           You can delete the original key file if you wish.\n", .{});
             std.debug.print("\nYou can now use encrypt/decrypt with password:\n", .{});
-            std.debug.print("  turbocrypt encrypt --password source/ dest/\n", .{});
+            std.debug.print("  turbocrypt encrypt source/ dest/\n", .{});
         } else {
             std.debug.print("\nIMPORTANT: The key is now stored directly in the config file.\n", .{});
             std.debug.print("           You can delete the original key file if you wish.\n", .{});
