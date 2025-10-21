@@ -339,9 +339,8 @@ Settings are applied in this order (highest priority first):
 
 ### Performance Tips
 
-- More threads for directories: Use `--threads` based on your CPU core count (default is usually optimal)
+- Adjust threads for directories: Use `--threads` based on your CPU core count and disk features
 - Larger buffers for huge files: Try `--buffer-size 16777216` (16MB) for very large files
-- In-place for speed: `--in-place` is faster but overwrites files - use with caution
 - Exclude patterns: Excluding files is faster than encrypting and deleting them later
 
 ## Troubleshooting
