@@ -129,8 +129,10 @@ fn encryptFileZeroCopy(
     // Zero-copy encrypt: input_mapped → output_mapped
     crypto.encryptZeroCopy(output_mapped, input_mapped, key);
 
-    // Preserve original file permissions
-    try output_file.chmod(mode);
+    // Preserve original file permissions (Unix-like systems only)
+    if (builtin.os.tag != .windows) {
+        try output_file.chmod(mode);
+    }
 }
 
 /// Buffered encryption for small files
@@ -156,8 +158,10 @@ fn encryptFileBuffered(
 
     try output_file.writeAll(encrypted);
 
-    // Preserve original file permissions
-    try output_file.chmod(mode);
+    // Preserve original file permissions (Unix-like systems only)
+    if (builtin.os.tag != .windows) {
+        try output_file.chmod(mode);
+    }
 }
 
 /// Process a single file for decryption using zero-copy mmap for large files
@@ -268,8 +272,10 @@ fn decryptFileZeroCopy(
     // Zero-copy decrypt: input_mapped → output_mapped
     try crypto.decryptZeroCopy(output_mapped, input_mapped, key);
 
-    // Preserve original file permissions
-    try output_file.chmod(mode);
+    // Preserve original file permissions (Unix-like systems only)
+    if (builtin.os.tag != .windows) {
+        try output_file.chmod(mode);
+    }
 }
 
 /// Buffered decryption for small files
@@ -295,8 +301,10 @@ fn decryptFileBuffered(
 
     try output_file.writeAll(plaintext);
 
-    // Preserve original file permissions
-    try output_file.chmod(mode);
+    // Preserve original file permissions (Unix-like systems only)
+    if (builtin.os.tag != .windows) {
+        try output_file.chmod(mode);
+    }
 }
 
 /// Verify a single encrypted file without decrypting it

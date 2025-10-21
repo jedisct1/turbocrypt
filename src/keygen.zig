@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const password = @import("password.zig");
 
 /// Key size for AEGIS-128X2 (16 bytes = 128 bits)
@@ -53,7 +54,10 @@ pub fn writeKeyFile(
 
     // Set restrictive permissions (owner read/write only)
     // chmod 600 (rw-------)
-    try file.chmod(0o600);
+    // Note: Windows doesn't support Unix-style permissions
+    if (builtin.os.tag != .windows) {
+        try file.chmod(0o600);
+    }
 }
 
 /// Read a key from a file
@@ -65,20 +69,23 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8) ![key_length]u8 
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
-    // Check file permissions
+    // Check file permissions (Unix-like systems only)
     const stat = try file.stat();
-    const mode = stat.mode;
 
-    // Warn if permissions are too permissive (not 0600 or stricter)
-    // On Unix-like systems, check if group or other have any permissions
-    // Mode 0600 = owner read/write only
-    const group_perms = (mode >> 3) & 0o7; // Group permissions
-    const other_perms = mode & 0o7; // Other permissions
+    if (builtin.os.tag != .windows) {
+        const mode = stat.mode;
 
-    if (group_perms != 0 or other_perms != 0) {
-        std.debug.print("WARNING: Key file '{s}' has overly permissive permissions ({o}).\n", .{ path, mode & 0o777 });
-        std.debug.print("         Recommended: chmod 600 {s}\n", .{path});
-        std.debug.print("         Anyone with access to this file can decrypt your data!\n", .{});
+        // Warn if permissions are too permissive (not 0600 or stricter)
+        // On Unix-like systems, check if group or other have any permissions
+        // Mode 0600 = owner read/write only
+        const group_perms = (mode >> 3) & 0o7; // Group permissions
+        const other_perms = mode & 0o7; // Other permissions
+
+        if (group_perms != 0 or other_perms != 0) {
+            std.debug.print("WARNING: Key file '{s}' has overly permissive permissions ({o}).\n", .{ path, mode & 0o777 });
+            std.debug.print("         Recommended: chmod 600 {s}\n", .{path});
+            std.debug.print("         Anyone with access to this file can decrypt your data!\n", .{});
+        }
     }
 
     // Determine file format by size

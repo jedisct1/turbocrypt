@@ -1,8 +1,18 @@
 const std = @import("std");
 const keygen = @import("keygen.zig");
+const builtin = @import("builtin");
 
 /// Maximum password length
 const MAX_PASSWORD_LENGTH = 1024;
+
+/// Platform-specific terminal state
+const TerminalState = if (builtin.os.tag == .windows)
+    struct {
+        handle: std.os.windows.HANDLE,
+        original_mode: std.os.windows.DWORD,
+    }
+else
+    std.posix.termios;
 
 /// Prompt the user for a password (with confirmation for new passwords)
 /// Allocates memory for the password - caller must free
@@ -19,9 +29,9 @@ pub fn promptPassword(
 
     if (is_terminal) {
         // Disable echo for password input
-        var original_termios: std.posix.termios = undefined;
-        try disableEcho(stdin, &original_termios);
-        defer enableEcho(stdin, original_termios) catch {};
+        var terminal_state: TerminalState = undefined;
+        try disableEcho(stdin, &terminal_state);
+        defer enableEcho(stdin, terminal_state) catch {};
     }
 
     // First prompt
@@ -91,18 +101,42 @@ pub fn promptPassword(
 }
 
 /// Disable terminal echo for password input
-fn disableEcho(file: std.fs.File, original: *std.posix.termios) !void {
-    original.* = try std.posix.tcgetattr(file.handle);
+fn disableEcho(file: std.fs.File, state: *TerminalState) !void {
+    if (builtin.os.tag == .windows) {
+        const handle = file.handle;
+        state.handle = handle;
 
-    var new_termios = original.*;
-    new_termios.lflag.ECHO = false;
+        // Get current console mode
+        if (std.os.windows.kernel32.GetConsoleMode(handle, &state.original_mode) == 0) {
+            return error.GetConsoleModeFailure;
+        }
 
-    try std.posix.tcsetattr(file.handle, .FLUSH, new_termios);
+        // Disable ENABLE_ECHO_INPUT (0x0004)
+        const ENABLE_ECHO_INPUT: std.os.windows.DWORD = 0x0004;
+        const new_mode = state.original_mode & ~ENABLE_ECHO_INPUT;
+
+        if (std.os.windows.kernel32.SetConsoleMode(handle, new_mode) == 0) {
+            return error.SetConsoleModeFailure;
+        }
+    } else {
+        state.* = try std.posix.tcgetattr(file.handle);
+
+        var new_termios = state.*;
+        new_termios.lflag.ECHO = false;
+
+        try std.posix.tcsetattr(file.handle, .FLUSH, new_termios);
+    }
 }
 
 /// Restore terminal echo
-fn enableEcho(file: std.fs.File, original: std.posix.termios) !void {
-    try std.posix.tcsetattr(file.handle, .FLUSH, original);
+fn enableEcho(file: std.fs.File, state: TerminalState) !void {
+    if (builtin.os.tag == .windows) {
+        if (std.os.windows.kernel32.SetConsoleMode(state.handle, state.original_mode) == 0) {
+            return error.SetConsoleModeFailure;
+        }
+    } else {
+        try std.posix.tcsetattr(file.handle, .FLUSH, state);
+    }
 }
 
 /// Check if a key file is password-protected

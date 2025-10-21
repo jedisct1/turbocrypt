@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Configuration filename within app data directory
 pub const config_filename = "config.json";
@@ -260,7 +261,10 @@ pub fn save(config: Config, allocator: std.mem.Allocator) !void {
     defer file.close();
 
     // Set restrictive permissions before writing (owner read/write only)
-    try file.chmod(0o600);
+    // Note: Windows doesn't support Unix-style permissions
+    if (builtin.os.tag != .windows) {
+        try file.chmod(0o600);
+    }
 
     try file.writeAll(json_str);
     try file.sync(); // Ensure data is written to disk
