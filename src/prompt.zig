@@ -1,4 +1,5 @@
 const std = @import("std");
+const keygen = @import("keygen.zig");
 
 /// Maximum password length
 const MAX_PASSWORD_LENGTH = 1024;
@@ -110,5 +111,5 @@ pub fn isKeyPasswordProtected(path: []const u8) !bool {
     defer file.close();
 
     const stat = try file.stat();
-    return stat.size == 17; // 1 byte flag + 16 byte key
+    return stat.size == keygen.protected_key_file_size;
 }

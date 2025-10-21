@@ -278,7 +278,7 @@ fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options) !?[]u8
             var cfg = config_mod.load(allocator) catch break :blk false;
             defer cfg.deinit(allocator);
             if (cfg.key) |key_data| {
-                break :blk key_data.len == 17; // 17 bytes = password-protected
+                break :blk key_data.len == keygen.protected_key_file_size;
             }
             break :blk false;
         }
@@ -623,6 +623,10 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             std.debug.print("Error: This key file is password-protected. Use --password flag.\n", .{});
             return error.PasswordRequired;
         }
+        if (err == error.InvalidPassword) {
+            std.debug.print("Error: Invalid password for key file.\n", .{});
+            return error.InvalidPassword;
+        }
         return err;
     };
 
@@ -828,6 +832,10 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
             std.debug.print("Error: This key file is password-protected. Use --password flag.\n", .{});
             return error.PasswordRequired;
         }
+        if (err == error.InvalidPassword) {
+            std.debug.print("Error: Invalid password for key file.\n", .{});
+            return error.InvalidPassword;
+        }
         return err;
     };
 
@@ -939,9 +947,9 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
         const key_path = args[1];
 
-        // Read the entire key file (16 or 17 bytes)
+        // Read the entire key file
         // We store it in the same format as the file
-        const max_key_size = 18; // Max: 1 flag byte + 16 key bytes + margin
+        const max_key_size = keygen.protected_key_file_size + 1; // Max size + margin
         const key_data = std.fs.cwd().readFileAlloc(
             key_path,
             allocator,
@@ -952,13 +960,13 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
         };
         defer allocator.free(key_data);
 
-        // Validate key size (16 for plain, 17 for password-protected)
-        if (key_data.len != 16 and key_data.len != 17) {
-            std.debug.print("Error: Invalid key file size (expected 16 or 17 bytes, got {d})\n", .{key_data.len});
+        // Validate key size
+        if (key_data.len != keygen.plain_key_file_size and key_data.len != keygen.protected_key_file_size) {
+            std.debug.print("Error: Invalid key file size (expected {d} or {d} bytes, got {d})\n", .{ keygen.plain_key_file_size, keygen.protected_key_file_size, key_data.len });
             return error.InvalidKeyFile;
         }
 
-        const is_protected = key_data.len == 17;
+        const is_protected = key_data.len == keygen.protected_key_file_size;
 
         // If password-protected, verify we can decrypt it
         if (is_protected) {
@@ -976,9 +984,9 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
             }
 
             // Test decrypt to verify password is correct
-            var protected_key: [16]u8 = undefined;
-            @memcpy(&protected_key, key_data[1..17]);
-            _ = password.unprotectKey(protected_key, password_buf) catch |err| {
+            var protected_data: [20]u8 = undefined;
+            @memcpy(&protected_data, key_data[1..keygen.protected_key_file_size]);
+            _ = password.unprotectKey(protected_data, password_buf) catch |err| {
                 std.debug.print("Error: Cannot decrypt key (wrong password?): {}\n", .{err});
                 return err;
             };
@@ -986,7 +994,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
             std.debug.print("Password verified successfully.\n", .{});
         }
 
-        // Save key data to config (in same format as file: 16 or 17 bytes)
+        // Save key data to config (in same format as file: 16 or 21 bytes)
         try keyloader.setDefaultKey(allocator, key_data);
 
         // Get and display config file path

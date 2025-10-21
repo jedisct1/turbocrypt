@@ -4,11 +4,17 @@ const password = @import("password.zig");
 /// Key size for AEGIS-128X2 (16 bytes = 128 bits)
 pub const key_length = 16;
 
+/// Plain key file size (just the key bytes)
+pub const plain_key_file_size = key_length;
+
+/// Password-protected key file size (flag + XOR'd key + checksum)
+pub const protected_key_file_size = 1 + key_length + 4;
+
 /// Key file format flags
 pub const KeyFormat = enum(u8) {
     /// Plain key (16 bytes)
     plain = 0x00,
-    /// Password-protected key (17 bytes: flag + XOR'd key)
+    /// Password-protected key (21 bytes: flag + 16 XOR'd bytes + 4 checksum bytes)
     password_protected = 0x01,
 };
 
@@ -78,7 +84,7 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8) ![key_length]u8 
     // Determine file format by size
     const file_size = stat.size;
 
-    if (file_size == key_length) {
+    if (file_size == plain_key_file_size) {
         // Plain key format
         var key: [key_length]u8 = undefined;
         const bytes_read = try file.readAll(&key);
@@ -86,7 +92,7 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8) ![key_length]u8 
             return error.InvalidKeyFile;
         }
         return key;
-    } else if (file_size == key_length + 1) {
+    } else if (file_size == protected_key_file_size) {
         // Password-protected format
         var format_buf: [1]u8 = undefined;
         const bytes_read_flag = try file.read(&format_buf);
@@ -97,17 +103,17 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8) ![key_length]u8 
             return error.InvalidKeyFile;
         }
 
-        var protected_key: [key_length]u8 = undefined;
-        const bytes_read = try file.readAll(&protected_key);
-        if (bytes_read != key_length) {
+        var protected_data: [20]u8 = undefined;
+        const bytes_read = try file.readAll(&protected_data);
+        if (bytes_read != 20) {
             return error.InvalidKeyFile;
         }
 
         // Require password for protected keys
         const pwd = password_opt orelse return error.PasswordRequired;
 
-        // Decrypt the key
-        return try password.unprotectKey(protected_key, pwd);
+        // Decrypt the key (verifies checksum internally)
+        return try password.unprotectKey(protected_data, pwd);
     } else {
         return error.InvalidKeyFile;
     }
@@ -163,11 +169,11 @@ test "key file write and read (password-protected)" {
     try writeKeyFile(test_path, original_key, test_password);
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
-    // Verify file size is 17 bytes (1 flag + 16 key)
+    // Verify file size is correct for password-protected keys
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
     const stat = try file.stat();
-    try testing.expectEqual(@as(u64, key_length + 1), stat.size);
+    try testing.expectEqual(@as(u64, protected_key_file_size), stat.size);
 
     // Read back with password
     const read_key = try readKeyFile(test_path, test_password);
@@ -212,9 +218,7 @@ test "wrong password fails" {
     try writeKeyFile(test_path, original_key, correct_password);
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
-    // Read with wrong password
-    const read_key = try readKeyFile(test_path, wrong_password);
-
-    // Keys should NOT match (XOR with different derived key)
-    try testing.expect(!std.mem.eql(u8, &original_key, &read_key));
+    // Read with wrong password should fail with InvalidPassword error
+    const result = readKeyFile(test_path, wrong_password);
+    try testing.expectError(error.InvalidPassword, result);
 }

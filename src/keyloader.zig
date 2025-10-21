@@ -55,13 +55,13 @@ pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, 
 
         if (cfg.key) |key_data| {
             // Detect password protection by length (same as file format)
-            if (key_data.len == 16) {
+            if (key_data.len == keygen.plain_key_file_size) {
                 // Plain key: return as-is
                 var key: [16]u8 = undefined;
                 @memcpy(&key, key_data);
                 return key;
-            } else if (key_data.len == 17) {
-                // Password-protected key: flag byte + XOR'd key
+            } else if (key_data.len == keygen.protected_key_file_size) {
+                // Password-protected key: flag byte + 16 XOR'd bytes + 4 checksum bytes
                 const format_flag = key_data[0];
                 if (format_flag != @intFromEnum(keygen.KeyFormat.password_protected)) {
                     return error.InvalidKeyFile;
@@ -71,11 +71,11 @@ pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, 
                 const pwd = password_opt orelse return error.PasswordRequired;
 
                 // Extract the protected key bytes (skip flag byte)
-                var protected_key: [16]u8 = undefined;
-                @memcpy(&protected_key, key_data[1..17]);
+                var protected_data: [20]u8 = undefined;
+                @memcpy(&protected_data, key_data[1..keygen.protected_key_file_size]);
 
-                // Decrypt the key (XOR with Argon2id output)
-                return try password.unprotectKey(protected_key, pwd);
+                // Decrypt the key (XOR with Argon2id output and verify checksum)
+                return try password.unprotectKey(protected_data, pwd);
             } else {
                 return error.InvalidKeyFile;
             }
@@ -93,7 +93,7 @@ pub fn getConfigFilePath(allocator: std.mem.Allocator) ![]const u8 {
 /// Set the default key in the config file
 /// key_data should be in the same format as key files:
 /// - 16 bytes: plain key
-/// - 17 bytes: password-protected (1 flag byte + 16 XOR'd bytes)
+/// - 21 bytes: password-protected (1 flag byte + 16 XOR'd bytes + 4 checksum bytes)
 pub fn setDefaultKey(allocator: std.mem.Allocator, key_data: []const u8) !void {
     // Load existing config
     var cfg = try config.load(allocator);
@@ -138,7 +138,7 @@ pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]con
     defer cfg.deinit(allocator);
 
     if (cfg.key) |key_data| {
-        const is_protected = key_data.len == 17;
+        const is_protected = key_data.len == keygen.protected_key_file_size;
         if (is_protected) {
             return try std.fmt.allocPrint(allocator, "Config file ({s}): password-protected key", .{config_path});
         } else {
