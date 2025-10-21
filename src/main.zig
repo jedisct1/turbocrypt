@@ -274,8 +274,26 @@ fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options) !?[]u8
         if (is_protected or opts.password) {
             return try prompt.promptPassword(allocator, "Enter key password", false);
         }
-    } else if (opts.password) {
-        return try prompt.promptPassword(allocator, "Enter key password", false);
+    } else {
+        // Config-stored key - check if it's password-protected
+        var cfg = config_mod.load(allocator) catch {
+            // If config can't be loaded, only prompt if --password flag is set
+            if (opts.password) {
+                return try prompt.promptPassword(allocator, "Enter key password", false);
+            }
+            return null;
+        };
+        defer cfg.deinit(allocator);
+
+        if (cfg.key) |key_data| {
+            // Password-protected keys are 17 bytes (1 flag + 16 XOR'd key)
+            const is_protected = key_data.len == 17;
+            if (is_protected or opts.password) {
+                return try prompt.promptPassword(allocator, "Enter key password", false);
+            }
+        } else if (opts.password) {
+            return try prompt.promptPassword(allocator, "Enter key password", false);
+        }
     }
     return null;
 }
