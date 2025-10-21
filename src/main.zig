@@ -267,33 +267,26 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
 /// Prompt for password if needed (based on key file protection status or --password flag)
 /// Returns owned password buffer that caller must zero and free
 fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options) !?[]u8 {
-    const key_path = try keyloader.resolveKeyPath(allocator, opts.key);
-    if (key_path) |path| {
-        defer allocator.free(path);
-        const is_protected = try prompt.isKeyPasswordProtected(path);
-        if (is_protected or opts.password) {
-            return try prompt.promptPassword(allocator, "Enter key password", false);
-        }
-    } else {
-        // Config-stored key - check if it's password-protected
-        var cfg = config_mod.load(allocator) catch {
-            // If config can't be loaded, only prompt if --password flag is set
-            if (opts.password) {
-                return try prompt.promptPassword(allocator, "Enter key password", false);
+    // Determine if key is password-protected
+    const is_protected = blk: {
+        const key_path = try keyloader.resolveKeyPath(allocator, opts.key);
+        if (key_path) |path| {
+            defer allocator.free(path);
+            break :blk try prompt.isKeyPasswordProtected(path);
+        } else {
+            // Check config-stored key
+            var cfg = config_mod.load(allocator) catch break :blk false;
+            defer cfg.deinit(allocator);
+            if (cfg.key) |key_data| {
+                break :blk key_data.len == 17; // 17 bytes = password-protected
             }
-            return null;
-        };
-        defer cfg.deinit(allocator);
+            break :blk false;
+        }
+    };
 
-        if (cfg.key) |key_data| {
-            // Password-protected keys are 17 bytes (1 flag + 16 XOR'd key)
-            const is_protected = key_data.len == 17;
-            if (is_protected or opts.password) {
-                return try prompt.promptPassword(allocator, "Enter key password", false);
-            }
-        } else if (opts.password) {
-            return try prompt.promptPassword(allocator, "Enter key password", false);
-        }
+    // Prompt if protected or if --password flag is set
+    if (is_protected or opts.password) {
+        return try prompt.promptPassword(allocator, "Enter key password", false);
     }
     return null;
 }
