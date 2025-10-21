@@ -101,6 +101,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Strip debug symbols by default
+    exe.root_module.strip = true;
+
     // Link libc on Windows (required for Console API)
     if (target.result.os.tag == .windows) {
         exe.linkLibC();
