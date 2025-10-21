@@ -29,7 +29,7 @@ The compiled binary will be in `zig-out/bin/turbocrypt`. Move it elsewhere, add 
 
 ## Quick Start
 
-### Generate an Encryption Key
+### Step 1: Generate an Encryption Key
 
 First, create a key file. This is a random 128-bit key that you'll use to encrypt and decrypt your files.
 
@@ -37,35 +37,57 @@ First, create a key file. This is a random 128-bit key that you'll use to encryp
 turbocrypt keygen my-secret.key
 ```
 
-Important: Keep this key file safe! Anyone with access to it can decrypt your files. Consider storing it on a USB drive or in a password manager.
+Important: Keep this key file safe! Anyone with access to it can decrypt your files.
 
-### Encrypt Files
+### Step 2: Set Your Default Key
+
+Store the key in your configuration so you don't have to specify it every time:
+
+```bash
+turbocrypt config set-key my-secret.key
+```
+
+After this, you can encrypt and decrypt without specifying the key. The tool is now ready to use!
+
+### Step 3: Encrypt Files
 
 Encrypt a single file:
 
 ```bash
-turbocrypt encrypt --key my-secret.key document.pdf document.pdf.enc
+turbocrypt encrypt document.pdf document.pdf.enc
 ```
 
 Encrypt an entire directory:
 
 ```bash
-turbocrypt encrypt --key my-secret.key my-documents/ encrypted-documents/
+turbocrypt encrypt my-documents/ encrypted-documents/
 ```
 
-### Decrypt Files
+### Step 4: Verify Encrypted Files
+
+Check that your encrypted files are intact:
+
+```bash
+turbocrypt verify encrypted-documents/
+```
+
+This confirms all files were encrypted successfully and haven't been corrupted or tampered with.
+
+### Step 5: Decrypt Files
 
 Decrypt a file:
 
 ```bash
-turbocrypt decrypt --key my-secret.key document.pdf.enc document.pdf
+turbocrypt decrypt document.pdf.enc document.pdf
 ```
 
-Decrypt a directory:
+Decrypt the entire directory:
 
 ```bash
-turbocrypt decrypt --key my-secret.key encrypted-documents/ my-documents/
+turbocrypt decrypt encrypted-documents/ my-documents/
 ```
+
+That's it! No need to remember or type your key path every time.
 
 ## Common Operations
 
