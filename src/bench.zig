@@ -738,8 +738,13 @@ pub fn run(allocator: std.mem.Allocator) !void {
     std.debug.print("\nTurboCrypt Performance Benchmark\n", .{});
     std.debug.print("================================\n", .{});
 
-    // Configure benchmark iterations
-    const config = BenchConfig{
+    // Configure benchmark iterations - in-memory tests need more iterations since they're fast
+    const in_memory_config = BenchConfig{
+        .warmup_iterations = 10,
+        .measured_iterations = 1000,
+    };
+
+    const file_io_config = BenchConfig{
         .warmup_iterations = 3,
         .measured_iterations = 10,
     };
@@ -754,15 +759,14 @@ pub fn run(allocator: std.mem.Allocator) !void {
     };
 
     // Run single-threaded benchmarks
-    try benchSingleThreaded(allocator, key, config);
+    try benchSingleThreaded(allocator, key, in_memory_config);
 
     // Run multi-threaded in-memory benchmarks
-    try benchMultiThreadedInMemory(allocator, key, config);
+    try benchMultiThreadedInMemory(allocator, key, in_memory_config);
 
     // Run multi-threaded file I/O benchmarks
-    try benchMultiThreaded(allocator, key, tmp_dir, config);
+    try benchMultiThreaded(allocator, key, tmp_dir, file_io_config);
 
     std.debug.print("\nBenchmark completed!\n", .{});
     std.debug.print("Note: Results may vary based on CPU, memory speed, and system load.\n", .{});
-    std.debug.print("Each test was run with {d} warmup iterations + {d} measured iterations.\n", .{ config.warmup_iterations, config.measured_iterations });
 }
