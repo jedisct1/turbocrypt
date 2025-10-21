@@ -509,9 +509,10 @@ const ScanAndProcessContext = struct {
             if (needs_free) self.allocator.free(dest_relative_path);
             dest_relative_path = encrypted_relative_path.?;
             needs_free = false; // encrypted_relative_path will be freed by defer
-        } else {
-            defer if (needs_free) self.allocator.free(dest_relative_path);
         }
+
+        // Defer freeing dest_relative_path after we've used it
+        defer if (needs_free) self.allocator.free(dest_relative_path);
 
         // Prepare source and destination paths
         // These will be freed by the worker pool after processing
