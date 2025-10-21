@@ -1,12 +1,16 @@
 const std = @import("std");
 const crypto = @import("crypto.zig");
 const builtin = @import("builtin");
+const io_hints = @import("io_hints.zig");
 
 // Threshold for using mmap vs buffered I/O (1MB)
 const MMAP_THRESHOLD: u64 = 1024 * 1024;
 
-/// Read file using buffered I/O
+/// Read file using buffered I/O with I/O hints
 fn readBuffered(file: std.fs.File, file_size: u64, allocator: std.mem.Allocator) ![]u8 {
+    // Advise kernel about sequential file access for better read-ahead
+    io_hints.adviseFile(file, 0, @intCast(file_size), .sequential);
+
     const buffer = try allocator.alloc(u8, file_size);
     errdefer allocator.free(buffer);
 
@@ -63,6 +67,9 @@ fn encryptFileZeroCopy(
     key: [crypto.key_length]u8,
     mode: std.fs.File.Mode,
 ) !void {
+    // Advise kernel about sequential file access (before mmap for better prefetch)
+    io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
+
     // mmap input file (read-only)
     const input_mapped = std.posix.mmap(
         null,
@@ -78,10 +85,16 @@ fn encryptFileZeroCopy(
         const allocator = gpa.allocator();
         return encryptFileBuffered(input_file, input_size, output_path, key, allocator, mode);
     };
-    defer std.posix.munmap(input_mapped);
+    defer {
+        // Drop pages from cache after processing to free memory
+        io_hints.adviseMemory(input_mapped.ptr, input_size, .dontneed);
+        std.posix.munmap(input_mapped);
+    }
 
-    // Advise kernel about sequential access pattern
-    std.posix.madvise(input_mapped.ptr, input_size, std.posix.MADV.SEQUENTIAL) catch {};
+    // Advise kernel about memory access pattern
+    io_hints.adviseMemory(input_mapped.ptr, input_size, .sequential);
+    // Proactively start prefetching data into memory
+    io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
 
     // Create output file with correct size and read/write permissions for mmap
     const output_file = try std.fs.cwd().createFile(output_path, .{ .read = true });
@@ -103,13 +116,15 @@ fn encryptFileZeroCopy(
         0,
     );
     defer {
-        // Ensure data is written before unmapping
-        std.posix.msync(output_mapped, std.posix.MSF.SYNC) catch {};
+        // Flush asynchronously (non-blocking) - kernel will write in background
+        io_hints.flushAsync(output_mapped);
         std.posix.munmap(output_mapped);
+        // Optional: sync file data for durability (can be skipped for performance)
+        // io_hints.syncFileData(output_file);
     }
 
-    // Advise kernel about sequential access pattern
-    std.posix.madvise(output_mapped.ptr, output_size, std.posix.MADV.SEQUENTIAL) catch {};
+    // Advise kernel about sequential write pattern
+    io_hints.adviseMemory(output_mapped.ptr, output_size, .sequential);
 
     // Zero-copy encrypt: input_mapped → output_mapped
     crypto.encryptZeroCopy(output_mapped, input_mapped, key);
@@ -190,6 +205,9 @@ fn decryptFileZeroCopy(
     key: [crypto.key_length]u8,
     mode: std.fs.File.Mode,
 ) !void {
+    // Advise kernel about sequential file access (before mmap for better prefetch)
+    io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
+
     // mmap input file (read-only)
     const input_mapped = std.posix.mmap(
         null,
@@ -205,10 +223,16 @@ fn decryptFileZeroCopy(
         const allocator = gpa.allocator();
         return decryptFileBuffered(input_file, input_size, output_path, key, allocator, mode);
     };
-    defer std.posix.munmap(input_mapped);
+    defer {
+        // Drop pages from cache after processing to free memory
+        io_hints.adviseMemory(input_mapped.ptr, input_size, .dontneed);
+        std.posix.munmap(input_mapped);
+    }
 
-    // Advise kernel about sequential access pattern
-    std.posix.madvise(input_mapped.ptr, input_size, std.posix.MADV.SEQUENTIAL) catch {};
+    // Advise kernel about memory access pattern
+    io_hints.adviseMemory(input_mapped.ptr, input_size, .sequential);
+    // Proactively start prefetching data into memory
+    io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
 
     // Create output file with correct size and read/write permissions for mmap
     const output_file = try std.fs.cwd().createFile(output_path, .{ .read = true });
@@ -231,13 +255,15 @@ fn decryptFileZeroCopy(
         0,
     );
     defer {
-        // Ensure data is written before unmapping
-        std.posix.msync(output_mapped, std.posix.MSF.SYNC) catch {};
+        // Flush asynchronously (non-blocking) - kernel will write in background
+        io_hints.flushAsync(output_mapped);
         std.posix.munmap(output_mapped);
+        // Optional: sync file data for durability (can be skipped for performance)
+        // io_hints.syncFileData(output_file);
     }
 
-    // Advise kernel about sequential access pattern
-    std.posix.madvise(output_mapped.ptr, output_size, std.posix.MADV.SEQUENTIAL) catch {};
+    // Advise kernel about sequential write pattern
+    io_hints.adviseMemory(output_mapped.ptr, output_size, .sequential);
 
     // Zero-copy decrypt: input_mapped → output_mapped
     try crypto.decryptZeroCopy(output_mapped, input_mapped, key);
@@ -302,6 +328,9 @@ fn verifyFileZeroCopy(
     key: [crypto.key_length]u8,
     allocator: std.mem.Allocator,
 ) !void {
+    // Advise kernel about sequential file access (before mmap for better prefetch)
+    io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
+
     // mmap input file (read-only)
     const input_mapped = std.posix.mmap(
         null,
@@ -314,10 +343,16 @@ fn verifyFileZeroCopy(
         // Fall back to buffered I/O if mmap fails
         return verifyFileBuffered(input_file, input_size, key, allocator);
     };
-    defer std.posix.munmap(input_mapped);
+    defer {
+        // Drop pages from cache after processing to free memory
+        io_hints.adviseMemory(input_mapped.ptr, input_size, .dontneed);
+        std.posix.munmap(input_mapped);
+    }
 
-    // Advise kernel about sequential access pattern
-    std.posix.madvise(input_mapped.ptr, input_size, std.posix.MADV.SEQUENTIAL) catch {};
+    // Advise kernel about memory access pattern
+    io_hints.adviseMemory(input_mapped.ptr, input_size, .sequential);
+    // Proactively start prefetching data into memory
+    io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
 
     // Verify the encrypted data
     try crypto.verify(input_mapped, key, allocator);
