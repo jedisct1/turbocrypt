@@ -4,7 +4,7 @@
 
 # TurboCrypt
 
-A fast, simple, secure command-line tool for encrypting and decrypting files and directories.
+A fast, simple, secure command-line tool for encrypting and decrypting files and entire directory trees.
 
 ## What Makes TurboCrypt Different
 
