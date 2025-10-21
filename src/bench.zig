@@ -70,10 +70,13 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, key: [16]u8) !void {
         defer allocator.free(plaintext);
         std.crypto.random.bytes(plaintext);
 
+        // Allocate output buffers
+        const ciphertext = try allocator.alloc(u8, size + crypto.overhead_size);
+        defer allocator.free(ciphertext);
+
         // Benchmark encryption
         var timer = try std.time.Timer.start();
-        const ciphertext = try crypto.encrypt(plaintext, key, allocator);
-        defer allocator.free(ciphertext);
+        crypto.encryptZeroCopy(ciphertext, plaintext, key);
         const encrypt_time = timer.read();
         std.mem.doNotOptimizeAway(&ciphertext);
 
@@ -87,10 +90,13 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, key: [16]u8) !void {
         };
         encrypt_result.print();
 
+        // Allocate decryption output buffer
+        const decrypted = try allocator.alloc(u8, size);
+        defer allocator.free(decrypted);
+
         // Benchmark decryption
         timer.reset();
-        const decrypted = try crypto.decrypt(ciphertext, key, allocator);
-        defer allocator.free(decrypted);
+        try crypto.decryptZeroCopy(decrypted, ciphertext, key);
         const decrypt_time = timer.read();
         std.mem.doNotOptimizeAway(&decrypted);
 
@@ -113,21 +119,17 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, key: [16]u8) !void {
 
 /// Context for multi-threaded in-memory encryption
 const ThreadContext = struct {
-    data: []u8,
+    input: []const u8,
+    output: []u8,
     key: [16]u8,
-    allocator: std.mem.Allocator,
-    result: ?[]u8 = null,
     error_occurred: bool = false,
 
     fn encryptThread(ctx: *ThreadContext) void {
-        ctx.result = crypto.encrypt(ctx.data, ctx.key, ctx.allocator) catch {
-            ctx.error_occurred = true;
-            return;
-        };
+        crypto.encryptZeroCopy(ctx.output, ctx.input, ctx.key);
     }
 
     fn decryptThread(ctx: *ThreadContext) void {
-        ctx.result = crypto.decrypt(ctx.data, ctx.key, ctx.allocator) catch {
+        crypto.decryptZeroCopy(ctx.output, ctx.input, ctx.key) catch {
             ctx.error_occurred = true;
             return;
         };
@@ -173,6 +175,18 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8) !void {
             try test_data.append(allocator, data);
         }
 
+        // Pre-allocate output buffers for encryption
+        var encrypted_outputs = std.ArrayList([]u8){};
+        defer {
+            for (encrypted_outputs.items) |output| allocator.free(output);
+            encrypted_outputs.deinit(allocator);
+        }
+
+        for (0..total_chunks) |_| {
+            const output = try allocator.alloc(u8, chunk_size + crypto.overhead_size);
+            try encrypted_outputs.append(allocator, output);
+        }
+
         // Benchmark encryption
         var contexts = try allocator.alloc(ThreadContext, thread_count);
         defer allocator.free(contexts);
@@ -182,17 +196,13 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8) !void {
 
         var timer = try std.time.Timer.start();
 
-        // Launch threads
+        // Launch threads for first chunk of each thread
         for (0..thread_count) |i| {
-            // Each thread gets chunks_per_thread chunks
             const start_chunk = i * chunks_per_thread;
-
-            // For simplicity, we'll have each thread process one chunk at a time
-            // and measure the total work across all chunks
             contexts[i] = ThreadContext{
-                .data = test_data.items[start_chunk],
+                .input = test_data.items[start_chunk],
+                .output = encrypted_outputs.items[start_chunk],
                 .key = key,
-                .allocator = allocator,
             };
 
             threads[i] = try std.Thread.spawn(.{}, ThreadContext.encryptThread, .{&contexts[i]});
@@ -208,20 +218,19 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8) !void {
             const start_chunk = i * chunks_per_thread;
             for (1..chunks_per_thread) |j| {
                 const chunk_idx = start_chunk + j;
-                const encrypted = try crypto.encrypt(test_data.items[chunk_idx], key, allocator);
-                defer allocator.free(encrypted);
-                std.mem.doNotOptimizeAway(&encrypted);
+                crypto.encryptZeroCopy(
+                    encrypted_outputs.items[chunk_idx],
+                    test_data.items[chunk_idx],
+                    key,
+                );
+                std.mem.doNotOptimizeAway(&encrypted_outputs.items[chunk_idx]);
             }
         }
 
         const encrypt_time = timer.read();
 
-        // Cleanup encryption results
+        // Check for errors
         for (contexts) |*ctx| {
-            if (ctx.result) |result| {
-                allocator.free(result);
-                ctx.result = null;
-            }
             if (ctx.error_occurred) {
                 return error.EncryptionFailed;
             }
@@ -237,27 +246,28 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8) !void {
         };
         encrypt_result.print();
 
-        // Benchmark decryption - first encrypt all data
-        var encrypted_data = std.ArrayList([]u8){};
+        // Pre-allocate output buffers for decryption
+        var decrypted_outputs = std.ArrayList([]u8){};
         defer {
-            for (encrypted_data.items) |data| allocator.free(data);
-            encrypted_data.deinit(allocator);
+            for (decrypted_outputs.items) |output| allocator.free(output);
+            decrypted_outputs.deinit(allocator);
         }
 
-        for (test_data.items) |data| {
-            const encrypted = try crypto.encrypt(data, key, allocator);
-            try encrypted_data.append(allocator, encrypted);
+        for (0..total_chunks) |_| {
+            const output = try allocator.alloc(u8, chunk_size);
+            try decrypted_outputs.append(allocator, output);
         }
 
+        // Benchmark decryption
         timer.reset();
 
-        // Launch decryption threads
+        // Launch decryption threads for first chunk of each thread
         for (0..thread_count) |i| {
             const start_chunk = i * chunks_per_thread;
             contexts[i] = ThreadContext{
-                .data = encrypted_data.items[start_chunk],
+                .input = encrypted_outputs.items[start_chunk],
+                .output = decrypted_outputs.items[start_chunk],
                 .key = key,
-                .allocator = allocator,
             };
 
             threads[i] = try std.Thread.spawn(.{}, ThreadContext.decryptThread, .{&contexts[i]});
@@ -273,20 +283,19 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8) !void {
             const start_chunk = i * chunks_per_thread;
             for (1..chunks_per_thread) |j| {
                 const chunk_idx = start_chunk + j;
-                const decrypted = try crypto.decrypt(encrypted_data.items[chunk_idx], key, allocator);
-                defer allocator.free(decrypted);
-                std.mem.doNotOptimizeAway(&decrypted);
+                try crypto.decryptZeroCopy(
+                    decrypted_outputs.items[chunk_idx],
+                    encrypted_outputs.items[chunk_idx],
+                    key,
+                );
+                std.mem.doNotOptimizeAway(&decrypted_outputs.items[chunk_idx]);
             }
         }
 
         const decrypt_time = timer.read();
 
-        // Cleanup decryption results
+        // Check for errors
         for (contexts) |*ctx| {
-            if (ctx.result) |result| {
-                allocator.free(result);
-                ctx.result = null;
-            }
             if (ctx.error_occurred) {
                 return error.DecryptionFailed;
             }
