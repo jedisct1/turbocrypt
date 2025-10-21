@@ -8,7 +8,7 @@ A fast, simple, secure command-line tool for encrypting and decrypting files and
 
 ## What Makes TurboCrypt Different
 
-- Fast: Uses AEGIS, with multi-threaded processing for directories
+- Fast: Multi-threaded processing for directories
 - Secure: Every file is authenticated - tampering is detected automatically
 - Simple: Clean command-line interface with sensible defaults
 - Flexible: Works with single files or entire directory trees, with optional filename encryption
