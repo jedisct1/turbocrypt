@@ -34,7 +34,7 @@ The compiled binary will be in `zig-out/bin/turbocrypt`. Move it elsewhere, add 
 First, create a key file. This is a random 128-bit key that you'll use to encrypt and decrypt your files.
 
 ```bash
-turbocrypt keygen my-secret.key
+turbocrypt keygen secret.key
 ```
 
 Important: Keep this key file safe! Anyone with access to it can decrypt your files.
@@ -44,7 +44,7 @@ Important: Keep this key file safe! Anyone with access to it can decrypt your fi
 Store the key in your configuration so you don't have to specify it every time:
 
 ```bash
-turbocrypt config set-key my-secret.key
+turbocrypt config set-key secret.key
 ```
 
 After this, you can encrypt and decrypt without specifying the key. The tool is now ready to use!
@@ -87,7 +87,7 @@ Decrypt the entire directory:
 turbocrypt decrypt encrypted-documents/ my-documents/
 ```
 
-That's it! No need to remember or type your key path every time.
+That's it!
 
 ## Common Operations
 
