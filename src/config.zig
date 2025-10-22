@@ -113,15 +113,12 @@ pub const Config = struct {
             ignore_symlinks: ?bool,
         };
 
-        // Convert key to hex string if present (manual hex encoding for runtime slices)
+        // Convert key to hex string if present
         var hex_key_buf: [42]u8 = undefined; // Max 21 bytes = 42 hex chars
         const hex_key: ?[]const u8 = if (self.key) |key| blk: {
-            const charset = "0123456789abcdef";
-            for (key, 0..) |byte, i| {
-                hex_key_buf[i * 2] = charset[byte >> 4];
-                hex_key_buf[i * 2 + 1] = charset[byte & 0x0F];
-            }
-            break :blk hex_key_buf[0 .. key.len * 2];
+            var fbs = std.io.fixedBufferStream(&hex_key_buf);
+            try fbs.writer().printHex(key, .lower);
+            break :blk fbs.getWritten();
         } else null;
 
         const json_config = JsonConfig{
