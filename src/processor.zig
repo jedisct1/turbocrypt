@@ -401,7 +401,7 @@ test "encrypt and decrypt file" {
     defer std.fs.cwd().deleteFile(input_path) catch {};
 
     // Generate key and derive keys
-    const key: [crypto.key_length]u8 = [_]u8{42} ** crypto.key_length;
+    const key: [crypto.key_length]u8 = @splat(42);
     const derived = crypto.deriveKeys(key, null);
 
     // Encrypt file
@@ -454,8 +454,8 @@ test "decrypt with wrong key fails" {
     }
     defer std.fs.cwd().deleteFile(input_path) catch {};
 
-    const key1: [crypto.key_length]u8 = [_]u8{1} ** crypto.key_length;
-    const key2: [crypto.key_length]u8 = [_]u8{2} ** crypto.key_length;
+    const key1: [crypto.key_length]u8 = @splat(1);
+    const key2: [crypto.key_length]u8 = @splat(2);
     const derived1 = crypto.deriveKeys(key1, null);
     const derived2 = crypto.deriveKeys(key2, null);
 
@@ -495,7 +495,7 @@ test "in-place encrypt/decrypt works with absolute path" {
     const abs_path = try std.fs.cwd().realpathAlloc(allocator, relative_path);
     defer allocator.free(abs_path);
 
-    const key: [crypto.key_length]u8 = [_]u8{9} ** crypto.key_length;
+    const key: [crypto.key_length]u8 = @splat(9);
     const derived = crypto.deriveKeys(key, null);
 
     // Encrypt in place using absolute path

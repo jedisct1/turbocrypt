@@ -290,7 +290,7 @@ test "encrypt/decrypt round-trip" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Hello, World! This is a test message.";
 
@@ -313,8 +313,8 @@ test "decrypt with wrong key fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key1: [key_length]u8 = [_]u8{1} ** key_length;
-    const key2: [key_length]u8 = [_]u8{2} ** key_length;
+    const key1: [key_length]u8 = @splat(1);
+    const key2: [key_length]u8 = @splat(2);
     const derived1 = deriveKeys(key1, null);
     const derived2 = deriveKeys(key2, null);
     const plaintext = "Secret message";
@@ -332,7 +332,7 @@ test "decrypt corrupted ciphertext fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Test message";
 
@@ -352,9 +352,9 @@ test "decrypt invalid file size" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
-    const too_small = [_]u8{0} ** 32; // Less than overhead_size (48)
+    const too_small: [32]u8 = @splat(0); // Less than overhead_size (48)
 
     const result = decrypt(&too_small, derived, allocator);
     try testing.expectError(error.InvalidFileSize, result);
@@ -364,7 +364,7 @@ test "empty plaintext encryption" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "";
 
@@ -387,7 +387,7 @@ test "large data encryption" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key: [key_length]u8 = [_]u8{42} ** key_length;
+    const key: [key_length]u8 = @splat(42);
     const derived = deriveKeys(key, null);
 
     // Create 1MB of test data
@@ -416,7 +416,7 @@ test "verify valid encrypted data" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Test message for verification";
 
@@ -432,8 +432,8 @@ test "verify with wrong key fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key1: [key_length]u8 = [_]u8{1} ** key_length;
-    const key2: [key_length]u8 = [_]u8{2} ** key_length;
+    const key1: [key_length]u8 = @splat(1);
+    const key2: [key_length]u8 = @splat(2);
     const derived1 = deriveKeys(key1, null);
     const derived2 = deriveKeys(key2, null);
     const plaintext = "Secret message";
@@ -451,7 +451,7 @@ test "verify corrupted ciphertext fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Test message";
 

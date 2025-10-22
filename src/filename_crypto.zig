@@ -1,6 +1,8 @@
 const std = @import("std");
 const hctr2 = @import("hctr2");
 const base91 = @import("base91");
+const path_sep = std.fs.path.sep;
+const path_sep_str = std.fs.path.sep_str;
 
 /// Minimum filename length before encryption (padded with null bytes)
 /// HCTR2 requires minimum 16 bytes (one AES block).
@@ -189,7 +191,7 @@ pub fn encryptPath(
         components.deinit(allocator);
     }
 
-    var it = std.mem.splitScalar(u8, path, '/');
+    var it = std.mem.splitScalar(u8, path, path_sep);
     while (it.next()) |component| {
         if (component.len == 0) continue; // Skip empty components (e.g., leading slash)
 
@@ -198,7 +200,7 @@ pub fn encryptPath(
     }
 
     // Join encrypted components with '/'
-    return std.mem.join(allocator, "/", components.items);
+    return std.mem.join(allocator, path_sep_str, components.items);
 }
 
 /// Decrypt a path encrypted with encryptPath
@@ -220,7 +222,7 @@ pub fn decryptPath(
         components.deinit(allocator);
     }
 
-    var it = std.mem.splitScalar(u8, encrypted_path, '/');
+    var it = std.mem.splitScalar(u8, encrypted_path, path_sep);
     while (it.next()) |component| {
         if (component.len == 0) continue; // Skip empty components
 
@@ -229,7 +231,7 @@ pub fn decryptPath(
     }
 
     // Join decrypted components with '/'
-    return std.mem.join(allocator, "/", components.items);
+    return std.mem.join(allocator, path_sep_str, components.items);
 }
 
 // Tests
@@ -237,7 +239,7 @@ test "encrypt and decrypt filename" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key = [_]u8{0x42} ** 16;
+    const key: [16]u8 = @splat(0x42);
     const plaintext = "myfile.txt";
 
     const encrypted = try encryptFilename(allocator, plaintext, key);
@@ -253,7 +255,7 @@ test "special directory entries not encrypted" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key = [_]u8{0x42} ** 16;
+    const key: [16]u8 = @splat(0x42);
 
     const dot_encrypted = try encryptFilename(allocator, ".", key);
     defer allocator.free(dot_encrypted);
@@ -268,7 +270,7 @@ test "encrypt and decrypt path" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key = [_]u8{0x42} ** 16;
+    const key: [16]u8 = @splat(0x42);
     const plaintext_path = "dir/subdir/file.txt";
 
     const encrypted_path = try encryptPath(allocator, plaintext_path, key);
@@ -284,7 +286,7 @@ test "long filename encryption" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key = [_]u8{0x42} ** 16;
+    const key: [16]u8 = @splat(0x42);
     const long_name = "this_is_a_very_long_filename_that_exceeds_the_minimum_padding_length_of_64_bytes_for_testing.txt";
 
     const encrypted = try encryptFilename(allocator, long_name, key);
@@ -300,7 +302,7 @@ test "filename encryption length analysis" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const key = [_]u8{0x42} ** 16;
+    const key: [16]u8 = @splat(0x42);
 
     // Test with the 85-character filename from varnish
     const varnish_name = "tracing_attributes-9e84d350f1142111.tracing_attributes.cb6dd642f55c194a-cgu.15.rcgu.o";
