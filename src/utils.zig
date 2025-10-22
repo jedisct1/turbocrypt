@@ -83,7 +83,11 @@ pub fn pathExists(path: []const u8) bool {
 
 /// Check if a path is a directory
 pub fn isDirectory(path: []const u8) !bool {
-    const stat = try std.fs.cwd().statFile(path);
+    const stat = std.fs.cwd().statFile(path) catch |err| {
+        // On Windows, statFile() returns error.IsDir for directories
+        if (err == error.IsDir) return true;
+        return err;
+    };
     return stat.kind == .directory;
 }
 
