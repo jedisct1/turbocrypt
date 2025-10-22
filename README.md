@@ -104,31 +104,25 @@ turbocrypt keygen --password protected.key
 turbocrypt encrypt --key protected.key --password source/ dest/
 ```
 
-### Using Contexts for Key Separation
+### Adding an Extra Layer of Protection with Contexts
 
-Contexts allow you to derive different encryption keys from a single master key. This is useful when you want to encrypt different directories with cryptographically independent keys while managing only one master key.
+When you encrypt a directory, you can optionally specify a context string. This adds an additional secret that's required to decrypt your files - think of it as a second password that works alongside your encryption key.
+
+Here's why this matters: Even if someone gets access to your encryption key file and your password, they still won't be able to decrypt your files without knowing the context you used. The context acts as an extra safeguard that you keep in your head rather than written down.
 
 ```bash
-# Encrypt project-A with context "project-a"
-turbocrypt encrypt --key my-secret.key --context "project-a" project-a/ encrypted-a/
+# Encrypt with a context
+turbocrypt encrypt --key my-secret.key --context "my-secret-phrase" documents/ encrypted/
 
-# Encrypt project-B with context "project-b" (uses different derived key)
-turbocrypt encrypt --key my-secret.key --context "project-b" project-b/ encrypted-b/
+# To decrypt, you MUST provide the exact same context
+turbocrypt decrypt --key my-secret.key --context "my-secret-phrase" encrypted/ documents/
 
-# Must use the same context to decrypt
-turbocrypt decrypt --key my-secret.key --context "project-a" encrypted-a/ project-a/
+# Wrong context? Decryption will fail, even with the correct key
+turbocrypt decrypt --key my-secret.key --context "wrong-phrase" encrypted/ documents/
+# Error: Wrong decryption key, wrong context, or corrupted file header
 ```
 
-Important notes:
-- The context string is used for key derivation only - it's not stored in the encrypted files
-- You must remember and use the same context for both encryption and decryption
-- Different contexts produce completely independent keys, even from the same master key
-- Files encrypted without a context cannot be decrypted with a context (and vice versa)
-
-Use cases:
-- Separate encryption keys for different projects while using one master key
-- Create isolated encrypted backups with different security boundaries
-- Organize encrypted data by customer, department, or sensitivity level
+Each context creates completely different encrypted files, even when using the same key. Files encrypted with context "project-a" cannot be decrypted with context "project-b", or without any context at all.
 
 ### Encrypting in Place
 
