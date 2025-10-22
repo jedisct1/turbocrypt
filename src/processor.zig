@@ -472,7 +472,7 @@ test "decrypt with wrong key fails" {
     try testing.expectError(error.FileNotFound, file_result);
 }
 
-test "decrypt truncates existing destination file" {
+test "in-place encrypt/decrypt works with absolute path" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -480,48 +480,46 @@ test "decrypt truncates existing destination file" {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    const plaintext = "short message";
-    const input_path = "tmp/truncate_input.txt";
-    const encrypted_path = "tmp/truncate_encrypted.bin";
-    const decrypted_path = "tmp/truncate_output.txt";
+    const relative_path = "tmp/in_place_absolute.txt";
+    const plaintext = "absolute path data";
 
-    // Write plaintext input
+    // Write initial plaintext file
     {
-        const file = try std.fs.cwd().createFile(input_path, .{});
+        const file = try std.fs.cwd().createFile(relative_path, .{});
         defer file.close();
         try file.writeAll(plaintext);
     }
-    defer std.fs.cwd().deleteFile(input_path) catch {};
+    defer std.fs.cwd().deleteFile(relative_path) catch {};
 
-    // Prepare key material
-    const key: [crypto.key_length]u8 = [_]u8{7} ** crypto.key_length;
+    // Resolve absolute path for in-place operations
+    const abs_path = try std.fs.cwd().realpathAlloc(allocator, relative_path);
+    defer allocator.free(abs_path);
+
+    const key: [crypto.key_length]u8 = [_]u8{9} ** crypto.key_length;
     const derived = crypto.deriveKeys(key, null);
 
-    // Encrypt the file (produces small encrypted output -> buffered path on decrypt)
-    try encryptFile(input_path, encrypted_path, derived, allocator);
-    defer std.fs.cwd().deleteFile(encrypted_path) catch {};
+    // Encrypt in place using absolute path
+    try encryptFile(abs_path, abs_path, derived, allocator);
 
-    // Pre-create destination file with larger contents that must be truncated
+    // Verify encrypted file size increased by overhead
     {
-        const file = try std.fs.cwd().createFile(decrypted_path, .{});
+        const file = try std.fs.cwd().openFile(relative_path, .{});
         defer file.close();
-        try file.writeAll("this content should be fully replaced and truncated");
+        const stat = try file.stat();
+        try testing.expectEqual(@as(u64, plaintext.len + crypto.overhead_size), stat.size);
     }
 
-    // Decrypt to the existing destination path
-    try decryptFile(encrypted_path, decrypted_path, derived, allocator);
-    defer std.fs.cwd().deleteFile(decrypted_path) catch {};
+    // Decrypt in place back to plaintext
+    try decryptFile(abs_path, abs_path, derived, allocator);
 
-    // Verify file size matches plaintext (ensures truncation happened)
-    const file = try std.fs.cwd().openFile(decrypted_path, .{});
-    defer file.close();
-    const stat = try file.stat();
-    try testing.expectEqual(@as(u64, plaintext.len), stat.size);
-
-    // Verify content matches plaintext
-    const buf = try allocator.alloc(u8, plaintext.len);
-    defer allocator.free(buf);
-    const read = try file.readAll(buf);
-    try testing.expectEqual(@as(usize, plaintext.len), read);
-    try testing.expectEqualStrings(plaintext, buf);
+    // Confirm content restored
+    {
+        const file = try std.fs.cwd().openFile(relative_path, .{});
+        defer file.close();
+        const buf = try allocator.alloc(u8, plaintext.len);
+        defer allocator.free(buf);
+        const read = try file.readAll(buf);
+        try testing.expectEqual(@as(usize, plaintext.len), read);
+        try testing.expectEqualStrings(plaintext, buf);
+    }
 }
