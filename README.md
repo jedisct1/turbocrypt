@@ -15,6 +15,11 @@ A fast, easy-to-use, and secure command-line tool for encrypting and decrypting 
 
 ## Installation
 
+### Download Pre-Built Binaries
+
+Pre-built binaries for Linux, macOS, and Windows are available at:
+https://github.com/jedisct1/turbocrypt/releases
+
 ### Build from Source
 
 Requirements: [Zig](https://ziglang.org/download/) (master)
