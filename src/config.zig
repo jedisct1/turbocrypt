@@ -116,9 +116,12 @@ pub const Config = struct {
         // Convert key to hex string if present
         var hex_key_buf: [42]u8 = undefined; // Max 21 bytes = 42 hex chars
         const hex_key: ?[]const u8 = if (self.key) |key| blk: {
-            var fbs = std.io.fixedBufferStream(&hex_key_buf);
-            try fbs.writer().printHex(key, .lower);
-            break :blk fbs.getWritten();
+            const charset = "0123456789abcdef";
+            for (key, 0..) |byte, i| {
+                hex_key_buf[i * 2 + 0] = charset[byte >> 4];
+                hex_key_buf[i * 2 + 1] = charset[byte & 15];
+            }
+            break :blk hex_key_buf[0 .. key.len * 2];
         } else null;
 
         const json_config = JsonConfig{
@@ -129,17 +132,17 @@ pub const Config = struct {
             .ignore_symlinks = self.ignore_symlinks,
         };
 
-        // Use std.json.Stringify with pretty printing
-        var out: std.Io.Writer.Allocating = .init(allocator);
-        defer out.deinit();
+        // Use Writer.Allocating for JSON output
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
 
         var stringify: std.json.Stringify = .{
-            .writer = &out.writer,
+            .writer = &aw.writer,
             .options = .{ .whitespace = .indent_2 },
         };
         try stringify.write(json_config);
 
-        return try allocator.dupe(u8, out.written());
+        return try aw.toOwnedSlice();
     }
 
     /// Free all allocated memory
