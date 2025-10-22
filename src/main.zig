@@ -1280,9 +1280,19 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // Use SmpAllocator for release builds, DebugAllocator for debug builds
+    const builtin = @import("builtin");
+    const use_smp = builtin.mode == .ReleaseFast or builtin.mode == .ReleaseSmall;
+
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer {
+        if (!use_smp) _ = gpa.deinit();
+    }
+
+    const allocator = if (use_smp)
+        std.heap.smp_allocator
+    else
+        gpa.allocator();
 
     // Get command-line arguments
     const args = try std.process.argsAlloc(allocator);

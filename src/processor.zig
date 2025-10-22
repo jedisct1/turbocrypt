@@ -47,7 +47,7 @@ pub fn encryptFile(
 
     // Use zero-copy mmap for large files on non-Windows platforms
     if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
-        try encryptFileZeroCopy(input_file, file_size, actual_output_path, derived_keys, input_stat.mode);
+        try encryptFileZeroCopy(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode);
     } else {
         // Use buffered I/O for small files
         try encryptFileBuffered(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode);
@@ -65,6 +65,7 @@ fn encryptFileZeroCopy(
     input_size: u64,
     output_path: []const u8,
     derived_keys: crypto.DerivedKeys,
+    allocator: std.mem.Allocator,
     mode: std.fs.File.Mode,
 ) !void {
     // Advise kernel about sequential file access (before mmap for better prefetch)
@@ -80,9 +81,6 @@ fn encryptFileZeroCopy(
         0,
     ) catch {
         // Fall back to buffered I/O if mmap fails
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
         return encryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, mode);
     };
     defer {
@@ -189,7 +187,7 @@ pub fn decryptFile(
 
     // Use zero-copy mmap for large files on non-Windows platforms
     if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
-        try decryptFileZeroCopy(input_file, file_size, actual_output_path, derived_keys, input_stat.mode);
+        try decryptFileZeroCopy(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode);
     } else {
         // Use buffered I/O for small files
         try decryptFileBuffered(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode);
@@ -207,6 +205,7 @@ fn decryptFileZeroCopy(
     input_size: u64,
     output_path: []const u8,
     derived_keys: crypto.DerivedKeys,
+    allocator: std.mem.Allocator,
     mode: std.fs.File.Mode,
 ) !void {
     // Advise kernel about sequential file access (before mmap for better prefetch)
@@ -222,9 +221,6 @@ fn decryptFileZeroCopy(
         0,
     ) catch {
         // Fall back to buffered I/O if mmap fails
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
         return decryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, mode);
     };
     defer {

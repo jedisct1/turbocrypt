@@ -39,24 +39,33 @@ pub fn promptPassword(
     try stdout.writeAll(": ");
 
     var buffer: [MAX_PASSWORD_LENGTH]u8 = undefined;
-    var password1: []const u8 = undefined;
 
-    // Read until newline
     var pos: usize = 0;
+    var read_any = false;
+    var byte_buf: [1]u8 = undefined;
+
+    // Read until newline, tolerate CRLF without embedding '\r'
     while (pos < buffer.len) {
-        const bytes_read = try stdin.read(buffer[pos .. pos + 1]);
+        const bytes_read = try stdin.read(&byte_buf);
         if (bytes_read == 0) {
-            if (pos == 0) return error.EndOfStream;
+            if (!read_any) return error.EndOfStream;
             break;
         }
-        if (buffer[pos] == '\n') {
-            password1 = buffer[0..pos];
+        read_any = true;
+
+        const byte = byte_buf[0];
+        if (byte == '\n') {
             break;
         }
+        if (byte == '\r') {
+            continue;
+        }
+
+        buffer[pos] = byte;
         pos += 1;
-    } else {
-        password1 = buffer[0..pos];
     }
+
+    const password1 = buffer[0..pos];
 
     if (is_terminal) {
         // Print newline since echo was disabled
@@ -68,24 +77,32 @@ pub fn promptPassword(
         try stdout.writeAll("Confirm password: ");
 
         var buffer2: [MAX_PASSWORD_LENGTH]u8 = undefined;
-        var password2: []const u8 = undefined;
 
-        // Read until newline
         var pos2: usize = 0;
+        var read_any2 = false;
+        var byte_buf2: [1]u8 = undefined;
+
         while (pos2 < buffer2.len) {
-            const bytes_read = try stdin.read(buffer2[pos2 .. pos2 + 1]);
+            const bytes_read = try stdin.read(&byte_buf2);
             if (bytes_read == 0) {
-                if (pos2 == 0) return error.EndOfStream;
+                if (!read_any2) return error.EndOfStream;
                 break;
             }
-            if (buffer2[pos2] == '\n') {
-                password2 = buffer2[0..pos2];
+            read_any2 = true;
+
+            const byte = byte_buf2[0];
+            if (byte == '\n') {
                 break;
             }
+            if (byte == '\r') {
+                continue;
+            }
+
+            buffer2[pos2] = byte;
             pos2 += 1;
-        } else {
-            password2 = buffer2[0..pos2];
         }
+
+        const password2 = buffer2[0..pos2];
 
         if (is_terminal) {
             try stdout.writeAll("\n");
