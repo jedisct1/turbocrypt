@@ -251,6 +251,25 @@ pub fn decryptZeroCopy(
     );
 }
 
+/// Verify only the header MAC without decrypting (quick mode)
+/// This is faster than full verification but only checks if the key is correct
+/// Does not verify data integrity (authentication tag)
+pub fn verifyHeaderOnly(
+    encrypted: []const u8,
+    derived_keys: DerivedKeys,
+) !void {
+    // Parse encrypted data
+    const parsed = try parseEncrypted(encrypted);
+
+    // Verify header MAC using derived header_mac_key
+    const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
+    if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
+        return error.InvalidHeaderMAC;
+    }
+
+    // If we reach here, the header MAC is valid (correct key)
+}
+
 /// Verify encrypted data without decrypting (checks header MAC and authentication tag)
 /// This is useful for integrity checking without exposing plaintext
 /// Returns Ok if verification succeeds, error otherwise

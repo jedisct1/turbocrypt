@@ -26,8 +26,9 @@ const usage_text =
     \\  turbocrypt decrypt [--key <key-file>] [--password] <source> <destination> [options]
     \\      Decrypt a file or directory
     \\
-    \\  turbocrypt verify [--key <key-file>] [--password] <source> [options]
+    \\  turbocrypt verify [--key <key-file>] [--password] [--quick] <source> [options]
     \\      Verify integrity of encrypted files without decrypting
+    \\      Use --quick to only check header MAC (faster, but doesn't verify data integrity)
     \\
     \\  turbocrypt config set-key <key-file>
     \\      Set the default key file path
@@ -76,6 +77,8 @@ const usage_text =
     \\                       Supports: *.ext (extensions), dir/ (directories),
     \\                       exact/path (exact matches), prefix* (wildcards)
     \\  --ignore-symlinks    Ignore symbolic links (skip them during processing)
+    \\  --quick              (verify only) Only check header MAC, skip full verification
+    \\                       Faster but doesn't verify data integrity - only checks key correctness
     \\
     \\Examples:
     \\  turbocrypt keygen secret.key
@@ -84,6 +87,7 @@ const usage_text =
     \\  turbocrypt encrypt documents/ encrypted/
     \\  turbocrypt decrypt encrypted/ decrypted/
     \\  turbocrypt verify encrypted/
+    \\  turbocrypt verify --quick encrypted/
     \\  turbocrypt encrypt documents/ encrypted/
     \\  turbocrypt encrypt --key other.key documents/ encrypted/
     \\  turbocrypt encrypt --in-place --threads 8 sensitive-data/
@@ -153,6 +157,7 @@ const Options = struct {
     enc_suffix: bool = false,
     encrypt_filenames: bool = false,
     ignore_symlinks: bool = false,
+    quick: bool = false,
     exclude_patterns: std.ArrayList([]const u8) = std.ArrayList([]const u8){},
 };
 
@@ -215,6 +220,8 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
             opts.ignore_symlinks = true;
         } else if (std.mem.eql(u8, arg, "--password")) {
             opts.password = true;
+        } else if (std.mem.eql(u8, arg, "--quick")) {
+            opts.quick = true;
         } else if (std.mem.eql(u8, arg, "--exclude")) {
             if (i + 1 >= args.len) {
                 std.debug.print("Error: --exclude requires a value\n", .{});
@@ -693,7 +700,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
 
             // Phase 2: Process all collected files
             var tracker = progress.ProgressTracker.init(scan_ctx.file_paths.items.len, scan_ctx.total_bytes);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false);
             defer pool.deinit();
 
             try tracker.startDisplay();
@@ -732,7 +739,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             std.debug.print("Scanning and {s}...\n", .{if (is_encrypt) "encrypting" else "decrypting"});
 
             var tracker = progress.ProgressTracker.init(0, 0);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false);
             defer pool.deinit();
 
             // Start worker threads BEFORE scanning so they can process files concurrently
@@ -908,7 +915,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
         // Verify all collected files
         var tracker = progress.ProgressTracker.init(scan_ctx.file_paths.items.len, scan_ctx.total_bytes);
-        var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
+        var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick);
         defer pool.deinit();
 
         try tracker.startDisplay();
@@ -946,7 +953,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
         std.debug.print("Verifying file: {s}\n", .{source_path});
 
-        processor.verifyFile(source_path, derived_keys, allocator) catch |err| {
+        processor.verifyFile(source_path, derived_keys, allocator, opts.quick) catch |err| {
             std.debug.print("\n[VERIFY FAILED] {s}\n", .{source_path});
             worker.printErrorDetails(err, false);
             return err;
@@ -1282,6 +1289,12 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
 pub fn main() !void {
     // Use SmpAllocator for release builds, DebugAllocator for debug builds
     const builtin = @import("builtin");
+
+    // Print build mode if Debug
+    if (builtin.mode == .Debug) {
+        std.debug.print("Debug build\n", .{});
+    }
+
     const use_smp = builtin.mode == .ReleaseFast or builtin.mode == .ReleaseSmall;
 
     var gpa = std.heap.DebugAllocator(.{}){};

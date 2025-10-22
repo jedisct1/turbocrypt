@@ -176,6 +176,7 @@ pub const WorkerPool = struct {
     progress_tracker: *progress.ProgressTracker,
     error_mutex: std.Thread.Mutex,
     has_errors: bool,
+    quick_verify: bool,
 
     const Self = @This();
 
@@ -185,6 +186,7 @@ pub const WorkerPool = struct {
         thread_count: u32,
         derived_keys: crypto.DerivedKeys,
         progress_tracker: *progress.ProgressTracker,
+        quick_verify: bool,
     ) !Self {
         const threads = try allocator.alloc(std.Thread, thread_count);
         errdefer allocator.free(threads);
@@ -198,6 +200,7 @@ pub const WorkerPool = struct {
             .progress_tracker = progress_tracker,
             .error_mutex = .{},
             .has_errors = false,
+            .quick_verify = quick_verify,
         };
     }
 
@@ -269,6 +272,7 @@ pub const WorkerPool = struct {
                             job.source_path,
                             worker.derived_keys,
                             thread_allocator,
+                            worker.quick_verify,
                         ) catch |err| {
                             handleJobError(worker, job, err, "[VERIFY FAILED]", false);
                             continue; // Continue with remaining files in batch
@@ -354,7 +358,7 @@ test "worker pool initialization" {
     const derived = crypto.deriveKeys(key, null);
     var tracker = progress.ProgressTracker.init(0, 0);
 
-    var pool = try WorkerPool.init(allocator, 4, derived, &tracker);
+    var pool = try WorkerPool.init(allocator, 4, derived, &tracker, false);
     defer pool.deinit();
 
     try testing.expect(!pool.hadErrors());

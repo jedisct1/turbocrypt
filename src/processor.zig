@@ -305,10 +305,12 @@ fn decryptFileBuffered(
 
 /// Verify a single encrypted file without decrypting it
 /// Checks header MAC and AEGIS authentication tag
+/// If quick is true, only verifies header MAC (faster but doesn't check data integrity)
 pub fn verifyFile(
     input_path: []const u8,
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
+    quick: bool,
 ) !void {
     // Open input file
     const input_file = try std.fs.cwd().openFile(input_path, .{});
@@ -319,9 +321,9 @@ pub fn verifyFile(
 
     // Use mmap for large files on non-Windows platforms, otherwise buffered I/O
     if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
-        try verifyFileZeroCopy(input_file, file_size, derived_keys, allocator);
+        try verifyFileZeroCopy(input_file, file_size, derived_keys, allocator, quick);
     } else {
-        try verifyFileBuffered(input_file, file_size, derived_keys, allocator);
+        try verifyFileBuffered(input_file, file_size, derived_keys, allocator, quick);
     }
 }
 
@@ -331,6 +333,7 @@ fn verifyFileZeroCopy(
     input_size: u64,
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
+    quick: bool,
 ) !void {
     // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
@@ -345,7 +348,7 @@ fn verifyFileZeroCopy(
         0,
     ) catch {
         // Fall back to buffered I/O if mmap fails
-        return verifyFileBuffered(input_file, input_size, derived_keys, allocator);
+        return verifyFileBuffered(input_file, input_size, derived_keys, allocator, quick);
     };
     defer {
         // Drop pages from cache after processing to free memory
@@ -359,7 +362,11 @@ fn verifyFileZeroCopy(
     io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
 
     // Verify the encrypted data
-    try crypto.verify(input_mapped, derived_keys, allocator);
+    if (quick) {
+        try crypto.verifyHeaderOnly(input_mapped, derived_keys);
+    } else {
+        try crypto.verify(input_mapped, derived_keys, allocator);
+    }
 }
 
 /// Verify using buffered I/O for small files
@@ -368,13 +375,18 @@ fn verifyFileBuffered(
     file_size: u64,
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
+    quick: bool,
 ) !void {
     // Read encrypted file
     const encrypted = try readBuffered(input_file, file_size, allocator);
     defer allocator.free(encrypted);
 
     // Verify
-    try crypto.verify(encrypted, derived_keys, allocator);
+    if (quick) {
+        try crypto.verifyHeaderOnly(encrypted, derived_keys);
+    } else {
+        try crypto.verify(encrypted, derived_keys, allocator);
+    }
 }
 
 test "encrypt and decrypt file" {
