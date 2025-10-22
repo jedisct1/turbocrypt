@@ -17,7 +17,7 @@ A fast, easy-to-use, and secure command-line tool for encrypting and decrypting 
 
 ### Build from Source
 
-Requirements: [Zig](https://ziglang.org/download/)
+Requirements: [Zig](https://ziglang.org/download/) (master)
 
 ```bash
 git clone https://github.com/jedisct1/turbocrypt.git
