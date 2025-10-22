@@ -320,7 +320,7 @@ Options available for most commands:
 
 ## File Portability
 
-Encrypted files can be freely moved between directories. The encryption intentionally does not depend on the file's path or parent directories. This means you can reorganize your encrypted files however you like without needing to re-encrypt them.
+Encrypted files can be freely moved between directories and renamed. The encryption intentionally does not depend on the file's path, filename, or parent directories. This means you can reorganize and rename your encrypted files however you like without needing to re-encrypt them.
 
 ### Filename Encryption
 
