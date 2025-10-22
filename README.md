@@ -104,6 +104,32 @@ turbocrypt keygen --password protected.key
 turbocrypt encrypt --key protected.key --password source/ dest/
 ```
 
+### Using Contexts for Key Separation
+
+Contexts allow you to derive different encryption keys from a single master key. This is useful when you want to encrypt different directories with cryptographically independent keys while managing only one master key.
+
+```bash
+# Encrypt project-A with context "project-a"
+turbocrypt encrypt --key my-secret.key --context "project-a" project-a/ encrypted-a/
+
+# Encrypt project-B with context "project-b" (uses different derived key)
+turbocrypt encrypt --key my-secret.key --context "project-b" project-b/ encrypted-b/
+
+# Must use the same context to decrypt
+turbocrypt decrypt --key my-secret.key --context "project-a" encrypted-a/ project-a/
+```
+
+Important notes:
+- The context string is used for key derivation only - it's not stored in the encrypted files
+- You must remember and use the same context for both encryption and decryption
+- Different contexts produce completely independent keys, even from the same master key
+- Files encrypted without a context cannot be decrypted with a context (and vice versa)
+
+Use cases:
+- Separate encryption keys for different projects while using one master key
+- Create isolated encrypted backups with different security boundaries
+- Organize encrypted data by customer, department, or sensitivity level
+
 ### Encrypting in Place
 
 Sometimes you want to encrypt files directly without creating copies:
@@ -216,6 +242,9 @@ turbocrypt encrypt --key KEY --encrypt-filenames source/ dest/
 # Exclude certain files
 turbocrypt encrypt --key KEY --exclude "*.log" --exclude ".git/" source/ dest/
 
+# Use context for key derivation
+turbocrypt encrypt --key KEY --context "project-x" source/ dest/
+
 # Add .enc suffix automatically
 turbocrypt encrypt --key KEY --enc-suffix source/ dest/
 
@@ -231,6 +260,9 @@ turbocrypt decrypt --key KEY source dest
 
 # Decrypt in place
 turbocrypt decrypt --key KEY --in-place encrypted/
+
+# Decrypt with context (must match encryption context)
+turbocrypt decrypt --key KEY --context "project-x" encrypted/ decrypted/
 
 # Remove .enc suffix automatically
 turbocrypt decrypt --key KEY --enc-suffix encrypted/ decrypted/
@@ -282,6 +314,7 @@ Options available for most commands:
 
 - `--key <path>` - Path to key file (required unless set in config)
 - `--password` - Prompt for password (for password-protected keys)
+- `--context <string>` - Context string for key derivation (creates independent key namespace)
 - `--threads <n>` - Number of parallel threads (default: CPU count, max 64)
 - `--in-place` - Overwrite source files instead of creating new ones
 - `--encrypt-filenames` - Encrypt filenames (cannot be used with --in-place)
@@ -345,14 +378,15 @@ Settings are applied in this order (highest priority first):
 
 ## Troubleshooting
 
-### "Wrong decryption key or corrupted file header"
+### "Wrong decryption key, wrong context, or corrupted file header"
 
 This error means either:
 - You're using the wrong key file
+- You're using the wrong context (or missing a required context)
 - The file wasn't encrypted with TurboCrypt
 - The file header is corrupted
 
-Double-check you're using the same key that encrypted the file.
+Double-check you're using the same key and context that were used to encrypt the file.
 
 ### "Authentication failed" during decryption
 

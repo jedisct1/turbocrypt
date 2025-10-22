@@ -9,8 +9,8 @@ pub fn printErrorDetails(err: anyerror, is_encrypt: bool) void {
 
     switch (err) {
         error.InvalidHeaderMAC => {
-            std.debug.print("Wrong decryption key or corrupted file header\n", .{});
-            std.debug.print("        Suggestion: Verify you're using the correct key file\n", .{});
+            std.debug.print("Wrong decryption key, wrong context, or corrupted file header\n", .{});
+            std.debug.print("        Suggestion: Verify you're using the correct key file and context (if any)\n", .{});
         },
         error.AuthenticationFailed => {
             std.debug.print("Authentication failed - file may be corrupted or wrong key\n", .{});
