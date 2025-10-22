@@ -244,7 +244,8 @@ test "Config - default config" {
 test "Config - to/from JSON" {
     const allocator = std.testing.allocator;
 
-    const test_key = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10 };
+    const test_key_data = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10 };
+    const test_key = try allocator.dupe(u8, &test_key_data);
 
     var config = Config{
         .key = test_key,
@@ -258,19 +259,19 @@ test "Config - to/from JSON" {
 
     // Serialize
     const json_str = try config.toJson(allocator);
-    defer allocator.free(json_str);
 
     // Deserialize
     var config2 = try Config.fromJson(allocator, json_str);
-    defer config2.deinit(allocator);
 
-    try std.testing.expectEqualSlices(u8, &test_key, &config2.key.?);
+    try std.testing.expectEqualSlices(u8, &test_key_data, config2.key.?);
     try std.testing.expectEqual(@as(u32, 8), config2.threads.?);
     try std.testing.expectEqual(@as(usize, 8388608), config2.buffer_size.?);
     try std.testing.expectEqual(@as(usize, 2), config2.exclude_patterns.len);
     try std.testing.expectEqualStrings("*.log", config2.exclude_patterns[0]);
     try std.testing.expectEqualStrings(".git/", config2.exclude_patterns[1]);
 
-    // Don't deinit config since we want to keep the strings for config2
-    allocator.free(config.exclude_patterns);
+    // Cleanup
+    config2.deinit(allocator);
+    allocator.free(json_str);
+    config.deinit(allocator);
 }

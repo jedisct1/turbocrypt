@@ -15,6 +15,14 @@ const max_stack_filename_length = 256;
 /// Maximum base91 encoded size for stack buffer (conservative upper bound)
 const max_stack_encoded_length = 384;
 
+/// Filesystem filename length limit (ext4, APFS, NTFS all support 255 bytes)
+const filesystem_filename_limit = 255;
+
+/// Error for when encrypted filename exceeds filesystem limits
+pub const FilenameError = error{
+    EncryptedFilenameTooLong,
+};
+
 /// Encrypt a single filename component using HCTR2 and base91 encoding
 ///
 /// The filename is padded to a minimum of 16 bytes (HCTR2 minimum block size) with null bytes (0x00),
@@ -63,6 +71,11 @@ pub fn encryptFilename(
         var encode_buf: [max_stack_encoded_length]u8 = undefined;
         const encoded = try base91.filesystem.encode(&encode_buf, ciphertext);
 
+        // Validate that encrypted filename fits within filesystem limit
+        if (encoded.len > filesystem_filename_limit) {
+            return FilenameError.EncryptedFilenameTooLong;
+        }
+
         // Return owned copy
         return allocator.dupe(u8, encoded);
     } else {
@@ -89,6 +102,12 @@ pub fn encryptFilename(
         errdefer allocator.free(encode_buf);
 
         const encoded = try base91.filesystem.encode(encode_buf, ciphertext);
+
+        // Validate that encrypted filename fits within filesystem limit
+        if (encoded.len > filesystem_filename_limit) {
+            allocator.free(encode_buf);
+            return FilenameError.EncryptedFilenameTooLong;
+        }
 
         // Resize to actual encoded length
         return allocator.realloc(encode_buf, encoded.len);
@@ -298,31 +317,21 @@ test "long filename encryption" {
     try testing.expectEqualStrings(long_name, decrypted);
 }
 
-test "filename encryption length analysis" {
+test "filename encryption length validation" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
     const key: [16]u8 = @splat(0x42);
 
-    // Test with the 85-character filename from varnish
+    // Test that typical filenames encrypt successfully and fit within limit
     const varnish_name = "tracing_attributes-9e84d350f1142111.tracing_attributes.cb6dd642f55c194a-cgu.15.rcgu.o";
     const encrypted = try encryptFilename(allocator, varnish_name, key);
     defer allocator.free(encrypted);
+    try testing.expect(encrypted.len <= filesystem_filename_limit);
 
-    std.debug.print("\nFilename encryption length analysis:\n", .{});
-    std.debug.print("  Original: '{s}' ({d} bytes)\n", .{ varnish_name, varnish_name.len });
-    std.debug.print("  Encrypted: '{s}' ({d} bytes)\n", .{ encrypted, encrypted.len });
-    std.debug.print("  Filesystem limit: 255 bytes\n", .{});
-    if (encrypted.len > 255) {
-        std.debug.print("  ❌ ERROR: Exceeds limit by {d} bytes\n", .{encrypted.len - 255});
-    } else {
-        std.debug.print("  ✓ OK: Fits within limit ({d} bytes remaining)\n", .{255 - encrypted.len});
-    }
-
-    // Test various lengths to find the breaking point
-    std.debug.print("\nTesting various filename lengths:\n", .{});
-    const test_lengths = [_]usize{ 50, 100, 150, 200, 205, 210, 215, 220 };
-    for (test_lengths) |len| {
+    // Test that filenames up to ~205 bytes encrypt successfully
+    const safe_lengths = [_]usize{ 50, 100, 150, 200, 205 };
+    for (safe_lengths) |len| {
         const test_name = try allocator.alloc(u8, len);
         defer allocator.free(test_name);
         @memset(test_name, 'a');
@@ -330,7 +339,17 @@ test "filename encryption length analysis" {
         const enc = try encryptFilename(allocator, test_name, key);
         defer allocator.free(enc);
 
-        const status = if (enc.len > 255) "❌ TOO LONG" else "✓ OK";
-        std.debug.print("  {s} | {d:3} bytes -> {d:3} bytes\n", .{ status, len, enc.len });
+        try testing.expect(enc.len <= filesystem_filename_limit);
+    }
+
+    // Test that filenames over ~205 bytes return EncryptedFilenameTooLong error
+    const unsafe_lengths = [_]usize{ 210, 215, 220 };
+    for (unsafe_lengths) |len| {
+        const test_name = try allocator.alloc(u8, len);
+        defer allocator.free(test_name);
+        @memset(test_name, 'a');
+
+        const result = encryptFilename(allocator, test_name, key);
+        try testing.expectError(FilenameError.EncryptedFilenameTooLong, result);
     }
 }

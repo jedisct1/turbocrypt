@@ -194,23 +194,23 @@ test "directory walking" {
             _ = full_path;
             const self: *@This() = @ptrCast(@alignCast(ctx));
             if (is_directory) {
-                try self.dirs.append(try self.alloc.dupe(u8, relative_path));
+                try self.dirs.append(self.alloc, try self.alloc.dupe(u8, relative_path));
             } else {
-                try self.files.append(try self.alloc.dupe(u8, relative_path));
+                try self.files.append(self.alloc, try self.alloc.dupe(u8, relative_path));
             }
         }
     };
 
     var ctx = Context{
-        .files = std.ArrayList([]const u8).init(allocator),
-        .dirs = std.ArrayList([]const u8).init(allocator),
+        .files = std.ArrayList([]const u8){},
+        .dirs = std.ArrayList([]const u8){},
         .alloc = allocator,
     };
     defer {
         for (ctx.files.items) |f| allocator.free(f);
-        ctx.files.deinit();
+        ctx.files.deinit(allocator);
         for (ctx.dirs.items) |d| allocator.free(d);
-        ctx.dirs.deinit();
+        ctx.dirs.deinit(allocator);
     }
 
     try walkDirectory("tmp/walk_test", Context.callback, &ctx, allocator, false);
@@ -295,18 +295,18 @@ test "symlinks to files are followed" {
             _ = full_path;
             const self: *@This() = @ptrCast(@alignCast(ctx));
             if (!is_directory) {
-                try self.files.append(try self.alloc.dupe(u8, relative_path));
+                try self.files.append(self.alloc, try self.alloc.dupe(u8, relative_path));
             }
         }
     };
 
     var ctx = Context{
-        .files = std.ArrayList([]const u8).init(allocator),
+        .files = std.ArrayList([]const u8){},
         .alloc = allocator,
     };
     defer {
         for (ctx.files.items) |f| allocator.free(f);
-        ctx.files.deinit();
+        ctx.files.deinit(allocator);
     }
 
     try walkDirectory("tmp/symlink_test", Context.callback, &ctx, allocator, false);
@@ -381,18 +381,18 @@ test "ignore symlinks flag" {
                 _ = full_path;
                 const self: *@This() = @ptrCast(@alignCast(ctx));
                 if (!is_directory) {
-                    try self.files.append(try self.alloc.dupe(u8, relative_path));
+                    try self.files.append(self.alloc, try self.alloc.dupe(u8, relative_path));
                 }
             }
         };
 
         var ctx = Context{
-            .files = std.ArrayList([]const u8).init(allocator),
+            .files = std.ArrayList([]const u8){},
             .alloc = allocator,
         };
         defer {
             for (ctx.files.items) |f| allocator.free(f);
-            ctx.files.deinit();
+            ctx.files.deinit(allocator);
         }
 
         try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, false);
@@ -416,18 +416,18 @@ test "ignore symlinks flag" {
                 _ = full_path;
                 const self: *@This() = @ptrCast(@alignCast(ctx));
                 if (!is_directory) {
-                    try self.files.append(try self.alloc.dupe(u8, relative_path));
+                    try self.files.append(self.alloc, try self.alloc.dupe(u8, relative_path));
                 }
             }
         };
 
         var ctx = Context{
-            .files = std.ArrayList([]const u8).init(allocator),
+            .files = std.ArrayList([]const u8){},
             .alloc = allocator,
         };
         defer {
             for (ctx.files.items) |f| allocator.free(f);
-            ctx.files.deinit();
+            ctx.files.deinit(allocator);
         }
 
         try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, true);

@@ -125,7 +125,10 @@ fn handleDirectory(
                 relative_path,
             });
             std.debug.print("        Reason: {}\n", .{err});
-            if (!is_encrypt) {
+            if (err == filename_crypto.FilenameError.EncryptedFilenameTooLong) {
+                std.debug.print("        Suggestion: Directory name is too long. Encrypted names must fit within 255 bytes.\n", .{});
+                std.debug.print("                   Consider shortening the directory name (max ~205 bytes for encryption).\n", .{});
+            } else if (!is_encrypt) {
                 std.debug.print("        Suggestion: Ensure the directory was encrypted with --enc-filenames using the same key\n", .{});
             }
             return err;
@@ -519,7 +522,10 @@ const ScanAndProcessContext = struct {
                     relative_path,
                 });
                 std.debug.print("        Reason: {}\n", .{err});
-                if (!self.is_encrypt) {
+                if (err == filename_crypto.FilenameError.EncryptedFilenameTooLong) {
+                    std.debug.print("        Suggestion: Filename is too long. Encrypted names must fit within 255 bytes.\n", .{});
+                    std.debug.print("                   Consider shortening the filename (max ~205 bytes for encryption).\n", .{});
+                } else if (!self.is_encrypt) {
                     std.debug.print("        Suggestion: Ensure the file was encrypted with --enc-filenames using the same key\n", .{});
                 }
                 return err;
@@ -1351,4 +1357,17 @@ pub fn main() !void {
         printUsage();
         std.process.exit(1);
     }
+}
+
+// Test references - ensures tests from imported modules are included
+test {
+    _ = @import("keygen.zig");
+    _ = @import("keyloader.zig");
+    _ = @import("config.zig");
+    _ = @import("crypto.zig");
+    _ = @import("processor.zig");
+    _ = @import("utils.zig");
+    _ = @import("worker.zig");
+    _ = @import("progress.zig");
+    _ = @import("filename_crypto.zig");
 }
