@@ -73,6 +73,12 @@ turbocrypt verify encrypted-documents/
 
 This confirms all files were encrypted successfully and haven't been corrupted or tampered with.
 
+For a faster check that just verifies you have the correct key:
+
+```bash
+turbocrypt verify --quick encrypted-documents/
+```
+
 ### Step 5: Decrypt Files
 
 Decrypt a file:
@@ -173,9 +179,16 @@ turbocrypt verify --key my-secret.key encrypted-file.enc
 
 # Verify an entire directory
 turbocrypt verify --key my-secret.key encrypted-documents/
+
+# Quick verification (only checks if you have the correct key)
+turbocrypt verify --quick --key my-secret.key encrypted-documents/
 ```
 
 This is useful for checking backups or verifying files after transferring them.
+
+**Quick vs Full Verification:**
+- `--quick`: Only verifies the header MAC (checks if you have the correct key). Much faster but doesn't verify data integrity.
+- Full verification (default): Checks both the header MAC and content, ensuring both key correctness and data integrity.
 
 ### Setting Up Defaults
 
@@ -265,11 +278,17 @@ turbocrypt decrypt --key KEY --enc-suffix encrypted/ decrypted/
 ### Verification
 
 ```bash
-# Verify file integrity
+# Verify file integrity (full verification)
 turbocrypt verify --key KEY encrypted-file.enc
 
-# Verify directory
+# Verify directory (full verification)
 turbocrypt verify --key KEY encrypted-directory/
+
+# Quick verification (only checks key correctness, not data integrity)
+turbocrypt verify --quick --key KEY encrypted-directory/
+
+# Quick verification with context
+turbocrypt verify --quick --key KEY --context "project-x" encrypted/
 ```
 
 ### Configuration
@@ -315,6 +334,7 @@ Options available for most commands:
 - `--enc-suffix` - Add/remove .enc suffix automatically
 - `--exclude <pattern>` - Skip files matching pattern (can use multiple times)
 - `--ignore-symlinks` - Skip symbolic links
+- `--quick` - (verify only) Only check header MAC, skip full verification - faster but doesn't verify data integrity
 - `--force` - Overwrite existing files without asking
 - `--buffer-size <bytes>` - Set I/O buffer size (default: 4MB)
 
