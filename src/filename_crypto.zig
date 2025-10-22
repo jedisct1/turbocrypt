@@ -3,7 +3,9 @@ const hctr2 = @import("hctr2");
 const base91 = @import("base91");
 
 /// Minimum filename length before encryption (padded with null bytes)
-const min_padded_length = 64;
+/// HCTR2 requires minimum 16 bytes (one AES block).
+/// This prevents path length explosion for deeply nested directories.
+const min_padded_length = 16;
 
 /// Maximum filename length to use stack buffers (typical filesystem limit is 255)
 const max_stack_filename_length = 256;
@@ -13,7 +15,7 @@ const max_stack_encoded_length = 384;
 
 /// Encrypt a single filename component using HCTR2 and base91 encoding
 ///
-/// The filename is padded to a minimum of 64 bytes with null bytes (0x00),
+/// The filename is padded to a minimum of 16 bytes (HCTR2 minimum block size) with null bytes (0x00),
 /// encrypted with HCTR2 using an empty tweak, then encoded with base91
 /// using the filesystem-safe alphabet.
 ///
@@ -284,4 +286,41 @@ test "long filename encryption" {
     defer allocator.free(decrypted);
 
     try testing.expectEqualStrings(long_name, decrypted);
+}
+
+test "filename encryption length analysis" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const key = [_]u8{0x42} ** 16;
+
+    // Test with the 85-character filename from varnish
+    const varnish_name = "tracing_attributes-9e84d350f1142111.tracing_attributes.cb6dd642f55c194a-cgu.15.rcgu.o";
+    const encrypted = try encryptFilename(allocator, varnish_name, key);
+    defer allocator.free(encrypted);
+
+    std.debug.print("\nFilename encryption length analysis:\n", .{});
+    std.debug.print("  Original: '{s}' ({d} bytes)\n", .{ varnish_name, varnish_name.len });
+    std.debug.print("  Encrypted: '{s}' ({d} bytes)\n", .{ encrypted, encrypted.len });
+    std.debug.print("  Filesystem limit: 255 bytes\n", .{});
+    if (encrypted.len > 255) {
+        std.debug.print("  ❌ ERROR: Exceeds limit by {d} bytes\n", .{encrypted.len - 255});
+    } else {
+        std.debug.print("  ✓ OK: Fits within limit ({d} bytes remaining)\n", .{255 - encrypted.len});
+    }
+
+    // Test various lengths to find the breaking point
+    std.debug.print("\nTesting various filename lengths:\n", .{});
+    const test_lengths = [_]usize{ 50, 100, 150, 200, 205, 210, 215, 220 };
+    for (test_lengths) |len| {
+        const test_name = try allocator.alloc(u8, len);
+        defer allocator.free(test_name);
+        @memset(test_name, 'a');
+
+        const enc = try encryptFilename(allocator, test_name, key);
+        defer allocator.free(enc);
+
+        const status = if (enc.len > 255) "❌ TOO LONG" else "✓ OK";
+        std.debug.print("  {s} | {d:3} bytes -> {d:3} bytes\n", .{ status, len, enc.len });
+    }
 }
