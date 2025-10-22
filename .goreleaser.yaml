@@ -112,7 +112,7 @@ nfpms:
     maintainer: Frank Denis <github@pureftpd.org>
     description: |
       Fast, easy-to-use, and secure command-line tool for encrypting and
-      decrypting files or entire directory trees using AEGIS-128X2.
+      decrypting files or entire directory trees .
     license: MIT
     formats:
       - deb
@@ -126,7 +126,7 @@ nfpms:
         dst: /usr/share/doc/turbocrypt/README.md
     rpm:
       group: Applications/File
-      summary: High-performance file encryption using AEGIS-128X2
+      summary: High-performance file and directoryencryption tool
 
 # Source archive
 source:
@@ -149,7 +149,7 @@ release:
   header: |
     ## TurboCrypt {{ .Tag }} ({{ .Date }})
 
-    Fast, secure file encryption using AEGIS-128X2.
+    High-performance, secure and easy to use file encryption tool.
 
     ### Installation
 
