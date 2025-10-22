@@ -24,6 +24,24 @@ builds:
       pre:
         - echo "Building for {{ .Target }} with baseline+aes+avx+pclmul"
 
+  # x86_64 builds with AVX2+VAES (for modern CPUs)
+  - id: turbocrypt-x86_64-avx2-vaes
+    builder: zig
+    binary: turbocrypt
+    flags:
+      - -Doptimize=ReleaseFast
+      - -Dcpu=baseline+aes+avx+avx2+pclmul+vaes
+    targets:
+      # Linux
+      - x86_64-linux-gnu
+      # macOS (will be merged into universal binary)
+      - x86_64-macos
+      # Windows
+      - x86_64-windows-gnu
+    hooks:
+      pre:
+        - echo "Building for {{ .Target }} with baseline+aes+avx+avx2+pclmul+vaes"
+
   # ARM64 builds with native features
   - id: turbocrypt-aarch64
     builder: zig
@@ -40,15 +58,27 @@ builds:
 
 # Create universal binaries for macOS
 universal_binaries:
+  # Standard universal binary (baseline x86_64 + aarch64)
   - id: turbocrypt-universal
     ids:
       - turbocrypt-x86_64
       - turbocrypt-aarch64
     replace: true
     name_template: turbocrypt
+  # AVX2+VAES universal binary (modern x86_64 + aarch64)
+  - id: turbocrypt-universal-avx2-vaes
+    ids:
+      - turbocrypt-x86_64-avx2-vaes
+      - turbocrypt-aarch64
+    replace: false
+    name_template: turbocrypt
 
 archives:
-  - id: default
+  # Standard baseline build archives
+  - id: baseline
+    ids:
+      - turbocrypt-x86_64
+      - turbocrypt-aarch64
     formats:
       - tar.gz
     name_template: >-
@@ -59,6 +89,25 @@ archives:
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+  # AVX2+VAES build archives (for modern CPUs)
+  - id: avx2-vaes
+    ids:
+      - turbocrypt-x86_64-avx2-vaes
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64-avx2-vaes
+      {{- else }}{{ .Arch }}{{ end }}
     format_overrides:
       - goos: windows
         formats:
@@ -95,9 +144,12 @@ changelog:
     - title: Others
       order: 999
 
-# Linux packages (deb, rpm, apk)
+# Linux packages (deb, rpm, apk) - baseline builds only for maximum compatibility
 nfpms:
   - id: turbocrypt
+    ids:
+      - turbocrypt-x86_64
+      - turbocrypt-aarch64
     package_name: turbocrypt
     file_name_template: >-
       {{ .ProjectName }}_
