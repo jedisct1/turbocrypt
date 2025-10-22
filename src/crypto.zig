@@ -12,9 +12,41 @@ pub const overhead_size = header_size + tag_length; // 48 bytes
 /// Domain separator for version 1 of TurboCrypt format
 const domain_separator = "TC01";
 
-/// Generate a header MAC for the given nonce and key
-/// MAC = Aegis128LMac_128(key, "TC01" || nonce)
-fn computeHeaderMac(nonce: [nonce_length]u8, key: [key_length]u8) [mac_length]u8 {
+/// Derived keys from master key using TurboSHAKE128
+pub const DerivedKeys = struct {
+    header_mac_key: [16]u8,
+    encryption_key: [16]u8,
+    filename_key: [16]u8,
+};
+
+/// Derive three separate keys from the master key using TurboSHAKE128
+/// Input: master_key || "turbocrypt" (16 + 10 = 26 bytes)
+/// Output: 48 bytes split into three 16-byte keys
+pub fn deriveKeys(master_key: [key_length]u8) DerivedKeys {
+    // Import TurboShake128 from std.crypto.hash.sha3
+    const sha3 = @import("std").crypto.hash.sha3;
+    const TurboShake = sha3.TurboShake128(null);
+    var shake = TurboShake.init(.{});
+
+    // Feed input: master_key || "turbocrypt"
+    shake.update(&master_key);
+    shake.update("turbocrypt");
+
+    // Extract 48 bytes
+    var output: [48]u8 = undefined;
+    shake.squeeze(&output);
+
+    // Split into three 16-byte keys
+    return DerivedKeys{
+        .header_mac_key = output[0..16].*,
+        .encryption_key = output[16..32].*,
+        .filename_key = output[32..48].*,
+    };
+}
+
+/// Generate a header MAC for the given nonce and header_mac_key
+/// MAC = Aegis128LMac_128(header_mac_key, "TC01" || nonce)
+fn computeHeaderMac(nonce: [nonce_length]u8, header_mac_key: [key_length]u8) [mac_length]u8 {
     // Construct message: "TC01" || nonce (4 + 16 = 20 bytes)
     var msg: [domain_separator.len + nonce_length]u8 = undefined;
     @memcpy(msg[0..domain_separator.len], domain_separator);
@@ -22,7 +54,7 @@ fn computeHeaderMac(nonce: [nonce_length]u8, key: [key_length]u8) [mac_length]u8
 
     // Compute MAC
     var mac: [mac_length]u8 = undefined;
-    Aegis128LMac_128.create(&mac, &msg, &key);
+    Aegis128LMac_128.create(&mac, &msg, &header_mac_key);
 
     return mac;
 }
@@ -65,15 +97,15 @@ fn parseEncrypted(encrypted: []const u8) !ParsedEncrypted {
 /// Total size: plaintext.len + 48
 pub fn encrypt(
     plaintext: []const u8,
-    key: [key_length]u8,
+    derived_keys: DerivedKeys,
     allocator: std.mem.Allocator,
 ) ![]u8 {
     // Generate random nonce
     var nonce: [nonce_length]u8 = undefined;
     std.crypto.random.bytes(&nonce);
 
-    // Compute header MAC
-    const header_mac = computeHeaderMac(nonce, key);
+    // Compute header MAC using derived header_mac_key
+    const header_mac = computeHeaderMac(nonce, derived_keys.header_mac_key);
 
     // Allocate output buffer: nonce || header_mac || ciphertext || tag
     // Check for integer overflow when calculating output size
@@ -87,7 +119,7 @@ pub fn encrypt(
     // Get view of ciphertext portion in output buffer
     const ciphertext = output[header_size..][0..plaintext.len];
 
-    // Encrypt directly to output buffer
+    // Encrypt directly to output buffer using derived encryption_key
     var tag: [tag_length]u8 = undefined;
     Aegis128X2.encrypt(
         ciphertext,
@@ -95,7 +127,7 @@ pub fn encrypt(
         plaintext,
         &[_]u8{}, // empty associated data
         nonce,
-        key,
+        derived_keys.encryption_key,
     );
 
     // Write header and tag to output
@@ -112,7 +144,7 @@ pub fn encrypt(
 pub fn encryptZeroCopy(
     output: []u8,
     plaintext: []const u8,
-    key: [key_length]u8,
+    derived_keys: DerivedKeys,
 ) void {
     // Verify output buffer size
     std.debug.assert(output.len == plaintext.len + overhead_size);
@@ -121,13 +153,13 @@ pub fn encryptZeroCopy(
     var nonce: [nonce_length]u8 = undefined;
     std.crypto.random.bytes(&nonce);
 
-    // Compute header MAC
-    const header_mac = computeHeaderMac(nonce, key);
+    // Compute header MAC using derived header_mac_key
+    const header_mac = computeHeaderMac(nonce, derived_keys.header_mac_key);
 
     // Get view of ciphertext portion in output buffer
     const ciphertext = output[header_size..][0..plaintext.len];
 
-    // Encrypt directly to output buffer
+    // Encrypt directly to output buffer using derived encryption_key
     var tag: [tag_length]u8 = undefined;
     Aegis128X2.encrypt(
         ciphertext,
@@ -135,7 +167,7 @@ pub fn encryptZeroCopy(
         plaintext,
         &[_]u8{}, // empty associated data
         nonce,
-        key,
+        derived_keys.encryption_key,
     );
 
     // Write header and tag to output
@@ -148,14 +180,14 @@ pub fn encryptZeroCopy(
 /// Returns plaintext if successful, error otherwise
 pub fn decrypt(
     encrypted: []const u8,
-    key: [key_length]u8,
+    derived_keys: DerivedKeys,
     allocator: std.mem.Allocator,
 ) ![]u8 {
     // Parse encrypted data
     const parsed = try parseEncrypted(encrypted);
 
-    // Verify header MAC
-    const expected_mac = computeHeaderMac(parsed.nonce.*, key);
+    // Verify header MAC using derived header_mac_key
+    const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
     if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
         return error.InvalidHeaderMAC;
     }
@@ -164,14 +196,14 @@ pub fn decrypt(
     const plaintext = try allocator.alloc(u8, parsed.ciphertext.len);
     errdefer allocator.free(plaintext);
 
-    // Decrypt
+    // Decrypt using derived encryption_key
     try Aegis128X2.decrypt(
         plaintext,
         parsed.ciphertext,
         parsed.tag.*,
         &[_]u8{}, // empty associated data
         parsed.nonce.*,
-        key,
+        derived_keys.encryption_key,
     );
 
     return plaintext;
@@ -182,7 +214,7 @@ pub fn decrypt(
 pub fn decryptZeroCopy(
     output: []u8,
     encrypted: []const u8,
-    key: [key_length]u8,
+    derived_keys: DerivedKeys,
 ) !void {
     // Parse encrypted data
     const parsed = try parseEncrypted(encrypted);
@@ -190,20 +222,20 @@ pub fn decryptZeroCopy(
     // Verify output buffer size
     std.debug.assert(output.len == parsed.ciphertext.len);
 
-    // Verify header MAC
-    const expected_mac = computeHeaderMac(parsed.nonce.*, key);
+    // Verify header MAC using derived header_mac_key
+    const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
     if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
         return error.InvalidHeaderMAC;
     }
 
-    // Decrypt directly to output buffer
+    // Decrypt directly to output buffer using derived encryption_key
     try Aegis128X2.decrypt(
         output,
         parsed.ciphertext,
         parsed.tag.*,
         &[_]u8{}, // empty associated data
         parsed.nonce.*,
-        key,
+        derived_keys.encryption_key,
     );
 }
 
@@ -212,14 +244,14 @@ pub fn decryptZeroCopy(
 /// Returns Ok if verification succeeds, error otherwise
 pub fn verify(
     encrypted: []const u8,
-    key: [key_length]u8,
+    derived_keys: DerivedKeys,
     allocator: std.mem.Allocator,
 ) !void {
     // Parse encrypted data
     const parsed = try parseEncrypted(encrypted);
 
-    // Verify header MAC
-    const expected_mac = computeHeaderMac(parsed.nonce.*, key);
+    // Verify header MAC using derived header_mac_key
+    const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
     if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
         return error.InvalidHeaderMAC;
     }
@@ -229,14 +261,14 @@ pub fn verify(
     const plaintext = try allocator.alloc(u8, parsed.ciphertext.len);
     defer allocator.free(plaintext);
 
-    // Decrypt to verify tag (plaintext is discarded)
+    // Decrypt to verify tag using derived encryption_key (plaintext is discarded)
     try Aegis128X2.decrypt(
         plaintext,
         parsed.ciphertext,
         parsed.tag.*,
         &[_]u8{}, // empty associated data
         parsed.nonce.*,
-        key,
+        derived_keys.encryption_key,
     );
 
     // If we reach here, both header MAC and authentication tag are valid
@@ -247,17 +279,18 @@ test "encrypt/decrypt round-trip" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const derived = deriveKeys(key);
     const plaintext = "Hello, World! This is a test message.";
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, key, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator);
     defer allocator.free(encrypted);
 
     // Verify size
     try testing.expectEqual(plaintext.len + overhead_size, encrypted.len);
 
     // Decrypt
-    const decrypted = try decrypt(encrypted, key, allocator);
+    const decrypted = try decrypt(encrypted, derived, allocator);
     defer allocator.free(decrypted);
 
     // Verify content
@@ -270,14 +303,16 @@ test "decrypt with wrong key fails" {
 
     const key1: [key_length]u8 = [_]u8{1} ** key_length;
     const key2: [key_length]u8 = [_]u8{2} ** key_length;
+    const derived1 = deriveKeys(key1);
+    const derived2 = deriveKeys(key2);
     const plaintext = "Secret message";
 
     // Encrypt with key1
-    const encrypted = try encrypt(plaintext, key1, allocator);
+    const encrypted = try encrypt(plaintext, derived1, allocator);
     defer allocator.free(encrypted);
 
     // Try to decrypt with key2 - should fail with InvalidHeaderMAC
-    const result = decrypt(encrypted, key2, allocator);
+    const result = decrypt(encrypted, derived2, allocator);
     try testing.expectError(error.InvalidHeaderMAC, result);
 }
 
@@ -286,17 +321,18 @@ test "decrypt corrupted ciphertext fails" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const derived = deriveKeys(key);
     const plaintext = "Test message";
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, key, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator);
     defer allocator.free(encrypted);
 
     // Corrupt ciphertext (modify a byte in the ciphertext portion)
     encrypted[header_size] ^= 0xFF;
 
     // Try to decrypt - should fail with AuthenticationFailed
-    const result = decrypt(encrypted, key, allocator);
+    const result = decrypt(encrypted, derived, allocator);
     try testing.expectError(error.AuthenticationFailed, result);
 }
 
@@ -305,9 +341,10 @@ test "decrypt invalid file size" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const derived = deriveKeys(key);
     const too_small = [_]u8{0} ** 32; // Less than overhead_size (48)
 
-    const result = decrypt(&too_small, key, allocator);
+    const result = decrypt(&too_small, derived, allocator);
     try testing.expectError(error.InvalidFileSize, result);
 }
 
@@ -316,17 +353,18 @@ test "empty plaintext encryption" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const derived = deriveKeys(key);
     const plaintext = "";
 
     // Encrypt empty plaintext
-    const encrypted = try encrypt(plaintext, key, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator);
     defer allocator.free(encrypted);
 
     // Should have only overhead
     try testing.expectEqual(overhead_size, encrypted.len);
 
     // Decrypt
-    const decrypted = try decrypt(encrypted, key, allocator);
+    const decrypted = try decrypt(encrypted, derived, allocator);
     defer allocator.free(decrypted);
 
     // Should be empty
@@ -338,6 +376,7 @@ test "large data encryption" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{42} ** key_length;
+    const derived = deriveKeys(key);
 
     // Create 1MB of test data
     const data_size = 1024 * 1024;
@@ -350,11 +389,11 @@ test "large data encryption" {
     }
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, key, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator);
     defer allocator.free(encrypted);
 
     // Decrypt
-    const decrypted = try decrypt(encrypted, key, allocator);
+    const decrypted = try decrypt(encrypted, derived, allocator);
     defer allocator.free(decrypted);
 
     // Verify
@@ -366,14 +405,15 @@ test "verify valid encrypted data" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const derived = deriveKeys(key);
     const plaintext = "Test message for verification";
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, key, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator);
     defer allocator.free(encrypted);
 
     // Verify should succeed
-    try verify(encrypted, key, allocator);
+    try verify(encrypted, derived, allocator);
 }
 
 test "verify with wrong key fails" {
@@ -382,14 +422,16 @@ test "verify with wrong key fails" {
 
     const key1: [key_length]u8 = [_]u8{1} ** key_length;
     const key2: [key_length]u8 = [_]u8{2} ** key_length;
+    const derived1 = deriveKeys(key1);
+    const derived2 = deriveKeys(key2);
     const plaintext = "Secret message";
 
     // Encrypt with key1
-    const encrypted = try encrypt(plaintext, key1, allocator);
+    const encrypted = try encrypt(plaintext, derived1, allocator);
     defer allocator.free(encrypted);
 
     // Verify with key2 should fail with InvalidHeaderMAC
-    const result = verify(encrypted, key2, allocator);
+    const result = verify(encrypted, derived2, allocator);
     try testing.expectError(error.InvalidHeaderMAC, result);
 }
 
@@ -398,16 +440,17 @@ test "verify corrupted ciphertext fails" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
+    const derived = deriveKeys(key);
     const plaintext = "Test message";
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, key, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator);
     defer allocator.free(encrypted);
 
     // Corrupt ciphertext
     encrypted[header_size] ^= 0xFF;
 
     // Verify should fail with AuthenticationFailed
-    const result = verify(encrypted, key, allocator);
+    const result = verify(encrypted, derived, allocator);
     try testing.expectError(error.AuthenticationFailed, result);
 }

@@ -172,7 +172,7 @@ pub const WorkerPool = struct {
     work_queue: WorkQueue,
     threads: []std.Thread,
     thread_count: u32,
-    key: [crypto.key_length]u8,
+    derived_keys: crypto.DerivedKeys,
     progress_tracker: *progress.ProgressTracker,
     error_mutex: std.Thread.Mutex,
     has_errors: bool,
@@ -183,7 +183,7 @@ pub const WorkerPool = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         thread_count: u32,
-        key: [crypto.key_length]u8,
+        derived_keys: crypto.DerivedKeys,
         progress_tracker: *progress.ProgressTracker,
     ) !Self {
         const threads = try allocator.alloc(std.Thread, thread_count);
@@ -194,7 +194,7 @@ pub const WorkerPool = struct {
             .work_queue = WorkQueue.init(allocator),
             .threads = threads,
             .thread_count = thread_count,
-            .key = key,
+            .derived_keys = derived_keys,
             .progress_tracker = progress_tracker,
             .error_mutex = .{},
             .has_errors = false,
@@ -246,7 +246,7 @@ pub const WorkerPool = struct {
                         processor.encryptFile(
                             job.source_path,
                             job.dest_path.?,
-                            worker.key,
+                            worker.derived_keys,
                             thread_allocator,
                         ) catch |err| {
                             handleJobError(worker, job, err, "[ERROR] Failed to encrypt:", true);
@@ -257,7 +257,7 @@ pub const WorkerPool = struct {
                         processor.decryptFile(
                             job.source_path,
                             job.dest_path.?,
-                            worker.key,
+                            worker.derived_keys,
                             thread_allocator,
                         ) catch |err| {
                             handleJobError(worker, job, err, "[ERROR] Failed to decrypt:", false);
@@ -267,7 +267,7 @@ pub const WorkerPool = struct {
                     .verify => {
                         processor.verifyFile(
                             job.source_path,
-                            worker.key,
+                            worker.derived_keys,
                             thread_allocator,
                         ) catch |err| {
                             handleJobError(worker, job, err, "[VERIFY FAILED]", false);
@@ -351,9 +351,10 @@ test "worker pool initialization" {
     const allocator = testing.allocator;
 
     const key: [crypto.key_length]u8 = [_]u8{42} ** crypto.key_length;
+    const derived = crypto.deriveKeys(key);
     var tracker = progress.ProgressTracker.init(0, 0);
 
-    var pool = try WorkerPool.init(allocator, 4, key, &tracker);
+    var pool = try WorkerPool.init(allocator, 4, derived, &tracker);
     defer pool.deinit();
 
     try testing.expect(!pool.hadErrors());

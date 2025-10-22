@@ -23,11 +23,13 @@ const max_stack_encoded_length = 384;
 ///
 /// Uses stack buffers for typical filenames (<=256 bytes), falls back to heap for longer names.
 ///
+/// Note: The key parameter should be the derived filename_key from DerivedKeys.
+///
 /// Returns: Owned slice that caller must free
 pub fn encryptFilename(
     allocator: std.mem.Allocator,
     plaintext_name: []const u8,
-    key: [16]u8,
+    filename_key: [16]u8,
 ) ![]u8 {
     // Don't encrypt special directory entries
     if (std.mem.eql(u8, plaintext_name, ".") or std.mem.eql(u8, plaintext_name, "..")) {
@@ -49,7 +51,7 @@ pub fn encryptFilename(
         }
 
         // Encrypt with HCTR2 using empty tweak
-        var cipher = hctr2.Hctr2_128.init(key);
+        var cipher = hctr2.Hctr2_128.init(filename_key);
         var ciphertext_buf: [max_stack_filename_length]u8 = undefined;
         const ciphertext = ciphertext_buf[0..padded_len];
 
@@ -73,7 +75,7 @@ pub fn encryptFilename(
         }
 
         // Encrypt with HCTR2 using empty tweak
-        var cipher = hctr2.Hctr2_128.init(key);
+        var cipher = hctr2.Hctr2_128.init(filename_key);
         var ciphertext = try allocator.alloc(u8, padded_len);
         defer allocator.free(ciphertext);
 
@@ -98,11 +100,13 @@ pub fn encryptFilename(
 ///
 /// Uses stack buffers for typical filenames (<=384 bytes encoded), falls back to heap for longer names.
 ///
+/// Note: The key parameter should be the derived filename_key from DerivedKeys.
+///
 /// Returns: Owned slice that caller must free
 pub fn decryptFilename(
     allocator: std.mem.Allocator,
     encrypted_name: []const u8,
-    key: [16]u8,
+    filename_key: [16]u8,
 ) ![]u8 {
     // Don't decrypt special directory entries
     if (std.mem.eql(u8, encrypted_name, ".") or std.mem.eql(u8, encrypted_name, "..")) {
@@ -120,7 +124,7 @@ pub fn decryptFilename(
         };
 
         // Decrypt with HCTR2
-        var cipher = hctr2.Hctr2_128.init(key);
+        var cipher = hctr2.Hctr2_128.init(filename_key);
         var padded_buf: [max_stack_filename_length]u8 = undefined;
         const padded = padded_buf[0..ciphertext.len];
 
@@ -146,7 +150,7 @@ pub fn decryptFilename(
         };
 
         // Decrypt with HCTR2
-        var cipher = hctr2.Hctr2_128.init(key);
+        var cipher = hctr2.Hctr2_128.init(filename_key);
         var padded = try allocator.alloc(u8, ciphertext.len);
         defer allocator.free(padded);
 
@@ -168,11 +172,13 @@ pub fn decryptFilename(
 /// Path components are split by '/', each encrypted independently,
 /// then rejoined with '/' to preserve directory structure.
 ///
+/// Note: The key parameter should be the derived filename_key from DerivedKeys.
+///
 /// Returns: Owned slice that caller must free
 pub fn encryptPath(
     allocator: std.mem.Allocator,
     path: []const u8,
-    key: [16]u8,
+    filename_key: [16]u8,
 ) ![]u8 {
     // Split path by separator
     var components = std.ArrayList([]const u8){};
@@ -187,7 +193,7 @@ pub fn encryptPath(
     while (it.next()) |component| {
         if (component.len == 0) continue; // Skip empty components (e.g., leading slash)
 
-        const encrypted = try encryptFilename(allocator, component, key);
+        const encrypted = try encryptFilename(allocator, component, filename_key);
         try components.append(allocator, encrypted);
     }
 
@@ -197,11 +203,13 @@ pub fn encryptPath(
 
 /// Decrypt a path encrypted with encryptPath
 ///
+/// Note: The key parameter should be the derived filename_key from DerivedKeys.
+///
 /// Returns: Owned slice that caller must free
 pub fn decryptPath(
     allocator: std.mem.Allocator,
     encrypted_path: []const u8,
-    key: [16]u8,
+    filename_key: [16]u8,
 ) ![]u8 {
     // Split path by separator
     var components = std.ArrayList([]const u8){};
@@ -216,7 +224,7 @@ pub fn decryptPath(
     while (it.next()) |component| {
         if (component.len == 0) continue; // Skip empty components
 
-        const decrypted = try decryptFilename(allocator, component, key);
+        const decrypted = try decryptFilename(allocator, component, filename_key);
         try components.append(allocator, decrypted);
     }
 

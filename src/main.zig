@@ -631,6 +631,9 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         return err;
     };
 
+    // Derive keys from master key using TurboSHAKE128
+    const derived_keys = crypto.deriveKeys(key);
+
     // Check if source is a file or directory
     const is_dir = utils.isDirectory(source_path) catch false;
 
@@ -678,7 +681,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
 
             // Phase 2: Process all collected files
             var tracker = progress.ProgressTracker.init(scan_ctx.file_paths.items.len, scan_ctx.total_bytes);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
             defer pool.deinit();
 
             try tracker.startDisplay();
@@ -717,7 +720,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             std.debug.print("Scanning and {s}...\n", .{if (is_encrypt) "encrypting" else "decrypting"});
 
             var tracker = progress.ProgressTracker.init(0, 0);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
             defer pool.deinit();
 
             // Start worker threads BEFORE scanning so they can process files concurrently
@@ -769,14 +772,14 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         }
 
         if (is_encrypt) {
-            processor.encryptFile(source_path, dest_path, key, allocator) catch |err| {
+            processor.encryptFile(source_path, dest_path, derived_keys, allocator) catch |err| {
                 std.debug.print("\n[ERROR] Encryption failed\n", .{});
                 std.debug.print("        File: {s}\n", .{source_path});
                 worker.printErrorDetails(err, true);
                 return err;
             };
         } else {
-            processor.decryptFile(source_path, dest_path, key, allocator) catch |err| {
+            processor.decryptFile(source_path, dest_path, derived_keys, allocator) catch |err| {
                 std.debug.print("\n[ERROR] Decryption failed\n", .{});
                 std.debug.print("        File: {s}\n", .{source_path});
                 worker.printErrorDetails(err, false);
@@ -843,6 +846,9 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
         return err;
     };
 
+    // Derive keys from master key using TurboSHAKE128
+    const derived_keys = crypto.deriveKeys(key);
+
     // Check if source is a file or directory
     const is_dir = utils.isDirectory(source_path) catch false;
 
@@ -890,7 +896,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
         // Verify all collected files
         var tracker = progress.ProgressTracker.init(scan_ctx.file_paths.items.len, scan_ctx.total_bytes);
-        var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
+        var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
         defer pool.deinit();
 
         try tracker.startDisplay();
@@ -928,7 +934,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
         std.debug.print("Verifying file: {s}\n", .{source_path});
 
-        processor.verifyFile(source_path, key, allocator) catch |err| {
+        processor.verifyFile(source_path, derived_keys, allocator) catch |err| {
             std.debug.print("\n[VERIFY FAILED] {s}\n", .{source_path});
             worker.printErrorDetails(err, false);
             return err;

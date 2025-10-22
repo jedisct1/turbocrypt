@@ -136,7 +136,7 @@ const BenchResult = struct {
 };
 
 /// Benchmark single-threaded encryption/decryption with different data sizes
-fn benchSingleThreaded(allocator: std.mem.Allocator, key: [16]u8, config: BenchConfig) !void {
+fn benchSingleThreaded(allocator: std.mem.Allocator, derived_keys: crypto.DerivedKeys, config: BenchConfig) !void {
     std.debug.print("\n*** Single-Threaded Benchmarks (In-Memory) ***\n", .{});
     std.debug.print("Pure cryptographic operations without file I/O overhead\n", .{});
     std.debug.print("Running {d} warmup + {d} measured iterations per test\n\n", .{ config.warmup_iterations, config.measured_iterations });
@@ -174,14 +174,14 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, key: [16]u8, config: BenchC
 
         // Warmup
         for (0..config.warmup_iterations) |_| {
-            crypto.encryptZeroCopy(ciphertext, plaintext, key);
+            crypto.encryptZeroCopy(ciphertext, plaintext, derived_keys);
             std.mem.doNotOptimizeAway(&ciphertext);
         }
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
             var timer = try std.time.Timer.start();
-            crypto.encryptZeroCopy(ciphertext, plaintext, key);
+            crypto.encryptZeroCopy(ciphertext, plaintext, derived_keys);
             const encrypt_time = timer.read();
             std.mem.doNotOptimizeAway(&ciphertext);
             try encrypt_stats.add(encrypt_time, allocator);
@@ -203,14 +203,14 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, key: [16]u8, config: BenchC
 
         // Warmup
         for (0..config.warmup_iterations) |_| {
-            try crypto.decryptZeroCopy(decrypted, ciphertext, key);
+            try crypto.decryptZeroCopy(decrypted, ciphertext, derived_keys);
             std.mem.doNotOptimizeAway(&decrypted);
         }
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
             var timer = try std.time.Timer.start();
-            try crypto.decryptZeroCopy(decrypted, ciphertext, key);
+            try crypto.decryptZeroCopy(decrypted, ciphertext, derived_keys);
             const decrypt_time = timer.read();
             std.mem.doNotOptimizeAway(&decrypted);
             try decrypt_stats.add(decrypt_time, allocator);
@@ -237,15 +237,15 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, key: [16]u8, config: BenchC
 const ThreadContext = struct {
     input: []const u8,
     output: []u8,
-    key: [16]u8,
+    derived_keys: crypto.DerivedKeys,
     error_occurred: bool = false,
 
     fn encryptThread(ctx: *ThreadContext) void {
-        crypto.encryptZeroCopy(ctx.output, ctx.input, ctx.key);
+        crypto.encryptZeroCopy(ctx.output, ctx.input, ctx.derived_keys);
     }
 
     fn decryptThread(ctx: *ThreadContext) void {
-        crypto.decryptZeroCopy(ctx.output, ctx.input, ctx.key) catch {
+        crypto.decryptZeroCopy(ctx.output, ctx.input, ctx.derived_keys) catch {
             ctx.error_occurred = true;
             return;
         };
@@ -253,7 +253,7 @@ const ThreadContext = struct {
 };
 
 /// Benchmark multi-threaded in-memory encryption/decryption
-fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config: BenchConfig) !void {
+fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto.DerivedKeys, config: BenchConfig) !void {
     std.debug.print("\n*** Multi-Threaded Benchmarks (In-Memory) ***\n", .{});
     std.debug.print("Parallel cryptographic operations without file I/O\n", .{});
     std.debug.print("Throughput = total Mb/s across all threads\n", .{});
@@ -335,7 +335,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
                 contexts[i] = ThreadContext{
                     .input = test_data.items[start_chunk],
                     .output = encrypted_outputs.items[start_chunk],
-                    .key = key,
+                    .derived_keys = derived_keys,
                 };
                 threads[i] = try std.Thread.spawn(.{}, ThreadContext.encryptThread, .{&contexts[i]});
             }
@@ -349,7 +349,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
                     crypto.encryptZeroCopy(
                         encrypted_outputs.items[chunk_idx],
                         test_data.items[chunk_idx],
-                        key,
+                        derived_keys,
                     );
                     std.mem.doNotOptimizeAway(&encrypted_outputs.items[chunk_idx]);
                 }
@@ -366,7 +366,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
                 contexts[i] = ThreadContext{
                     .input = test_data.items[start_chunk],
                     .output = encrypted_outputs.items[start_chunk],
-                    .key = key,
+                    .derived_keys = derived_keys,
                 };
                 threads[i] = try std.Thread.spawn(.{}, ThreadContext.encryptThread, .{&contexts[i]});
             }
@@ -380,7 +380,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
                     crypto.encryptZeroCopy(
                         encrypted_outputs.items[chunk_idx],
                         test_data.items[chunk_idx],
-                        key,
+                        derived_keys,
                     );
                     std.mem.doNotOptimizeAway(&encrypted_outputs.items[chunk_idx]);
                 }
@@ -419,7 +419,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
                 contexts[i] = ThreadContext{
                     .input = encrypted_outputs.items[start_chunk],
                     .output = decrypted_outputs.items[start_chunk],
-                    .key = key,
+                    .derived_keys = derived_keys,
                 };
                 threads[i] = try std.Thread.spawn(.{}, ThreadContext.decryptThread, .{&contexts[i]});
             }
@@ -433,7 +433,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
                     try crypto.decryptZeroCopy(
                         decrypted_outputs.items[chunk_idx],
                         encrypted_outputs.items[chunk_idx],
-                        key,
+                        derived_keys,
                     );
                     std.mem.doNotOptimizeAway(&decrypted_outputs.items[chunk_idx]);
                 }
@@ -450,7 +450,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
                 contexts[i] = ThreadContext{
                     .input = encrypted_outputs.items[start_chunk],
                     .output = decrypted_outputs.items[start_chunk],
-                    .key = key,
+                    .derived_keys = derived_keys,
                 };
                 threads[i] = try std.Thread.spawn(.{}, ThreadContext.decryptThread, .{&contexts[i]});
             }
@@ -464,7 +464,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
                     try crypto.decryptZeroCopy(
                         decrypted_outputs.items[chunk_idx],
                         encrypted_outputs.items[chunk_idx],
-                        key,
+                        derived_keys,
                     );
                     std.mem.doNotOptimizeAway(&decrypted_outputs.items[chunk_idx]);
                 }
@@ -494,7 +494,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, key: [16]u8, config:
 }
 
 /// Benchmark multi-threaded file processing
-fn benchMultiThreaded(allocator: std.mem.Allocator, key: [16]u8, tmp_dir: []const u8, config: BenchConfig) !void {
+fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.DerivedKeys, tmp_dir: []const u8, config: BenchConfig) !void {
     std.debug.print("\n*** Multi-Threaded Benchmarks (File I/O) ***\n", .{});
     std.debug.print("Real-world file encryption with parallel processing\n", .{});
     std.debug.print("Throughput = total Mb/s across all threads\n", .{});
@@ -555,7 +555,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, key: [16]u8, tmp_dir: []cons
         // Warmup
         for (0..config.warmup_iterations) |_| {
             var tracker = progress.ProgressTracker.init(file_count, total_size);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
             defer pool.deinit();
 
             for (file_paths.items, file_sizes.items) |path, size| {
@@ -585,7 +585,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, key: [16]u8, tmp_dir: []cons
             var timer = try std.time.Timer.start();
             {
                 var tracker = progress.ProgressTracker.init(file_count, total_size);
-                var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
+                var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
                 defer pool.deinit();
 
                 for (file_paths.items, file_sizes.items) |path, size| {
@@ -630,7 +630,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, key: [16]u8, tmp_dir: []cons
         // Create encrypted files for decryption benchmark
         {
             var tracker = progress.ProgressTracker.init(file_count, total_size);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
             defer pool.deinit();
 
             for (file_paths.items, file_sizes.items) |path, size| {
@@ -651,7 +651,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, key: [16]u8, tmp_dir: []cons
         // Warmup
         for (0..config.warmup_iterations) |_| {
             var tracker = progress.ProgressTracker.init(file_count, total_size);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
             defer pool.deinit();
 
             for (file_paths.items, file_sizes.items) |path, size| {
@@ -681,7 +681,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, key: [16]u8, tmp_dir: []cons
             var timer = try std.time.Timer.start();
             {
                 var tracker = progress.ProgressTracker.init(file_count, total_size);
-                var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
+                var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker);
                 defer pool.deinit();
 
                 for (file_paths.items, file_sizes.items) |path, size| {
@@ -751,6 +751,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
 
     // Generate a random key for testing
     const key = keygen.generate();
+    const derived_keys = crypto.deriveKeys(key);
 
     // Ensure tmp/ directory exists
     const tmp_dir = "tmp";
@@ -759,13 +760,13 @@ pub fn run(allocator: std.mem.Allocator) !void {
     };
 
     // Run single-threaded benchmarks
-    try benchSingleThreaded(allocator, key, in_memory_config);
+    try benchSingleThreaded(allocator, derived_keys, in_memory_config);
 
     // Run multi-threaded in-memory benchmarks
-    try benchMultiThreadedInMemory(allocator, key, in_memory_config);
+    try benchMultiThreadedInMemory(allocator, derived_keys, in_memory_config);
 
     // Run multi-threaded file I/O benchmarks
-    try benchMultiThreaded(allocator, key, tmp_dir, file_io_config);
+    try benchMultiThreaded(allocator, derived_keys, tmp_dir, file_io_config);
 
     std.debug.print("\nBenchmark completed!\n", .{});
     std.debug.print("Note: Results may vary based on CPU, memory speed, and system load.\n", .{});
