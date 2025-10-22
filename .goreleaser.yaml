@@ -6,20 +6,33 @@ before:
     - zig build --help
 
 builds:
-  - id: turbocrypt
+  # x86_64 builds with AES+AVX+PCLMUL
+  - id: turbocrypt-x86_64
+    builder: zig
+    binary: turbocrypt
+    flags:
+      - -Doptimize=ReleaseFast
+      - -Dcpu=baseline+aes+avx+pclmul
+    targets:
+      # Linux
+      - x86_64-linux-gnu
+      # macOS (will be merged into universal binary)
+      - x86_64-macos
+      # Windows
+      - x86_64-windows-gnu
+    hooks:
+      pre:
+        - echo "Building for {{ .Target }} with baseline+aes+avx+pclmul"
+
+  # ARM64 builds with native features
+  - id: turbocrypt-aarch64
     builder: zig
     binary: turbocrypt
     flags:
       - -Doptimize=ReleaseFast
     targets:
-      # Linux
-      - x86_64-linux-gnu
       - aarch64-linux-gnu
-      # macOS (will be merged into universal binary)
-      - x86_64-macos
       - aarch64-macos
-      # Windows
-      - x86_64-windows-gnu
       - aarch64-windows-gnu
     hooks:
       pre:
@@ -29,7 +42,8 @@ builds:
 universal_binaries:
   - id: turbocrypt-universal
     ids:
-      - turbocrypt
+      - turbocrypt-x86_64
+      - turbocrypt-aarch64
     replace: true
     name_template: turbocrypt
 
