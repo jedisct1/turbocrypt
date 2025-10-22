@@ -108,7 +108,7 @@ turbocrypt encrypt --key protected.key --password source/ dest/
 
 When you encrypt a directory, you can optionally specify a context string. This adds an additional secret that's required to decrypt your files - think of it as a second password that works alongside your encryption key.
 
-Here's why this matters: Even if someone gets access to your encryption key file and your password, they still won't be able to decrypt your files without knowing the context you used. The context acts as an extra safeguard that you keep in your head rather than written down.
+Here's why this matters: Even if someone gains access to your encryption key file and your password, they still won't be able to decrypt your files without knowing the context you used. The context acts as an extra safeguard that you keep in your head rather than written down.
 
 ```bash
 # Encrypt with a context
@@ -355,7 +355,7 @@ Settings are applied in this order (highest priority first):
 - Generate strong keys: Always use `turbocrypt keygen` - don't create keys manually
 - Keep backups: Store a copy of your key in a safe, separate location
 - Use password protection: For keys stored on your computer, consider `--password`
-- Never share keys: Each person should have their own key, or use password-protected keys with different passwords
+- Never share keys: Each person should have their own key, or use password-protected keys with different passwords for additional security
 
 ### Safe Workflows
 
@@ -368,7 +368,7 @@ Settings are applied in this order (highest priority first):
 
 - Adjust threads for directories: Use `--threads` based on your CPU core count and disk features
 - Larger buffers for huge files: Try `--buffer-size 16777216` (16MB) for very large files
-- Exclude patterns: Excluding files is faster than encrypting and deleting them later
+- Exclude unnecessary files: Using exclude patterns is faster than encrypting files and deleting them later
 
 ## Troubleshooting
 
@@ -388,13 +388,13 @@ The file has been modified or corrupted after encryption. TurboCrypt detected ta
 
 ### "Access denied" errors with large files
 
-On some systems, memory-mapped I/O (used for files >1MB) requires specific permissions. Try running with sudo/admin privileges, or check that your user has read/write access to both source and destination directories.
+On some systems, memory-mapped I/O (used for files >1MB) requires specific permissions. Try running with sudo/administrator privileges, or check that your user has read/write access to both source and destination directories.
 
 ### Performance is slow
 
 - Check if you're using too many threads (`--threads 4` is often faster than 32 for small files)
 - Ensure your source/destination are on fast storage (SSD vs HDD makes a big difference)
-- For many small files, threading overhead can reduce performance - try `--threads 2`
+- For many small files, threading overhead can reduce performance - try using `--threads 2`
 
 ### Out of memory errors
 
