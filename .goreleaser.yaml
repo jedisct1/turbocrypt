@@ -1,0 +1,202 @@
+version: 2
+
+before:
+  hooks:
+    # Ensure dependencies are up to date
+    - zig build --help
+
+builds:
+  - id: turbocrypt
+    builder: zig
+    binary: turbocrypt
+    flags:
+      - -Doptimize=ReleaseFast
+    targets:
+      # Linux
+      - x86_64-linux-gnu
+      - aarch64-linux-gnu
+      # macOS (will be merged into universal binary)
+      - x86_64-macos
+      - aarch64-macos
+      # Windows
+      - x86_64-windows-gnu
+      - aarch64-windows-gnu
+    hooks:
+      pre:
+        - echo "Building for {{ .Target }}"
+
+# Create universal binaries for macOS
+universal_binaries:
+  - id: turbocrypt-universal
+    ids:
+      - turbocrypt
+    replace: true
+    name_template: turbocrypt
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+
+# Generate checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Generate changelog from git commits
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "typo"
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: "Bug fixes"
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: "Performance improvements"
+      regexp: "^.*perf[(\\w)]*:+.*$"
+      order: 2
+    - title: Others
+      order: 999
+
+# Linux packages (deb, rpm, apk)
+nfpms:
+  - id: turbocrypt
+    package_name: turbocrypt
+    file_name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    vendor: Frank Denis
+    homepage: https://github.com/jedisct1/turbocrypt
+    maintainer: Frank Denis <github@pureftpd.org>
+    description: |
+      Fast, easy-to-use, and secure command-line tool for encrypting and
+      decrypting files or entire directory trees using AEGIS-128X2.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/turbocrypt/LICENSE
+      - src: README.md
+        dst: /usr/share/doc/turbocrypt/README.md
+    rpm:
+      group: Applications/File
+      summary: High-performance file encryption using AEGIS-128X2
+
+# Source archive
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+  format: tar.gz
+
+# Announce release
+announce:
+  skip: "{{gt .Patch 0}}"
+
+# Release settings
+release:
+  github:
+    owner: jedisct1
+    name: turbocrypt
+  draft: false
+  prerelease: auto
+  mode: append
+  header: |
+    ## TurboCrypt {{ .Tag }} ({{ .Date }})
+
+    Fast, secure file encryption using AEGIS-128X2.
+
+    ### Installation
+
+    #### Linux
+
+    **Debian/Ubuntu:**
+    ```bash
+    wget https://github.com/jedisct1/turbocrypt/releases/download/{{ .Tag }}/turbocrypt_{{ .Version }}_linux_x86_64.deb
+    sudo dpkg -i turbocrypt_{{ .Version }}_linux_x86_64.deb
+    ```
+
+    **Fedora/RHEL/CentOS:**
+    ```bash
+    wget https://github.com/jedisct1/turbocrypt/releases/download/{{ .Tag }}/turbocrypt_{{ .Version }}_linux_x86_64.rpm
+    sudo rpm -i turbocrypt_{{ .Version }}_linux_x86_64.rpm
+    ```
+
+    **Alpine:**
+    ```bash
+    wget https://github.com/jedisct1/turbocrypt/releases/download/{{ .Tag }}/turbocrypt_{{ .Version }}_linux_x86_64.apk
+    sudo apk add --allow-untrusted turbocrypt_{{ .Version }}_linux_x86_64.apk
+    ```
+
+    #### macOS
+
+    ```bash
+    wget https://github.com/jedisct1/turbocrypt/releases/download/{{ .Tag }}/turbocrypt_{{ .Version }}_darwin_all.tar.gz
+    tar xzf turbocrypt_{{ .Version }}_darwin_all.tar.gz
+    sudo mv turbocrypt /usr/local/bin/
+    ```
+
+    #### Windows
+
+    Download the ZIP file below, extract it, and add `turbocrypt.exe` to your PATH.
+
+    ### Quick Start
+
+    ```bash
+    # Generate a key
+    turbocrypt keygen secret.key
+
+    # Encrypt a directory
+    turbocrypt encrypt --key secret.key source/ encrypted/
+
+    # Decrypt
+    turbocrypt decrypt --key secret.key encrypted/ decrypted/
+    ```
+
+    See the [README](https://github.com/jedisct1/turbocrypt#readme) for full documentation.
+  footer: |
+    **Full Changelog**: https://github.com/jedisct1/turbocrypt/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+    ---
+
+    ### Verification
+
+    Verify the checksums:
+    ```bash
+    sha256sum -c checksums.txt
+    ```
+
+# Snapshots (for testing)
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
