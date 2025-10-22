@@ -139,7 +139,7 @@ Warning: This overwrites the original files. Make sure you have backups first!
 If you want to conceal not just the contents but also the names of your files:
 
 ```bash
-turbocrypt encrypt --key my-secret.key --encrypt-filenames source/ dest/
+turbocrypt encrypt --key my-secret.key --enc-filenames source/ dest/
 ```
 
 This encrypts each filename component, making it impossible to tell what files are in the encrypted directory without the key.
@@ -231,7 +231,7 @@ turbocrypt encrypt --key KEY --password source dest
 turbocrypt encrypt --key KEY --in-place source/
 
 # Encrypt filenames too
-turbocrypt encrypt --key KEY --encrypt-filenames source/ dest/
+turbocrypt encrypt --key KEY --enc-filenames source/ dest/
 
 # Exclude certain files
 turbocrypt encrypt --key KEY --exclude "*.log" --exclude ".git/" source/ dest/
@@ -311,7 +311,7 @@ Options available for most commands:
 - `--context <string>` - Context string for key derivation (creates independent key namespace)
 - `--threads <n>` - Number of parallel threads (default: CPU count, max 64)
 - `--in-place` - Overwrite source files instead of creating new ones
-- `--encrypt-filenames` - Encrypt filenames (cannot be used with --in-place)
+- `--enc-filenames` - Encrypt filenames (cannot be used with --in-place)
 - `--enc-suffix` - Add/remove .enc suffix automatically
 - `--exclude <pattern>` - Skip files matching pattern (can use multiple times)
 - `--ignore-symlinks` - Skip symbolic links
@@ -324,7 +324,7 @@ Encrypted files can be freely moved between directories and renamed. The encrypt
 
 ### Filename Encryption
 
-When using `--encrypt-filenames`:
+When using `--enc-filenames`:
 
 - Each path component (directory or filename) is encrypted separately
 - Encoded with base91 to ensure filesystem compatibility
