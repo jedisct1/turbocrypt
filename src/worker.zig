@@ -307,9 +307,8 @@ pub const WorkerPool = struct {
         try self.work_queue.push(job);
     }
 
-    /// Start worker threads and wait for all jobs to complete
-    pub fn waitAll(self: *Self) void {
-        // Spawn all worker threads FIRST (before marking done)
+    /// Start worker threads (call this before submitting jobs for concurrent processing)
+    pub fn start(self: *Self) void {
         for (self.threads) |*thread| {
             thread.* = std.Thread.spawn(.{}, workerThread, .{self}) catch |err| {
                 std.debug.print("[ERROR] Failed to spawn worker thread: {}\n", .{err});
@@ -319,14 +318,24 @@ pub const WorkerPool = struct {
 
         // Small delay to ensure workers are started and waiting
         std.Thread.sleep(1_000_000); // 1ms
+    }
 
-        // Now mark queue as done (no more jobs will be added)
+    /// Mark queue as done and wait for all worker threads to complete
+    pub fn finish(self: *Self) void {
+        // Mark queue as done (no more jobs will be added)
         self.work_queue.markDone();
 
         // Wait for all threads to complete
         for (self.threads) |thread| {
             thread.join();
         }
+    }
+
+    /// Start worker threads and wait for all jobs to complete (convenience method)
+    /// For backward compatibility with two-phase processing
+    pub fn waitAll(self: *Self) void {
+        self.start();
+        self.finish();
     }
 
     /// Check if any errors occurred

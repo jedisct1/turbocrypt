@@ -720,6 +720,9 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             var pool = try worker.WorkerPool.init(allocator, thread_count, key, &tracker);
             defer pool.deinit();
 
+            // Start worker threads BEFORE scanning so they can process files concurrently
+            pool.start();
+
             try tracker.startDisplay();
             defer tracker.stopDisplay();
 
@@ -739,12 +742,12 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
 
             utils.walkDirectory(source_path, ScanAndProcessContext.callback, &ctx, allocator, opts.ignore_symlinks) catch |err| {
                 tracker.stopDisplay();
-                pool.waitAll();
+                pool.finish();
                 std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
                 return err;
             };
 
-            pool.waitAll();
+            pool.finish();
             tracker.displayFinal();
         }
     } else {
@@ -849,6 +852,11 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
         // Determine thread count
         const thread_count = try getThreadCount(opts);
+
+        // Note: Verify uses two-phase approach (scan then process) because we want to
+        // display total file count before verification starts. This could be changed
+        // to concurrent scan-and-process if preferred, but would show "Verifying 0 files..."
+        // initially and update the count dynamically.
 
         std.debug.print("Scanning files...\n", .{});
 
