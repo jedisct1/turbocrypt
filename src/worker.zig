@@ -351,7 +351,7 @@ test "worker pool initialization" {
     const allocator = testing.allocator;
 
     const key: [crypto.key_length]u8 = [_]u8{42} ** crypto.key_length;
-    const derived = crypto.deriveKeys(key);
+    const derived = crypto.deriveKeys(key, null);
     var tracker = progress.ProgressTracker.init(0, 0);
 
     var pool = try WorkerPool.init(allocator, 4, derived, &tracker);

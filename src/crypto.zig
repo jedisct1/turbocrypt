@@ -20,17 +20,29 @@ pub const DerivedKeys = struct {
 };
 
 /// Derive three separate keys from the master key using TurboSHAKE128
-/// Input: master_key || "turbocrypt" (16 + 10 = 26 bytes)
+/// Input: master_key || "turbocrypt" || ("-" || context if provided)
 /// Output: 48 bytes split into three 16-byte keys
-pub fn deriveKeys(master_key: [key_length]u8) DerivedKeys {
+///
+/// The optional context parameter allows deriving different keys from the same master key.
+/// This enables encrypting different directories with cryptographically independent keys
+/// while using a single master key. The same context must be used for both encryption and decryption.
+pub fn deriveKeys(master_key: [key_length]u8, context: ?[]const u8) DerivedKeys {
     // Import TurboShake128 from std.crypto.hash.sha3
     const sha3 = @import("std").crypto.hash.sha3;
     const TurboShake = sha3.TurboShake128(null);
     var shake = TurboShake.init(.{});
 
-    // Feed input: master_key || "turbocrypt"
+    // Feed input: master_key || "turbocrypt" || ("-" || context if provided)
     shake.update(&master_key);
     shake.update("turbocrypt");
+
+    // Add context if provided and non-empty
+    if (context) |ctx| {
+        if (ctx.len > 0) {
+            shake.update("-");
+            shake.update(ctx);
+        }
+    }
 
     // Extract 48 bytes
     var output: [48]u8 = undefined;
@@ -279,7 +291,7 @@ test "encrypt/decrypt round-trip" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
-    const derived = deriveKeys(key);
+    const derived = deriveKeys(key, null);
     const plaintext = "Hello, World! This is a test message.";
 
     // Encrypt
@@ -303,8 +315,8 @@ test "decrypt with wrong key fails" {
 
     const key1: [key_length]u8 = [_]u8{1} ** key_length;
     const key2: [key_length]u8 = [_]u8{2} ** key_length;
-    const derived1 = deriveKeys(key1);
-    const derived2 = deriveKeys(key2);
+    const derived1 = deriveKeys(key1, null);
+    const derived2 = deriveKeys(key2, null);
     const plaintext = "Secret message";
 
     // Encrypt with key1
@@ -321,7 +333,7 @@ test "decrypt corrupted ciphertext fails" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
-    const derived = deriveKeys(key);
+    const derived = deriveKeys(key, null);
     const plaintext = "Test message";
 
     // Encrypt
@@ -341,7 +353,7 @@ test "decrypt invalid file size" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
-    const derived = deriveKeys(key);
+    const derived = deriveKeys(key, null);
     const too_small = [_]u8{0} ** 32; // Less than overhead_size (48)
 
     const result = decrypt(&too_small, derived, allocator);
@@ -353,7 +365,7 @@ test "empty plaintext encryption" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
-    const derived = deriveKeys(key);
+    const derived = deriveKeys(key, null);
     const plaintext = "";
 
     // Encrypt empty plaintext
@@ -376,7 +388,7 @@ test "large data encryption" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{42} ** key_length;
-    const derived = deriveKeys(key);
+    const derived = deriveKeys(key, null);
 
     // Create 1MB of test data
     const data_size = 1024 * 1024;
@@ -405,7 +417,7 @@ test "verify valid encrypted data" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
-    const derived = deriveKeys(key);
+    const derived = deriveKeys(key, null);
     const plaintext = "Test message for verification";
 
     // Encrypt
@@ -422,8 +434,8 @@ test "verify with wrong key fails" {
 
     const key1: [key_length]u8 = [_]u8{1} ** key_length;
     const key2: [key_length]u8 = [_]u8{2} ** key_length;
-    const derived1 = deriveKeys(key1);
-    const derived2 = deriveKeys(key2);
+    const derived1 = deriveKeys(key1, null);
+    const derived2 = deriveKeys(key2, null);
     const plaintext = "Secret message";
 
     // Encrypt with key1
@@ -440,7 +452,7 @@ test "verify corrupted ciphertext fails" {
     const allocator = testing.allocator;
 
     const key: [key_length]u8 = [_]u8{1} ** key_length;
-    const derived = deriveKeys(key);
+    const derived = deriveKeys(key, null);
     const plaintext = "Test message";
 
     // Encrypt

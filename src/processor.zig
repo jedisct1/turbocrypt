@@ -406,7 +406,7 @@ test "encrypt and decrypt file" {
 
     // Generate key and derive keys
     const key: [crypto.key_length]u8 = [_]u8{42} ** crypto.key_length;
-    const derived = crypto.deriveKeys(key);
+    const derived = crypto.deriveKeys(key, null);
 
     // Encrypt file
     try encryptFile(input_path, encrypted_path, derived, allocator);
@@ -460,8 +460,8 @@ test "decrypt with wrong key fails" {
 
     const key1: [crypto.key_length]u8 = [_]u8{1} ** crypto.key_length;
     const key2: [crypto.key_length]u8 = [_]u8{2} ** crypto.key_length;
-    const derived1 = crypto.deriveKeys(key1);
-    const derived2 = crypto.deriveKeys(key2);
+    const derived1 = crypto.deriveKeys(key1, null);
+    const derived2 = crypto.deriveKeys(key2, null);
 
     // Encrypt with key1
     try encryptFile(input_path, encrypted_path, derived1, allocator);

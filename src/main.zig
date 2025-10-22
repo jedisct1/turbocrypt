@@ -61,6 +61,8 @@ const usage_text =
     \\Options:
     \\  --key <path>         Path to key file (overrides env var and config)
     \\  --password           Prompt for password (auto-detects password-protected keys)
+    \\  --context <string>   Context string for key derivation (creates independent key namespace)
+    \\                       Same context must be used for both encryption and decryption
     \\  --threads <n>        Number of worker threads (default: CPU count, max 64)
     \\  --buffer-size <size> Buffer size in bytes (default: 4194304 = 4MB)
     \\  --in-place           Encrypt/decrypt files in place (source overwrites destination)
@@ -86,6 +88,8 @@ const usage_text =
     \\  turbocrypt encrypt --key other.key documents/ encrypted/
     \\  turbocrypt encrypt --in-place --threads 8 sensitive-data/
     \\  turbocrypt encrypt --exclude "*.log" --exclude ".git/" source/ dest/
+    \\  turbocrypt encrypt --context "project-x" documents/ encrypted-x/
+    \\  turbocrypt decrypt --context "project-x" encrypted-x/ decrypted/
     \\  export TURBOCRYPT_KEY_FILE=secret.key && turbocrypt encrypt data/ encrypted/
     \\
 ;
@@ -141,6 +145,7 @@ fn handleDirectory(
 const Options = struct {
     key: ?[]const u8 = null,
     password: bool = false,
+    context: ?[]const u8 = null,
     threads: ?u32 = null,
     buffer_size: ?usize = null,
     in_place: bool = false,
@@ -169,6 +174,13 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
             }
             i += 1;
             opts.key = args[i];
+        } else if (std.mem.eql(u8, arg, "--context")) {
+            if (i + 1 >= args.len) {
+                std.debug.print("Error: --context requires a value\n", .{});
+                return error.InvalidArguments;
+            }
+            i += 1;
+            opts.context = args[i];
         } else if (std.mem.eql(u8, arg, "--threads")) {
             if (i + 1 >= args.len) {
                 std.debug.print("Error: --threads requires a value\n", .{});
@@ -632,7 +644,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     };
 
     // Derive keys from master key using TurboSHAKE128
-    const derived_keys = crypto.deriveKeys(key);
+    const derived_keys = crypto.deriveKeys(key, opts.context);
 
     // Check if source is a file or directory
     const is_dir = utils.isDirectory(source_path) catch false;
@@ -847,7 +859,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
     };
 
     // Derive keys from master key using TurboSHAKE128
-    const derived_keys = crypto.deriveKeys(key);
+    const derived_keys = crypto.deriveKeys(key, opts.context);
 
     // Check if source is a file or directory
     const is_dir = utils.isDirectory(source_path) catch false;

@@ -751,7 +751,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
 
     // Generate a random key for testing
     const key = keygen.generate();
-    const derived_keys = crypto.deriveKeys(key);
+    const derived_keys = crypto.deriveKeys(key, null);
 
     // Ensure tmp/ directory exists
     const tmp_dir = "tmp";
