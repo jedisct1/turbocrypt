@@ -69,7 +69,7 @@ const usage_text =
     \\  --force              Overwrite existing files without prompting
     \\  --enc-suffix         Add ".enc" suffix when encrypting, remove when decrypting
     \\                       (skips files without .enc suffix during decryption)
-    \\  --encrypt-filenames  Encrypt filenames using HCTR2 and base91 encoding
+    \\  --enc-filenames      Encrypt filenames using HCTR2 and base91 encoding
     \\                       (preserves directory structure, encrypts each path component)
     \\                       (incompatible with --in-place)
     \\  --exclude <pattern>  Exclude files matching pattern (can use multiple times)
@@ -122,7 +122,7 @@ fn handleDirectory(
             });
             std.debug.print("        Reason: {}\n", .{err});
             if (!is_encrypt) {
-                std.debug.print("        Suggestion: Ensure the directory was encrypted with --encrypt-filenames using the same key\n", .{});
+                std.debug.print("        Suggestion: Ensure the directory was encrypted with --enc-filenames using the same key\n", .{});
             }
             return err;
         };
@@ -209,7 +209,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
             opts.force = true;
         } else if (std.mem.eql(u8, arg, "--enc-suffix")) {
             opts.enc_suffix = true;
-        } else if (std.mem.eql(u8, arg, "--encrypt-filenames")) {
+        } else if (std.mem.eql(u8, arg, "--enc-filenames")) {
             opts.encrypt_filenames = true;
         } else if (std.mem.eql(u8, arg, "--ignore-symlinks")) {
             opts.ignore_symlinks = true;
@@ -265,7 +265,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
 
     // Validate incompatible flag combinations
     if (opts.in_place and opts.encrypt_filenames) {
-        std.debug.print("Error: --in-place and --encrypt-filenames are incompatible\n", .{});
+        std.debug.print("Error: --in-place and --enc-filenames are incompatible\n", .{});
         std.debug.print("       In-place encryption cannot change filenames\n", .{});
         return error.InvalidArguments;
     }
@@ -513,7 +513,7 @@ const ScanAndProcessContext = struct {
                 });
                 std.debug.print("        Reason: {}\n", .{err});
                 if (!self.is_encrypt) {
-                    std.debug.print("        Suggestion: Ensure the file was encrypted with --encrypt-filenames using the same key\n", .{});
+                    std.debug.print("        Suggestion: Ensure the file was encrypted with --enc-filenames using the same key\n", .{});
                 }
                 return err;
             };
