@@ -32,20 +32,12 @@ const BenchStats = struct {
 
     fn min(self: BenchStats) u64 {
         if (self.durations_ns.items.len == 0) return 0;
-        var m = self.durations_ns.items[0];
-        for (self.durations_ns.items[1..]) |d| {
-            if (d < m) m = d;
-        }
-        return m;
+        return std.mem.min(u64, self.durations_ns.items);
     }
 
     fn max(self: BenchStats) u64 {
         if (self.durations_ns.items.len == 0) return 0;
-        var m = self.durations_ns.items[0];
-        for (self.durations_ns.items[1..]) |d| {
-            if (d > m) m = d;
-        }
-        return m;
+        return std.mem.max(u64, self.durations_ns.items);
     }
 
     fn stddev(self: BenchStats) f64 {

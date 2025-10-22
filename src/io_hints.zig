@@ -88,19 +88,14 @@ pub fn flushSync(mapped: []align(std.heap.page_size_min) u8) void {
 /// Sync file data to disk (metadata may not be synced)
 pub fn syncFileData(file: std.fs.File) void {
     switch (builtin.os.tag) {
-        .linux => {
-            // fdatasync - sync data but not necessarily metadata (faster than fsync)
-            _ = std.os.linux.fdatasync(@as(i32, @intCast(file.handle)));
-        },
         .macos, .ios, .tvos, .watchos => {
-            // macOS uses F_FULLFSYNC for true sync, but it's very slow
-            // Use fcntl(F_FULLFSYNC) for durability
-            // F_FULLFSYNC = 51
-            _ = std.c.fcntl(file.handle, 51, @as(c_int, 0));
+            // macOS requires F_FULLFSYNC for true durability (forces drive cache flush)
+            // Regular fdatasync/fsync on macOS doesn't guarantee data reaches physical medium
+            _ = std.c.fcntl(file.handle, std.c.F.FULLFSYNC, @as(c_int, 0));
         },
         else => {
-            // Fallback to fsync on other platforms
-            file.sync() catch {};
+            // Use stdlib fdatasync for other platforms (Linux, Windows, etc.)
+            std.posix.fdatasync(file.handle) catch {};
         },
     }
 }

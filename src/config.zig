@@ -104,84 +104,45 @@ pub const Config = struct {
 
     /// Serialize config to JSON string
     pub fn toJson(self: Config, allocator: std.mem.Allocator) ![]const u8 {
-        // We need to convert the key to base64 manually since std.json doesn't handle arrays well
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const arena_allocator = arena.allocator();
+        // Create a serialization-friendly struct with key as hex string
+        const JsonConfig = struct {
+            key: ?[]const u8,
+            threads: ?u32,
+            buffer_size: ?usize,
+            exclude_patterns: []const []const u8,
+            ignore_symlinks: ?bool,
+        };
 
-        // Build JSON manually
-        var json = std.ArrayList(u8){};
-        defer json.deinit(allocator);
-
-        try json.appendSlice(allocator, "{\n");
-
-        // Add key (hex encoded, variable length: 16 or 17 bytes)
-        try json.appendSlice(allocator, "  \"key\": ");
-        if (self.key) |key| {
-            try json.appendSlice(allocator, "\"");
-            // Encode as hex string using {x} formatter
-            for (key) |byte| {
-                const hex_str = try std.fmt.allocPrint(arena_allocator, "{x:0>2}", .{byte});
-                try json.appendSlice(allocator, hex_str);
+        // Convert key to hex string if present (manual hex encoding for runtime slices)
+        var hex_key_buf: [42]u8 = undefined; // Max 21 bytes = 42 hex chars
+        const hex_key: ?[]const u8 = if (self.key) |key| blk: {
+            const charset = "0123456789abcdef";
+            for (key, 0..) |byte, i| {
+                hex_key_buf[i * 2] = charset[byte >> 4];
+                hex_key_buf[i * 2 + 1] = charset[byte & 0x0F];
             }
-            try json.appendSlice(allocator, "\"");
-        } else {
-            try json.appendSlice(allocator, "null");
-        }
-        try json.appendSlice(allocator, ",\n");
+            break :blk hex_key_buf[0 .. key.len * 2];
+        } else null;
 
-        // Add threads
-        try json.appendSlice(allocator, "  \"threads\": ");
-        if (self.threads) |threads| {
-            const threads_str = try std.fmt.allocPrint(arena_allocator, "{d}", .{threads});
-            try json.appendSlice(allocator, threads_str);
-        } else {
-            try json.appendSlice(allocator, "null");
-        }
-        try json.appendSlice(allocator, ",\n");
+        const json_config = JsonConfig{
+            .key = hex_key,
+            .threads = self.threads,
+            .buffer_size = self.buffer_size,
+            .exclude_patterns = self.exclude_patterns,
+            .ignore_symlinks = self.ignore_symlinks,
+        };
 
-        // Add buffer_size
-        try json.appendSlice(allocator, "  \"buffer_size\": ");
-        if (self.buffer_size) |size| {
-            const size_str = try std.fmt.allocPrint(arena_allocator, "{d}", .{size});
-            try json.appendSlice(allocator, size_str);
-        } else {
-            try json.appendSlice(allocator, "null");
-        }
-        try json.appendSlice(allocator, ",\n");
+        // Use std.json.Stringify with pretty printing
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
 
-        // Add exclude_patterns
-        try json.appendSlice(allocator, "  \"exclude_patterns\": ");
-        if (self.exclude_patterns.len == 0) {
-            try json.appendSlice(allocator, "[]");
-        } else {
-            try json.appendSlice(allocator, "[\n");
-            for (self.exclude_patterns, 0..) |pattern, i| {
-                try json.appendSlice(allocator, "    \"");
-                try json.appendSlice(allocator, pattern);
-                try json.appendSlice(allocator, "\"");
-                if (i < self.exclude_patterns.len - 1) {
-                    try json.appendSlice(allocator, ",");
-                }
-                try json.appendSlice(allocator, "\n");
-            }
-            try json.appendSlice(allocator, "  ]");
-        }
-        try json.appendSlice(allocator, ",\n");
+        var stringify: std.json.Stringify = .{
+            .writer = &out.writer,
+            .options = .{ .whitespace = .indent_2 },
+        };
+        try stringify.write(json_config);
 
-        // Add ignore_symlinks
-        try json.appendSlice(allocator, "  \"ignore_symlinks\": ");
-        if (self.ignore_symlinks) |ignore| {
-            const ignore_str = if (ignore) "true" else "false";
-            try json.appendSlice(allocator, ignore_str);
-        } else {
-            try json.appendSlice(allocator, "null");
-        }
-        try json.appendSlice(allocator, "\n");
-
-        try json.appendSlice(allocator, "}");
-
-        return try allocator.dupe(u8, json.items);
+        return try allocator.dupe(u8, out.written());
     }
 
     /// Free all allocated memory
