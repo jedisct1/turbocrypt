@@ -116,12 +116,7 @@ pub const Config = struct {
         // Convert key to hex string if present
         var hex_key_buf: [42]u8 = undefined; // Max 21 bytes = 42 hex chars
         const hex_key: ?[]const u8 = if (self.key) |key| blk: {
-            const charset = "0123456789abcdef";
-            for (key, 0..) |byte, i| {
-                hex_key_buf[i * 2 + 0] = charset[byte >> 4];
-                hex_key_buf[i * 2 + 1] = charset[byte & 15];
-            }
-            break :blk hex_key_buf[0 .. key.len * 2];
+            break :blk std.fmt.bufPrint(&hex_key_buf, "{x}", .{key}) catch unreachable;
         } else null;
 
         const json_config = JsonConfig{
