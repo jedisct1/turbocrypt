@@ -102,7 +102,7 @@ turbocrypt decrypt encrypted-documents/ my-documents/
 
 That's it!
 
-## Common Operations
+## Usage Examples
 
 ### Password-Protected Keys
 
