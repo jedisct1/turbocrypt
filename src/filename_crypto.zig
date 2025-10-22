@@ -324,8 +324,8 @@ test "filename encryption length validation" {
     const key: [16]u8 = @splat(0x42);
 
     // Test that typical filenames encrypt successfully and fit within limit
-    const varnish_name = "tracing_attributes-9e84d350f1142111.tracing_attributes.cb6dd642f55c194a-cgu.15.rcgu.o";
-    const encrypted = try encryptFilename(allocator, varnish_name, key);
+    const long_name = "tracing_attributes-9e84d350f1142111.tracing_attributes.cb6dd642f55c194a-cgu.15.rcgu.o";
+    const encrypted = try encryptFilename(allocator, long_name, key);
     defer allocator.free(encrypted);
     try testing.expect(encrypted.len <= filesystem_filename_limit);
 
