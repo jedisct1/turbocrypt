@@ -22,6 +22,8 @@ https://github.com/jedisct1/turbocrypt/releases
 
 ### Build from Source
 
+Note: Building from source is recommended for best performance. The compiled binary will be optimized for your specific platform, while pre-built binaries are built for the lowest common denominator.
+
 Requirements: [Zig](https://ziglang.org/download/) (master)
 
 ```bash
@@ -191,7 +193,7 @@ turbocrypt verify --quick --key my-secret.key encrypted-documents/
 
 This is useful for checking backups or verifying files after transferring them.
 
-**Quick vs Full Verification:**
+Quick vs Full Verification:
 - `--quick`: Only verifies the header MAC (checks if you have the correct key). Much faster but doesn't verify data integrity.
 - Full verification (default): Checks both the header MAC and content, ensuring both key correctness and data integrity.
 
