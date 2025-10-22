@@ -69,7 +69,7 @@ const usage_text =
     \\  --force              Overwrite existing files without prompting
     \\  --enc-suffix         Add ".enc" suffix when encrypting, remove when decrypting
     \\                       (skips files without .enc suffix during decryption)
-    \\  --enc-filenames      Encrypt filenames using HCTR2 and base91 encoding
+    \\  --enc-filenames      Encrypt filenames
     \\                       (preserves directory structure, encrypts each path component)
     \\                       (incompatible with --in-place)
     \\  --exclude <pattern>  Exclude files matching pattern (can use multiple times)
