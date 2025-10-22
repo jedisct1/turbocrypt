@@ -471,3 +471,57 @@ test "decrypt with wrong key fails" {
     const file_result = std.fs.cwd().openFile(decrypted_path, .{});
     try testing.expectError(error.FileNotFound, file_result);
 }
+
+test "decrypt truncates existing destination file" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    std.fs.cwd().makeDir("tmp") catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    const plaintext = "short message";
+    const input_path = "tmp/truncate_input.txt";
+    const encrypted_path = "tmp/truncate_encrypted.bin";
+    const decrypted_path = "tmp/truncate_output.txt";
+
+    // Write plaintext input
+    {
+        const file = try std.fs.cwd().createFile(input_path, .{});
+        defer file.close();
+        try file.writeAll(plaintext);
+    }
+    defer std.fs.cwd().deleteFile(input_path) catch {};
+
+    // Prepare key material
+    const key: [crypto.key_length]u8 = [_]u8{7} ** crypto.key_length;
+    const derived = crypto.deriveKeys(key, null);
+
+    // Encrypt the file (produces small encrypted output -> buffered path on decrypt)
+    try encryptFile(input_path, encrypted_path, derived, allocator);
+    defer std.fs.cwd().deleteFile(encrypted_path) catch {};
+
+    // Pre-create destination file with larger contents that must be truncated
+    {
+        const file = try std.fs.cwd().createFile(decrypted_path, .{});
+        defer file.close();
+        try file.writeAll("this content should be fully replaced and truncated");
+    }
+
+    // Decrypt to the existing destination path
+    try decryptFile(encrypted_path, decrypted_path, derived, allocator);
+    defer std.fs.cwd().deleteFile(decrypted_path) catch {};
+
+    // Verify file size matches plaintext (ensures truncation happened)
+    const file = try std.fs.cwd().openFile(decrypted_path, .{});
+    defer file.close();
+    const stat = try file.stat();
+    try testing.expectEqual(@as(u64, plaintext.len), stat.size);
+
+    // Verify content matches plaintext
+    const buf = try allocator.alloc(u8, plaintext.len);
+    defer allocator.free(buf);
+    const read = try file.readAll(buf);
+    try testing.expectEqual(@as(usize, plaintext.len), read);
+    try testing.expectEqualStrings(plaintext, buf);
+}
