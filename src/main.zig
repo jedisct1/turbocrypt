@@ -182,6 +182,36 @@ const Options = struct {
     exclude_patterns: std.ArrayList([]const u8) = std.ArrayList([]const u8){},
 };
 
+/// Constant for the .enc file extension suffix
+const enc_suffix = ".enc";
+
+/// Check if a path has the .enc suffix
+fn hasEncSuffix(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, enc_suffix);
+}
+
+/// Apply .enc suffix transformation based on operation type
+/// For encryption: adds ".enc" suffix
+/// For decryption: removes ".enc" suffix (if present)
+/// Returns owned slice that caller must free, or null if no transformation needed
+fn applyEncSuffix(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    is_encrypt: bool,
+) !?[]u8 {
+    if (is_encrypt) {
+        // Encrypting: add ".enc" suffix
+        return try std.mem.concat(allocator, u8, &[_][]const u8{ path, enc_suffix });
+    } else {
+        // Decrypting: remove ".enc" suffix if present
+        if (hasEncSuffix(path)) {
+            return try allocator.dupe(u8, path[0 .. path.len - enc_suffix.len]);
+        }
+        // No suffix to remove, return null to indicate no transformation
+        return null;
+    }
+}
+
 /// Parse command-line options from arguments
 /// Returns the parsed options and the remaining positional arguments
 fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct { options: Options, positional: []const []const u8 } {
@@ -345,6 +375,28 @@ fn getThreadCount(opts: Options) !u32 {
     return @as(u32, @intCast(@min(cpu_count, 16)));
 }
 
+/// Handle key loading errors with consistent error messages
+/// command_name should be the command being executed (e.g., "encrypt", "decrypt", "verify", "list")
+fn handleKeyLoadError(err: anyerror, command_name: []const u8) !void {
+    if (err == error.KeyNotFound) {
+        std.debug.print("Error: No encryption key configured\n", .{});
+        std.debug.print("\nYou can specify a key in one of these ways:\n", .{});
+        std.debug.print("  1. Use --key flag:           turbocrypt {s} --key secret.key <source> <dest>\n", .{command_name});
+        std.debug.print("  2. Set environment variable: export {s}=secret.key\n", .{keyloader.env_var_name});
+        std.debug.print("  3. Set default key:          turbocrypt config set-key secret.key\n", .{});
+        return error.KeyNotFound;
+    }
+    if (err == error.PasswordRequired) {
+        std.debug.print("Error: This key file is password-protected. Use --password flag.\n", .{});
+        return error.PasswordRequired;
+    }
+    if (err == error.InvalidPassword) {
+        std.debug.print("Error: Invalid password for key file.\n", .{});
+        return error.InvalidPassword;
+    }
+    return err;
+}
+
 fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator) !void {
     // Parse options (to support --password flag)
     const parsed = try parseOptions(args, allocator);
@@ -396,79 +448,36 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator) !void {
     std.debug.print("WARNING: Keep this key file secure! Anyone with access to it can decrypt your files.\n", .{});
 }
 
-/// Context for scanning only (collects file paths without processing)
-const ScanOnlyContext = struct {
-    source_base: []const u8,
-    dest_base: []const u8,
-    allocator: std.mem.Allocator,
-    file_paths: std.ArrayList([]const u8),
-    file_sizes: std.ArrayList(u64),
-    total_bytes: u64,
-    enc_suffix: bool,
-    is_encrypt: bool,
-    encrypt_filenames: bool,
-    key: [16]u8,
-    exclude_patterns: std.ArrayList([]const u8),
-    ignore_symlinks: bool,
-
-    fn callback(
-        relative_path: []const u8,
-        full_path: []const u8,
-        is_directory: bool,
-        context: *anyopaque,
-    ) !void {
-        const self: *ScanOnlyContext = @ptrCast(@alignCast(context));
-
-        if (is_directory) {
-            try handleDirectory(
-                relative_path,
-                self.dest_base,
-                self.encrypt_filenames,
-                self.is_encrypt,
-                self.key,
-                self.allocator,
-            );
-            return;
-        }
-
-        // Check exclude patterns first
-        if (utils.matchesExcludePattern(relative_path, self.exclude_patterns)) {
-            return; // Skip excluded file
-        }
-
-        // When decrypting with enc_suffix, skip files without ".enc" suffix
-        if (self.enc_suffix and !self.is_encrypt) {
-            if (!std.mem.endsWith(u8, full_path, ".enc")) {
-                return; // Skip this file
-            }
-        }
-
-        // Get file size
-        const file = try std.fs.cwd().openFile(full_path, .{});
-        defer file.close();
-        const file_size = (try file.stat()).size;
-
-        // Store file path for later processing
-        const stored_path = try self.allocator.dupe(u8, full_path);
-        try self.file_paths.append(self.allocator, stored_path);
-        try self.file_sizes.append(self.allocator, file_size);
-        self.total_bytes += file_size;
-    }
+/// Processing mode for directory scanning
+const ProcessingMode = union(enum) {
+    /// Scan only - collect file paths for later processing
+    scan_only: struct {
+        file_paths: std.ArrayList([]const u8),
+        file_sizes: std.ArrayList(u64),
+        total_bytes: u64,
+    },
+    /// Scan and process - submit files to worker pool immediately
+    scan_and_process: struct {
+        worker_pool: *worker.WorkerPool,
+        progress_tracker: *progress.ProgressTracker,
+    },
 };
 
-/// Context for unified scanning and processing (discovers and processes files concurrently)
-const ScanAndProcessContext = struct {
+/// Unified context for directory traversal callbacks
+const DirectoryScanContext = struct {
+    // Common fields
     source_base: []const u8,
     dest_base: []const u8,
     allocator: std.mem.Allocator,
-    is_encrypt: bool,
-    worker_pool: *worker.WorkerPool,
-    progress_tracker: *progress.ProgressTracker,
     enc_suffix: bool,
+    is_encrypt: bool,
     encrypt_filenames: bool,
     key: [16]u8,
     exclude_patterns: std.ArrayList([]const u8),
     ignore_symlinks: bool,
+
+    // Mode-specific data
+    mode: ProcessingMode,
 
     fn callback(
         relative_path: []const u8,
@@ -476,8 +485,9 @@ const ScanAndProcessContext = struct {
         is_directory: bool,
         context: *anyopaque,
     ) !void {
-        const self: *ScanAndProcessContext = @ptrCast(@alignCast(context));
+        const self: *DirectoryScanContext = @ptrCast(@alignCast(context));
 
+        // Shared logic for directory handling
         if (is_directory) {
             try handleDirectory(
                 relative_path,
@@ -490,43 +500,60 @@ const ScanAndProcessContext = struct {
             return;
         }
 
-        // Check exclude patterns first
+        // Shared logic for exclude patterns
         if (utils.matchesExcludePattern(relative_path, self.exclude_patterns)) {
             return; // Skip excluded file
         }
 
-        // When decrypting with enc_suffix, skip files without ".enc" suffix
+        // Shared logic for enc_suffix filtering
         if (self.enc_suffix and !self.is_encrypt) {
-            if (!std.mem.endsWith(u8, full_path, ".enc")) {
+            if (!hasEncSuffix(full_path)) {
                 return; // Skip this file
             }
         }
 
-        // Get file size
+        // Shared logic for file size retrieval
         const file = try std.fs.cwd().openFile(full_path, .{});
         defer file.close();
         const file_size = (try file.stat()).size;
 
+        // Mode-specific processing
+        switch (self.mode) {
+            .scan_only => |*scan| {
+                const stored_path = try self.allocator.dupe(u8, full_path);
+                try scan.file_paths.append(self.allocator, stored_path);
+                try scan.file_sizes.append(self.allocator, file_size);
+                scan.total_bytes += file_size;
+            },
+            .scan_and_process => |proc| {
+                try self.processScanAndProcessFile(relative_path, full_path, file_size, proc.worker_pool, proc.progress_tracker);
+            },
+        }
+    }
+
+    fn processScanAndProcessFile(
+        self: *DirectoryScanContext,
+        relative_path: []const u8,
+        full_path: []const u8,
+        file_size: u64,
+        worker_pool: *worker.WorkerPool,
+        progress_tracker: *progress.ProgressTracker,
+    ) !void {
         // Update totals in progress tracker (for dynamic discovery)
-        self.progress_tracker.addTotalFile();
-        self.progress_tracker.addTotalBytes(file_size);
+        progress_tracker.addTotalFile();
+        progress_tracker.addTotalBytes(file_size);
 
         // Compute the destination relative path with suffix handling
         var dest_relative_path: []const u8 = undefined;
         var needs_free = false;
 
         if (self.enc_suffix) {
-            if (self.is_encrypt) {
-                // Encrypting: add ".enc" suffix
-                dest_relative_path = try std.mem.concat(self.allocator, u8, &[_][]const u8{ relative_path, ".enc" });
+            const transformed = try applyEncSuffix(self.allocator, relative_path, self.is_encrypt);
+            if (transformed) |t| {
+                dest_relative_path = t;
                 needs_free = true;
             } else {
-                // Decrypting: remove ".enc" suffix
-                if (std.mem.endsWith(u8, relative_path, ".enc")) {
-                    dest_relative_path = relative_path[0 .. relative_path.len - 4];
-                } else {
-                    dest_relative_path = relative_path;
-                }
+                dest_relative_path = relative_path;
             }
         } else {
             dest_relative_path = relative_path;
@@ -594,7 +621,7 @@ const ScanAndProcessContext = struct {
             .file_size = file_size,
         };
 
-        try self.worker_pool.submitJob(job);
+        try worker_pool.submitJob(job);
     }
 };
 
@@ -631,19 +658,14 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         parsed.positional[1]
     else if (opts.in_place) blk: {
         if (opts.enc_suffix) {
-            if (is_encrypt) {
-                // Encrypting: add ".enc" suffix
-                dest_path_buf = try std.mem.concat(allocator, u8, &[_][]const u8{ source_path, ".enc" });
+            const transformed = try applyEncSuffix(allocator, source_path, is_encrypt);
+            if (transformed) |t| {
+                dest_path_buf = t;
                 break :blk dest_path_buf.?;
             } else {
-                // Decrypting: remove ".enc" suffix
-                if (std.mem.endsWith(u8, source_path, ".enc")) {
-                    dest_path_buf = try allocator.dupe(u8, source_path[0 .. source_path.len - 4]);
-                    break :blk dest_path_buf.?;
-                } else {
-                    std.debug.print("Error: Source file must have .enc suffix when using --enc-suffix\n", .{});
-                    return error.InvalidArguments;
-                }
+                // Decrypting but source doesn't have .enc suffix
+                std.debug.print("Error: Source file must have .enc suffix when using --enc-suffix\n", .{});
+                return error.InvalidArguments;
             }
         } else {
             break :blk source_path;
@@ -662,23 +684,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
 
     // Load key (from file or config)
     const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
-        if (err == error.KeyNotFound) {
-            std.debug.print("Error: No encryption key configured\n", .{});
-            std.debug.print("\nYou can specify a key in one of these ways:\n", .{});
-            std.debug.print("  1. Use --key flag:           turbocrypt {s} --key secret.key <source> <dest>\n", .{op_name});
-            std.debug.print("  2. Set environment variable: export {s}=secret.key\n", .{keyloader.env_var_name});
-            std.debug.print("  3. Set default key:          turbocrypt config set-key secret.key\n", .{});
-            return error.KeyNotFound;
-        }
-        if (err == error.PasswordRequired) {
-            std.debug.print("Error: This key file is password-protected. Use --password flag.\n", .{});
-            return error.PasswordRequired;
-        }
-        if (err == error.InvalidPassword) {
-            std.debug.print("Error: Invalid password for key file.\n", .{});
-            return error.InvalidPassword;
-        }
-        return err;
+        return handleKeyLoadError(err, op_name);
     };
 
     // Derive keys from master key using TurboSHAKE128
@@ -702,58 +708,57 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             std.debug.print("Scanning files...\n", .{});
 
             // Phase 1: Scan and collect all file paths
-            var scan_ctx = ScanOnlyContext{
+            var scan_ctx = DirectoryScanContext{
                 .source_base = source_path,
                 .dest_base = dest_path,
                 .allocator = allocator,
-                .file_paths = std.ArrayList([]const u8){},
-                .file_sizes = std.ArrayList(u64){},
-                .total_bytes = 0,
                 .enc_suffix = opts.enc_suffix,
                 .is_encrypt = is_encrypt,
                 .encrypt_filenames = opts.encrypt_filenames,
                 .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
+                .mode = .{ .scan_only = .{
+                    .file_paths = std.ArrayList([]const u8){},
+                    .file_sizes = std.ArrayList(u64){},
+                    .total_bytes = 0,
+                } },
             };
             defer {
-                for (scan_ctx.file_paths.items) |path| allocator.free(path);
-                scan_ctx.file_paths.deinit(allocator);
-                scan_ctx.file_sizes.deinit(allocator);
+                for (scan_ctx.mode.scan_only.file_paths.items) |path| allocator.free(path);
+                scan_ctx.mode.scan_only.file_paths.deinit(allocator);
+                scan_ctx.mode.scan_only.file_sizes.deinit(allocator);
             }
 
-            utils.walkDirectory(source_path, ScanOnlyContext.callback, &scan_ctx, allocator, opts.ignore_symlinks) catch |err| {
+            utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks) catch |err| {
                 std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
                 return err;
             };
 
             if (opts.dry_run) {
-                std.debug.print("[DRY RUN] Would process {d} files...\n", .{scan_ctx.file_paths.items.len});
+                std.debug.print("[DRY RUN] Would process {d} files...\n", .{scan_ctx.mode.scan_only.file_paths.items.len});
             } else {
-                std.debug.print("{s} {d} files...\n", .{ op_name_cap, scan_ctx.file_paths.items.len });
+                std.debug.print("{s} {d} files...\n", .{ op_name_cap, scan_ctx.mode.scan_only.file_paths.items.len });
             }
 
             // Phase 2: Process all collected files
-            var tracker = progress.ProgressTracker.init(scan_ctx.file_paths.items.len, scan_ctx.total_bytes);
+            var tracker = progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes);
             var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run);
             defer pool.deinit();
 
             try tracker.startDisplay();
             defer tracker.stopDisplay();
 
-            for (scan_ctx.file_paths.items, scan_ctx.file_sizes.items) |file_path, file_size| {
+            for (scan_ctx.mode.scan_only.file_paths.items, scan_ctx.mode.scan_only.file_sizes.items) |file_path, file_size| {
                 const source_path_dup = try allocator.dupe(u8, file_path);
 
                 // For in-place with enc_suffix, modify destination path
                 const dest_path_dup = if (opts.enc_suffix) blk2: {
-                    if (is_encrypt) {
-                        break :blk2 try std.mem.concat(allocator, u8, &[_][]const u8{ file_path, ".enc" });
+                    const transformed = try applyEncSuffix(allocator, file_path, is_encrypt);
+                    if (transformed) |t| {
+                        break :blk2 t;
                     } else {
-                        if (std.mem.endsWith(u8, file_path, ".enc")) {
-                            break :blk2 try allocator.dupe(u8, file_path[0 .. file_path.len - 4]);
-                        } else {
-                            break :blk2 try allocator.dupe(u8, file_path);
-                        }
+                        break :blk2 try allocator.dupe(u8, file_path);
                     }
                 } else try allocator.dupe(u8, file_path);
 
@@ -787,21 +792,23 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             try tracker.startDisplay();
             defer tracker.stopDisplay();
 
-            var ctx = ScanAndProcessContext{
+            var ctx = DirectoryScanContext{
                 .source_base = source_path,
                 .dest_base = dest_path,
                 .allocator = allocator,
                 .is_encrypt = is_encrypt,
-                .worker_pool = &pool,
-                .progress_tracker = &tracker,
                 .enc_suffix = opts.enc_suffix,
                 .encrypt_filenames = opts.encrypt_filenames,
                 .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
+                .mode = .{ .scan_and_process = .{
+                    .worker_pool = &pool,
+                    .progress_tracker = &tracker,
+                } },
             };
 
-            utils.walkDirectory(source_path, ScanAndProcessContext.callback, &ctx, allocator, opts.ignore_symlinks) catch |err| {
+            utils.walkDirectory(source_path, DirectoryScanContext.callback, &ctx, allocator, opts.ignore_symlinks) catch |err| {
                 tracker.stopDisplay();
                 pool.finish();
                 std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
@@ -885,23 +892,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
     // Load key (from file or config)
     const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
-        if (err == error.KeyNotFound) {
-            std.debug.print("Error: No encryption key configured\n", .{});
-            std.debug.print("\nYou can specify a key in one of these ways:\n", .{});
-            std.debug.print("  1. Use --key flag:           turbocrypt verify --key secret.key <source>\n", .{});
-            std.debug.print("  2. Set environment variable: export {s}=secret.key\n", .{keyloader.env_var_name});
-            std.debug.print("  3. Set default key:          turbocrypt config set-key secret.key\n", .{});
-            return error.KeyNotFound;
-        }
-        if (err == error.PasswordRequired) {
-            std.debug.print("Error: This key file is password-protected. Use --password flag.\n", .{});
-            return error.PasswordRequired;
-        }
-        if (err == error.InvalidPassword) {
-            std.debug.print("Error: Invalid password for key file.\n", .{});
-            return error.InvalidPassword;
-        }
-        return err;
+        return handleKeyLoadError(err, "verify");
     };
 
     // Derive keys from master key using TurboSHAKE128
@@ -925,46 +916,48 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
         std.debug.print("Scanning files...\n", .{});
 
         // Scan and collect all file paths
-        var scan_ctx = ScanOnlyContext{
+        var scan_ctx = DirectoryScanContext{
             .source_base = source_path,
             .dest_base = source_path, // Not used for verify
             .allocator = allocator,
-            .file_paths = std.ArrayList([]const u8){},
-            .file_sizes = std.ArrayList(u64){},
-            .total_bytes = 0,
             .enc_suffix = false, // Don't filter by .enc suffix for verify
             .is_encrypt = false, // Not used for verify
             .encrypt_filenames = false,
             .key = derived_keys.filename_key,
             .exclude_patterns = opts.exclude_patterns,
             .ignore_symlinks = opts.ignore_symlinks,
+            .mode = .{ .scan_only = .{
+                .file_paths = std.ArrayList([]const u8){},
+                .file_sizes = std.ArrayList(u64){},
+                .total_bytes = 0,
+            } },
         };
         defer {
-            for (scan_ctx.file_paths.items) |path| allocator.free(path);
-            scan_ctx.file_paths.deinit(allocator);
-            scan_ctx.file_sizes.deinit(allocator);
+            for (scan_ctx.mode.scan_only.file_paths.items) |path| allocator.free(path);
+            scan_ctx.mode.scan_only.file_paths.deinit(allocator);
+            scan_ctx.mode.scan_only.file_sizes.deinit(allocator);
         }
 
-        utils.walkDirectory(source_path, ScanOnlyContext.callback, &scan_ctx, allocator, opts.ignore_symlinks) catch |err| {
+        utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks) catch |err| {
             std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
             return err;
         };
 
         if (opts.dry_run) {
-            std.debug.print("[DRY RUN] Would verify {d} files...\n", .{scan_ctx.file_paths.items.len});
+            std.debug.print("[DRY RUN] Would verify {d} files...\n", .{scan_ctx.mode.scan_only.file_paths.items.len});
         } else {
-            std.debug.print("Verifying {d} files...\n", .{scan_ctx.file_paths.items.len});
+            std.debug.print("Verifying {d} files...\n", .{scan_ctx.mode.scan_only.file_paths.items.len});
         }
 
         // Verify all collected files
-        var tracker = progress.ProgressTracker.init(scan_ctx.file_paths.items.len, scan_ctx.total_bytes);
+        var tracker = progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes);
         var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick, opts.dry_run);
         defer pool.deinit();
 
         try tracker.startDisplay();
         defer tracker.stopDisplay();
 
-        for (scan_ctx.file_paths.items, scan_ctx.file_sizes.items) |file_path, file_size| {
+        for (scan_ctx.mode.scan_only.file_paths.items, scan_ctx.mode.scan_only.file_sizes.items) |file_path, file_size| {
             const source_path_dup = try allocator.dupe(u8, file_path);
 
             const job = worker.FileJob{
@@ -1091,23 +1084,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
         // Load key (from file or config)
         const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
-            if (err == error.KeyNotFound) {
-                std.debug.print("Error: No encryption key configured\n", .{});
-                std.debug.print("\nYou can specify a key in one of these ways:\n", .{});
-                std.debug.print("  1. Use --key flag:           turbocrypt list --key secret.key --encrypted-filenames <directory>\n", .{});
-                std.debug.print("  2. Set environment variable: export {s}=secret.key\n", .{keyloader.env_var_name});
-                std.debug.print("  3. Set default key:          turbocrypt config set-key secret.key\n", .{});
-                return error.KeyNotFound;
-            }
-            if (err == error.PasswordRequired) {
-                std.debug.print("Error: This key file is password-protected. Use --password flag.\n", .{});
-                return error.PasswordRequired;
-            }
-            if (err == error.InvalidPassword) {
-                std.debug.print("Error: Invalid password for key file.\n", .{});
-                return error.InvalidPassword;
-            }
-            return err;
+            return handleKeyLoadError(err, "list");
         };
 
         // Derive keys from master key and use the derived filename_key
@@ -1293,6 +1270,86 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator) !vo
     }
 }
 
+const PatternOp = enum { add, remove };
+
+fn modifyExcludePattern(
+    cfg: *config_mod.Config,
+    pattern: []const u8,
+    op: PatternOp,
+    allocator: std.mem.Allocator,
+) !void {
+    switch (op) {
+        .add => {
+            // Check if pattern already exists
+            for (cfg.exclude_patterns) |existing| {
+                if (std.mem.eql(u8, existing, pattern)) {
+                    std.debug.print("Pattern '{s}' already in exclude list\n", .{pattern});
+                    return;
+                }
+            }
+
+            // Add new pattern
+            var new_patterns = try allocator.alloc([]const u8, cfg.exclude_patterns.len + 1);
+            for (cfg.exclude_patterns, 0..) |old_pattern, i| {
+                new_patterns[i] = try allocator.dupe(u8, old_pattern);
+            }
+            new_patterns[cfg.exclude_patterns.len] = try allocator.dupe(u8, pattern);
+
+            // Free old patterns
+            for (cfg.exclude_patterns) |old_pattern| {
+                allocator.free(old_pattern);
+            }
+            if (cfg.exclude_patterns.len > 0) {
+                allocator.free(cfg.exclude_patterns);
+            }
+
+            cfg.exclude_patterns = new_patterns;
+            std.debug.print("Added exclude pattern: {s}\n", .{pattern});
+        },
+        .remove => {
+            // Find pattern
+            var found_idx: ?usize = null;
+            for (cfg.exclude_patterns, 0..) |existing, i| {
+                if (std.mem.eql(u8, existing, pattern)) {
+                    found_idx = i;
+                    break;
+                }
+            }
+
+            if (found_idx == null) {
+                std.debug.print("Pattern '{s}' not found in exclude list\n", .{pattern});
+                return;
+            }
+
+            // Remove pattern
+            if (cfg.exclude_patterns.len == 1) {
+                // Last pattern - clear the array
+                allocator.free(cfg.exclude_patterns[0]);
+                allocator.free(cfg.exclude_patterns);
+                cfg.exclude_patterns = &[_][]const u8{};
+            } else {
+                var new_patterns = try allocator.alloc([]const u8, cfg.exclude_patterns.len - 1);
+                var new_idx: usize = 0;
+                for (cfg.exclude_patterns, 0..) |old_pattern, i| {
+                    if (i == found_idx.?) {
+                        allocator.free(old_pattern);
+                        continue;
+                    }
+                    // Move ownership - don't duplicate
+                    new_patterns[new_idx] = old_pattern;
+                    new_idx += 1;
+                }
+
+                // Free old array (but not the strings inside - they've been moved)
+                allocator.free(cfg.exclude_patterns);
+                cfg.exclude_patterns = new_patterns;
+            }
+
+            std.debug.print("Removed exclude pattern: {s}\n", .{pattern});
+        },
+    }
+}
+
 fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
     if (args.len < 1) {
         std.debug.print("Error: Missing config subcommand\n", .{});
@@ -1437,39 +1494,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
             return error.InvalidArguments;
         }
 
-        const pattern = args[1];
-
-        // Load config
         var cfg = try config_mod.load(allocator);
         defer cfg.deinit(allocator);
 
-        // Check if pattern already exists
-        for (cfg.exclude_patterns) |existing| {
-            if (std.mem.eql(u8, existing, pattern)) {
-                std.debug.print("Pattern '{s}' already in exclude list\n", .{pattern});
-                return;
-            }
-        }
-
-        // Add new pattern
-        var new_patterns = try allocator.alloc([]const u8, cfg.exclude_patterns.len + 1);
-        for (cfg.exclude_patterns, 0..) |old_pattern, i| {
-            new_patterns[i] = try allocator.dupe(u8, old_pattern);
-        }
-        new_patterns[cfg.exclude_patterns.len] = try allocator.dupe(u8, pattern);
-
-        // Free old patterns
-        for (cfg.exclude_patterns) |old_pattern| {
-            allocator.free(old_pattern);
-        }
-        if (cfg.exclude_patterns.len > 0) {
-            allocator.free(cfg.exclude_patterns);
-        }
-
-        cfg.exclude_patterns = new_patterns;
+        try modifyExcludePattern(&cfg, args[1], .add, allocator);
         try config_mod.save(cfg, allocator);
-
-        std.debug.print("Added exclude pattern: {s}\n", .{pattern});
     } else if (std.mem.eql(u8, subcommand, "remove-exclude")) {
         if (args.len < 2) {
             std.debug.print("Error: Missing exclude pattern\n", .{});
@@ -1477,53 +1506,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
             return error.InvalidArguments;
         }
 
-        const pattern = args[1];
-
-        // Load config
         var cfg = try config_mod.load(allocator);
         defer cfg.deinit(allocator);
 
-        // Find pattern
-        var found_idx: ?usize = null;
-        for (cfg.exclude_patterns, 0..) |existing, i| {
-            if (std.mem.eql(u8, existing, pattern)) {
-                found_idx = i;
-                break;
-            }
-        }
-
-        if (found_idx == null) {
-            std.debug.print("Pattern '{s}' not found in exclude list\n", .{pattern});
-            return;
-        }
-
-        // Remove pattern
-        if (cfg.exclude_patterns.len == 1) {
-            // Last pattern - clear the array
-            allocator.free(cfg.exclude_patterns[0]);
-            allocator.free(cfg.exclude_patterns);
-            cfg.exclude_patterns = &[_][]const u8{};
-        } else {
-            var new_patterns = try allocator.alloc([]const u8, cfg.exclude_patterns.len - 1);
-            var new_idx: usize = 0;
-            for (cfg.exclude_patterns, 0..) |old_pattern, i| {
-                if (i == found_idx.?) {
-                    allocator.free(old_pattern);
-                    continue;
-                }
-                // Move ownership - don't duplicate
-                new_patterns[new_idx] = old_pattern;
-                new_idx += 1;
-            }
-
-            // Free old array (but not the strings inside - they've been moved)
-            allocator.free(cfg.exclude_patterns);
-            cfg.exclude_patterns = new_patterns;
-        }
-
+        try modifyExcludePattern(&cfg, args[1], .remove, allocator);
         try config_mod.save(cfg, allocator);
-
-        std.debug.print("Removed exclude pattern: {s}\n", .{pattern});
     } else if (std.mem.eql(u8, subcommand, "set-ignore-symlinks")) {
         if (args.len < 2) {
             std.debug.print("Error: Missing value\n", .{});
