@@ -108,7 +108,17 @@ fn encryptFileZeroCopy(
     io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
 
     // Create output file with correct size and read/write permissions for mmap
-    const output_file = try std.fs.cwd().createFile(output_path, .{ .read = true });
+    // If it fails due to existing read-only file, delete and retry
+    const output_file = blk: {
+        break :blk std.fs.cwd().createFile(output_path, .{ .read = true }) catch |err| {
+            if (err == error.AccessDenied) {
+                // Try deleting the existing file (might be read-only) and retry
+                std.fs.cwd().deleteFile(output_path) catch {};
+                break :blk try std.fs.cwd().createFile(output_path, .{ .read = true });
+            }
+            return err;
+        };
+    };
     defer output_file.close();
 
     // Check for integer overflow when calculating output size
@@ -164,7 +174,17 @@ fn encryptFileBuffered(
     defer allocator.free(encrypted);
 
     // Write output file
-    const output_file = try std.fs.cwd().createFile(output_path, .{});
+    // If it fails due to existing read-only file, delete and retry
+    const output_file = blk: {
+        break :blk std.fs.cwd().createFile(output_path, .{}) catch |err| {
+            if (err == error.AccessDenied) {
+                // Try deleting the existing file (might be read-only) and retry
+                std.fs.cwd().deleteFile(output_path) catch {};
+                break :blk try std.fs.cwd().createFile(output_path, .{});
+            }
+            return err;
+        };
+    };
     defer output_file.close();
 
     try output_file.writeAll(encrypted);
@@ -261,7 +281,17 @@ fn decryptFileZeroCopy(
     io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
 
     // Create output file with correct size and read/write permissions for mmap
-    const output_file = try std.fs.cwd().createFile(output_path, .{ .read = true });
+    // If it fails due to existing read-only file, delete and retry
+    const output_file = blk: {
+        break :blk std.fs.cwd().createFile(output_path, .{ .read = true }) catch |err| {
+            if (err == error.AccessDenied) {
+                // Try deleting the existing file (might be read-only) and retry
+                std.fs.cwd().deleteFile(output_path) catch {};
+                break :blk try std.fs.cwd().createFile(output_path, .{ .read = true });
+            }
+            return err;
+        };
+    };
     defer output_file.close();
 
     // Check for integer underflow when calculating output size
@@ -318,7 +348,17 @@ fn decryptFileBuffered(
     defer allocator.free(plaintext);
 
     // Write output file
-    const output_file = try std.fs.cwd().createFile(output_path, .{});
+    // If it fails due to existing read-only file, delete and retry
+    const output_file = blk: {
+        break :blk std.fs.cwd().createFile(output_path, .{}) catch |err| {
+            if (err == error.AccessDenied) {
+                // Try deleting the existing file (might be read-only) and retry
+                std.fs.cwd().deleteFile(output_path) catch {};
+                break :blk try std.fs.cwd().createFile(output_path, .{});
+            }
+            return err;
+        };
+    };
     defer output_file.close();
 
     try output_file.writeAll(plaintext);
