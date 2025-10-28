@@ -227,6 +227,41 @@ Quick vs Full Verification:
 - `--quick`: Only verifies the header MAC (checks if you have the correct key). Much faster but doesn't verify data integrity.
 - Full verification (default): Checks both the header MAC and content, ensuring both key correctness and data integrity.
 
+### Listing Encrypted Directory Contents
+
+You can list the contents of an encrypted directory without fully decrypting the files:
+
+```bash
+# List encrypted directory (shows encrypted filenames as-is)
+turbocrypt list encrypted-documents/
+
+# List with decrypted filenames (requires the correct key)
+turbocrypt list --key my-secret.key --encrypted-filenames encrypted-documents/
+```
+
+The list command displays:
+- File paths (decrypted if `--encrypted-filenames` is used)
+- File sizes (encrypted size, which includes 48-byte overhead per file)
+- Total file count and combined size
+
+This is useful for:
+- Browsing encrypted backups without extracting them
+- Verifying what files are in an encrypted archive
+- Finding specific files before decrypting the entire directory
+- Quick inventory of encrypted data
+
+Example output:
+```
+Listing contents: encrypted-documents/
+
+  report.pdf (2500 bytes)
+  memo.doc (1248 bytes)
+  photos/sunset.jpg (5347 bytes)
+  photos/beach.jpg (4896 bytes)
+
+Total: 4 files, 13.4 KB
+```
+
 ### Setting Up Defaults
 
 If you use the same key and settings frequently, save them:

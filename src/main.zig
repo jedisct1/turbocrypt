@@ -30,6 +30,11 @@ const usage_text =
     \\      Verify integrity of encrypted files without decrypting
     \\      Use --quick to only check header MAC (faster, but doesn't verify data integrity)
     \\
+    \\  turbocrypt list [--key <key-file>] [--password] [--encrypted-filenames] <directory> [options]
+    \\      List contents of encrypted directory
+    \\      If --encrypted-filenames is used, decrypts filenames (requires correct key)
+    \\      Shows file sizes and directory structure
+    \\
     \\  turbocrypt config set-key <key-file>
     \\      Set the default key file path
     \\
@@ -698,7 +703,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .enc_suffix = opts.enc_suffix,
                 .is_encrypt = is_encrypt,
                 .encrypt_filenames = opts.encrypt_filenames,
-                .key = key,
+                .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
             };
@@ -782,7 +787,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .progress_tracker = &tracker,
                 .enc_suffix = opts.enc_suffix,
                 .encrypt_filenames = opts.encrypt_filenames,
-                .key = key,
+                .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
             };
@@ -921,7 +926,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
             .enc_suffix = false, // Don't filter by .enc suffix for verify
             .is_encrypt = false, // Not used for verify
             .encrypt_filenames = false,
-            .key = key,
+            .key = derived_keys.filename_key,
             .exclude_patterns = opts.exclude_patterns,
             .ignore_symlinks = opts.ignore_symlinks,
         };
@@ -989,6 +994,197 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
         };
 
         std.debug.print("File verified successfully!\n", .{});
+    }
+}
+
+/// Context for listing files (collects file paths and sizes for display)
+const ListContext = struct {
+    allocator: std.mem.Allocator,
+    file_paths: std.ArrayList([]const u8),
+    file_sizes: std.ArrayList(u64),
+    total_bytes: u64,
+    total_files: u64,
+    decrypt_filenames: bool,
+    filename_key: [16]u8,
+    exclude_patterns: std.ArrayList([]const u8),
+
+    fn callback(
+        relative_path: []const u8,
+        full_path: []const u8,
+        is_directory: bool,
+        context: *anyopaque,
+    ) !void {
+        const self: *ListContext = @ptrCast(@alignCast(context));
+
+        // Skip directories
+        if (is_directory) return;
+
+        // Check exclude patterns
+        if (utils.matchesExcludePattern(relative_path, self.exclude_patterns)) {
+            return;
+        }
+
+        // Get file size
+        const stat = try std.fs.cwd().statFile(full_path);
+        const file_size = stat.size;
+
+        // Store path and size for later display
+        const path_copy = try self.allocator.dupe(u8, relative_path);
+        try self.file_paths.append(self.allocator, path_copy);
+        try self.file_sizes.append(self.allocator, file_size);
+
+        self.total_bytes += file_size;
+        self.total_files += 1;
+    }
+};
+
+fn cmdList(args: []const []const u8, allocator: std.mem.Allocator) !void {
+    // Parse options
+    const parsed = try parseOptions(args, allocator);
+    defer allocator.free(parsed.positional);
+    var opts = parsed.options;
+    defer {
+        for (opts.exclude_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        opts.exclude_patterns.deinit(allocator);
+    }
+
+    if (parsed.positional.len < 1) {
+        std.debug.print("Error: Missing required argument\n", .{});
+        std.debug.print("Usage: turbocrypt list [--key <key-file>] [--encrypted-filenames] <directory> [options]\n", .{});
+        return error.InvalidArguments;
+    }
+
+    const source_path = parsed.positional[0];
+
+    // Check if source is a directory
+    const is_dir = utils.isDirectory(source_path) catch {
+        std.debug.print("Error: Path is not a directory: {s}\n", .{source_path});
+        return error.InvalidPath;
+    };
+
+    if (!is_dir) {
+        std.debug.print("Error: Path is not a directory: {s}\n", .{source_path});
+        std.debug.print("Usage: turbocrypt list works only with directories\n", .{});
+        return error.InvalidPath;
+    }
+
+    // If encrypted filenames are used, we need a key
+    var filename_key: [16]u8 = undefined;
+    if (opts.encrypt_filenames) {
+        // Check if we need password (only for file-based keys)
+        const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts);
+        defer if (password_buf) |buf| {
+            @memset(buf, 0);
+            allocator.free(buf);
+        };
+
+        // Load key (from file or config)
+        const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
+            if (err == error.KeyNotFound) {
+                std.debug.print("Error: No encryption key configured\n", .{});
+                std.debug.print("\nYou can specify a key in one of these ways:\n", .{});
+                std.debug.print("  1. Use --key flag:           turbocrypt list --key secret.key --encrypted-filenames <directory>\n", .{});
+                std.debug.print("  2. Set environment variable: export {s}=secret.key\n", .{keyloader.env_var_name});
+                std.debug.print("  3. Set default key:          turbocrypt config set-key secret.key\n", .{});
+                return error.KeyNotFound;
+            }
+            if (err == error.PasswordRequired) {
+                std.debug.print("Error: This key file is password-protected. Use --password flag.\n", .{});
+                return error.PasswordRequired;
+            }
+            if (err == error.InvalidPassword) {
+                std.debug.print("Error: Invalid password for key file.\n", .{});
+                return error.InvalidPassword;
+            }
+            return err;
+        };
+
+        // Derive keys from master key and use the derived filename_key
+        const derived_keys = crypto.deriveKeys(key, opts.context);
+        filename_key = derived_keys.filename_key;
+    }
+
+    // Scan directory and collect file information
+    std.debug.print("Listing contents: {s}\n\n", .{source_path});
+
+    var list_ctx = ListContext{
+        .allocator = allocator,
+        .file_paths = std.ArrayList([]const u8){},
+        .file_sizes = std.ArrayList(u64){},
+        .total_bytes = 0,
+        .total_files = 0,
+        .decrypt_filenames = opts.encrypt_filenames,
+        .filename_key = filename_key,
+        .exclude_patterns = opts.exclude_patterns,
+    };
+    defer {
+        for (list_ctx.file_paths.items) |path| allocator.free(path);
+        list_ctx.file_paths.deinit(allocator);
+        list_ctx.file_sizes.deinit(allocator);
+    }
+
+    utils.walkDirectory(source_path, ListContext.callback, &list_ctx, allocator, opts.ignore_symlinks) catch |err| {
+        std.debug.print("Error: Failed to walk directory\n", .{});
+        return err;
+    };
+
+    // Display results
+    if (list_ctx.total_files == 0) {
+        std.debug.print("Directory is empty (or all files excluded by patterns)\n", .{});
+        return;
+    }
+
+    // Display each file with its size
+    for (list_ctx.file_paths.items, list_ctx.file_sizes.items) |file_path, file_size| {
+        // Decrypt filename if needed
+        const display_path = if (opts.encrypt_filenames) blk: {
+            const decrypted = filename_crypto.decryptPath(allocator, file_path, filename_key) catch |err| {
+                // If decryption fails, show encrypted name with a marker
+                std.debug.print("  {s} ({s}) [decrypt error: {}]\n", .{ file_path, formatSize(file_size), err });
+                continue;
+            };
+            break :blk decrypted;
+        } else
+            try allocator.dupe(u8, file_path);
+        defer allocator.free(display_path);
+
+        std.debug.print("  {s} ({s})\n", .{ display_path, formatSize(file_size) });
+    }
+
+    // Display summary
+    std.debug.print("\nTotal: {d} file{s}, {s}\n", .{
+        list_ctx.total_files,
+        if (list_ctx.total_files == 1) "" else "s",
+        formatSize(list_ctx.total_bytes),
+    });
+}
+
+/// Format file size in human-readable format (bytes, KB, MB, GB, TB)
+fn formatSize(bytes: u64) []const u8 {
+    const kb: f64 = 1024.0;
+    const mb: f64 = kb * 1024.0;
+    const gb: f64 = mb * 1024.0;
+    const tb: f64 = gb * 1024.0;
+
+    const bytes_f: f64 = @floatFromInt(bytes);
+
+    // Use static buffer for formatting (thread-local, overwritten on each call)
+    const size_buf = struct {
+        threadlocal var buf: [32]u8 = undefined;
+    };
+
+    if (bytes_f >= tb) {
+        return std.fmt.bufPrint(&size_buf.buf, "{d:.1} TB", .{bytes_f / tb}) catch "?.? TB";
+    } else if (bytes_f >= gb) {
+        return std.fmt.bufPrint(&size_buf.buf, "{d:.1} GB", .{bytes_f / gb}) catch "?.? GB";
+    } else if (bytes_f >= mb) {
+        return std.fmt.bufPrint(&size_buf.buf, "{d:.1} MB", .{bytes_f / mb}) catch "?.? MB";
+    } else if (bytes_f >= kb) {
+        return std.fmt.bufPrint(&size_buf.buf, "{d:.1} KB", .{bytes_f / kb}) catch "?.? KB";
+    } else {
+        return std.fmt.bufPrint(&size_buf.buf, "{d} bytes", .{bytes}) catch "? bytes";
     }
 }
 
@@ -1395,6 +1591,10 @@ pub fn main() !void {
         };
     } else if (std.mem.eql(u8, command, "verify")) {
         cmdVerify(command_args, allocator) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, command, "list")) {
+        cmdList(command_args, allocator) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "config")) {
