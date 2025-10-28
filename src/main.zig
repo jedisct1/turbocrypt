@@ -446,6 +446,8 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator) !void {
         std.debug.print("Key is password-protected\n", .{});
     }
     std.debug.print("WARNING: Keep this key file secure! Anyone with access to it can decrypt your files.\n", .{});
+    std.debug.print("\nTo set this as your default key, run:\n", .{});
+    std.debug.print("  turbocrypt config set-key {s}\n", .{output_path});
 }
 
 /// Processing mode for directory scanning
