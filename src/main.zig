@@ -652,6 +652,9 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
 
     const source_path = parsed.positional[0];
 
+    // Check if source is a file or directory early (needed for dest path logic)
+    const is_dir = utils.isDirectory(source_path) catch false;
+
     // Determine destination path
     var dest_path_buf: ?[]u8 = null;
     defer if (dest_path_buf) |buf| allocator.free(buf);
@@ -660,12 +663,17 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         parsed.positional[1]
     else if (opts.in_place) blk: {
         if (opts.enc_suffix) {
+            // For directories, the suffix applies to individual files, not the directory itself
+            if (is_dir) {
+                break :blk source_path;
+            }
+            // For files, apply suffix transformation
             const transformed = try applyEncSuffix(allocator, source_path, is_encrypt);
             if (transformed) |t| {
                 dest_path_buf = t;
                 break :blk dest_path_buf.?;
             } else {
-                // Decrypting but source doesn't have .enc suffix
+                // Decrypting but source file doesn't have .enc suffix
                 std.debug.print("Error: Source file must have .enc suffix when using --enc-suffix\n", .{});
                 return error.InvalidArguments;
             }
@@ -692,9 +700,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     // Derive keys from master key using TurboSHAKE128
     const derived_keys = crypto.deriveKeys(key, opts.context);
 
-    // Check if source is a file or directory
-    const is_dir = utils.isDirectory(source_path) catch false;
-
+    // Process based on whether source is a file or directory (is_dir already checked earlier)
     if (is_dir) {
         // Process directory with parallel processing
         std.debug.print("{s} directory: {s} -> {s}\n", .{ op_name_cap, source_path, dest_path });

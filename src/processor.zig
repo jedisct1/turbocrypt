@@ -32,6 +32,14 @@ pub fn encryptFile(
     // Check if in-place operation
     const in_place = std.mem.eql(u8, input_path, output_path);
 
+    // Check if this is an in-place operation with .enc suffix addition (e.g., --in-place --enc-suffix)
+    // For encryption: file.txt -> file.txt.enc (output = input + ".enc")
+    // We should delete the original after successful encryption
+    const in_place_with_suffix = !in_place and
+        output_path.len == input_path.len + 4 and
+        std.mem.startsWith(u8, output_path, input_path) and
+        std.mem.endsWith(u8, output_path, ".enc");
+
     // For in-place, use temporary file
     const actual_output_path = if (in_place) blk: {
         break :blk try std.fmt.allocPrint(allocator, "{s}.tmp", .{output_path});
@@ -56,6 +64,11 @@ pub fn encryptFile(
     // For in-place operation, atomically rename temp file to original
     if (in_place) {
         try std.fs.cwd().rename(actual_output_path, output_path);
+    }
+
+    // For in-place with suffix (e.g., file.txt -> file.txt.enc), delete the original after success
+    if (in_place_with_suffix) {
+        try std.fs.cwd().deleteFile(input_path);
     }
 }
 
@@ -172,6 +185,14 @@ pub fn decryptFile(
     // Check if in-place operation
     const in_place = std.mem.eql(u8, input_path, output_path);
 
+    // Check if this is an in-place operation with .enc suffix removal (e.g., --in-place --enc-suffix)
+    // For decryption: file.txt.enc -> file.txt (input = output + ".enc")
+    // We should delete the encrypted file after successful decryption
+    const in_place_with_suffix = !in_place and
+        input_path.len == output_path.len + 4 and
+        std.mem.startsWith(u8, input_path, output_path) and
+        std.mem.endsWith(u8, input_path, ".enc");
+
     // For in-place, use temporary file
     const actual_output_path = if (in_place) blk: {
         break :blk try std.fmt.allocPrint(allocator, "{s}.tmp", .{output_path});
@@ -196,6 +217,11 @@ pub fn decryptFile(
     // For in-place operation, atomically rename temp file to original
     if (in_place) {
         try std.fs.cwd().rename(actual_output_path, output_path);
+    }
+
+    // For in-place with suffix removal (e.g., file.enc -> file), delete the original after success
+    if (in_place_with_suffix) {
+        try std.fs.cwd().deleteFile(input_path);
     }
 }
 
