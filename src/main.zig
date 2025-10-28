@@ -20,6 +20,10 @@ const usage_text =
     \\      Generate a new 128-bit encryption key
     \\      Use --password to protect the key file with a password
     \\
+    \\  turbocrypt change-password [--remove-password] <key-file>
+    \\      Change or add password protection to an existing key file
+    \\      Use --remove-password to remove password protection from a key
+    \\
     \\  turbocrypt encrypt [--key <key-file>] [--password] <source> <destination> [options]
     \\      Encrypt a file or directory
     \\
@@ -93,6 +97,8 @@ const usage_text =
     \\Examples:
     \\  turbocrypt keygen secret.key
     \\  turbocrypt keygen --password protected.key
+    \\  turbocrypt change-password secret.key
+    \\  turbocrypt change-password --remove-password protected.key
     \\  turbocrypt config set-key secret.key
     \\  turbocrypt encrypt documents/ encrypted/
     \\  turbocrypt decrypt encrypted/ decrypted/
@@ -172,6 +178,7 @@ const Options = struct {
     ignore_symlinks: bool = false,
     quick: bool = false,
     dry_run: bool = false,
+    remove_password: bool = false,
     exclude_patterns: std.ArrayList([]const u8) = std.ArrayList([]const u8){},
 };
 
@@ -238,6 +245,8 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
             opts.quick = true;
         } else if (std.mem.eql(u8, arg, "--dry-run")) {
             opts.dry_run = true;
+        } else if (std.mem.eql(u8, arg, "--remove-password")) {
+            opts.remove_password = true;
         } else if (std.mem.eql(u8, arg, "--exclude")) {
             if (i + 1 >= args.len) {
                 std.debug.print("Error: --exclude requires a value\n", .{});
@@ -1146,8 +1155,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator) !void {
                 continue;
             };
             break :blk decrypted;
-        } else
-            try allocator.dupe(u8, file_path);
+        } else try allocator.dupe(u8, file_path);
         defer allocator.free(display_path);
 
         std.debug.print("  {s} ({s})\n", .{ display_path, formatSize(file_size) });
@@ -1185,6 +1193,103 @@ fn formatSize(bytes: u64) []const u8 {
         return std.fmt.bufPrint(&size_buf.buf, "{d:.1} KB", .{bytes_f / kb}) catch "?.? KB";
     } else {
         return std.fmt.bufPrint(&size_buf.buf, "{d} bytes", .{bytes}) catch "? bytes";
+    }
+}
+
+fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator) !void {
+    // Parse options (to support --remove-password flag)
+    const parsed = try parseOptions(args, allocator);
+    defer allocator.free(parsed.positional);
+    var opts = parsed.options;
+    defer {
+        for (opts.exclude_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        opts.exclude_patterns.deinit(allocator);
+    }
+
+    if (parsed.positional.len < 1) {
+        std.debug.print("Error: Missing key file path\n", .{});
+        std.debug.print("Usage: turbocrypt change-password [--remove-password] <key-file>\n", .{});
+        return error.InvalidArguments;
+    }
+
+    const key_path = parsed.positional[0];
+    const remove_password = opts.remove_password;
+
+    // Read the current key file to determine its format
+    const file = try std.fs.cwd().openFile(key_path, .{});
+    defer file.close();
+    const stat = try file.stat();
+    const file_size = stat.size;
+
+    if (file_size != keygen.plain_key_file_size and file_size != keygen.protected_key_file_size) {
+        std.debug.print("Error: Invalid key file size (expected {d} or {d} bytes, got {d})\n", .{ keygen.plain_key_file_size, keygen.protected_key_file_size, file_size });
+        return error.InvalidKeyFile;
+    }
+
+    const is_protected = file_size == keygen.protected_key_file_size;
+
+    // Read the actual key (decrypt if password-protected)
+    var actual_key: [16]u8 = undefined;
+
+    if (is_protected) {
+        // Password-protected: need old password to decrypt
+        std.debug.print("Current key is password-protected\n", .{});
+
+        const old_password_buf = try prompt.promptPassword(allocator, "Enter current password", false);
+        defer {
+            @memset(old_password_buf, 0);
+            allocator.free(old_password_buf);
+        }
+
+        // Read and decrypt the key
+        actual_key = keygen.readKeyFile(key_path, old_password_buf) catch |err| {
+            if (err == error.InvalidPassword) {
+                std.debug.print("Error: Invalid current password\n", .{});
+                return error.InvalidPassword;
+            }
+            return err;
+        };
+
+        if (remove_password) {
+            // Remove password protection: write as plain key
+            try keygen.writeKeyFile(key_path, actual_key, null);
+            std.debug.print("Password protection removed from key file: {s}\n", .{key_path});
+            std.debug.print("WARNING: The key is now stored in plain text. Keep it secure!\n", .{});
+            return;
+        } else {
+            // Change password: prompt for new password
+            const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true);
+            defer {
+                @memset(new_password_buf, 0);
+                allocator.free(new_password_buf);
+            }
+
+            try keygen.writeKeyFile(key_path, actual_key, new_password_buf);
+            std.debug.print("Password changed successfully for key file: {s}\n", .{key_path});
+        }
+    } else {
+        // Plain key
+        if (remove_password) {
+            std.debug.print("Error: Key is not password-protected\n", .{});
+            return error.InvalidArguments;
+        }
+
+        std.debug.print("Current key is not password-protected\n", .{});
+
+        // Read the plain key
+        actual_key = try keygen.readKeyFile(key_path, null);
+
+        // Add password protection
+        const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true);
+        defer {
+            @memset(new_password_buf, 0);
+            allocator.free(new_password_buf);
+        }
+
+        try keygen.writeKeyFile(key_path, actual_key, new_password_buf);
+        std.debug.print("Password protection added to key file: {s}\n", .{key_path});
     }
 }
 
@@ -1579,6 +1684,10 @@ pub fn main() !void {
 
     if (std.mem.eql(u8, command, "keygen")) {
         cmdKeygen(command_args, allocator) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, command, "change-password")) {
+        cmdChangePassword(command_args, allocator) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "encrypt")) {

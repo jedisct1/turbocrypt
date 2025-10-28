@@ -229,3 +229,107 @@ test "wrong password fails" {
     const result = readKeyFile(test_path, wrong_password);
     try testing.expectError(error.InvalidPassword, result);
 }
+
+test "change password on protected key" {
+    const testing = std.testing;
+
+    const original_key = generate();
+    const old_password = "old_password_123";
+    const new_password = "new_password_456";
+    const test_path = "tmp/test_key_change_pwd.bin";
+
+    // Ensure tmp directory exists
+    std.fs.cwd().makeDir("tmp") catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    // Write with old password
+    try writeKeyFile(test_path, original_key, old_password);
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    // Read with old password and re-write with new password
+    const read_key = try readKeyFile(test_path, old_password);
+    try writeKeyFile(test_path, read_key, new_password);
+
+    // Verify old password no longer works
+    const result_old = readKeyFile(test_path, old_password);
+    try testing.expectError(error.InvalidPassword, result_old);
+
+    // Verify new password works
+    const read_key_new = try readKeyFile(test_path, new_password);
+    try testing.expectEqualSlices(u8, &original_key, &read_key_new);
+}
+
+test "add password protection to plain key" {
+    const testing = std.testing;
+
+    const original_key = generate();
+    const test_password = "new_password_789";
+    const test_path = "tmp/test_key_add_pwd.bin";
+
+    // Ensure tmp directory exists
+    std.fs.cwd().makeDir("tmp") catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    // Write as plain key
+    try writeKeyFile(test_path, original_key, null);
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    // Verify file size is for plain key
+    const file1 = try std.fs.cwd().openFile(test_path, .{});
+    defer file1.close();
+    const stat1 = try file1.stat();
+    try testing.expectEqual(@as(u64, plain_key_file_size), stat1.size);
+
+    // Read and re-write with password
+    const read_key = try readKeyFile(test_path, null);
+    try writeKeyFile(test_path, read_key, test_password);
+
+    // Verify file size is now for protected key
+    const file2 = try std.fs.cwd().openFile(test_path, .{});
+    defer file2.close();
+    const stat2 = try file2.stat();
+    try testing.expectEqual(@as(u64, protected_key_file_size), stat2.size);
+
+    // Verify key can be read with password
+    const read_key_protected = try readKeyFile(test_path, test_password);
+    try testing.expectEqualSlices(u8, &original_key, &read_key_protected);
+}
+
+test "remove password protection from protected key" {
+    const testing = std.testing;
+
+    const original_key = generate();
+    const test_password = "temporary_password";
+    const test_path = "tmp/test_key_remove_pwd.bin";
+
+    // Ensure tmp directory exists
+    std.fs.cwd().makeDir("tmp") catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    // Write with password
+    try writeKeyFile(test_path, original_key, test_password);
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    // Verify file size is for protected key
+    const file1 = try std.fs.cwd().openFile(test_path, .{});
+    defer file1.close();
+    const stat1 = try file1.stat();
+    try testing.expectEqual(@as(u64, protected_key_file_size), stat1.size);
+
+    // Read with password and re-write without password
+    const read_key = try readKeyFile(test_path, test_password);
+    try writeKeyFile(test_path, read_key, null);
+
+    // Verify file size is now for plain key
+    const file2 = try std.fs.cwd().openFile(test_path, .{});
+    defer file2.close();
+    const stat2 = try file2.stat();
+    try testing.expectEqual(@as(u64, plain_key_file_size), stat2.size);
+
+    // Verify key can be read without password
+    const read_key_plain = try readKeyFile(test_path, null);
+    try testing.expectEqualSlices(u8, &original_key, &read_key_plain);
+}

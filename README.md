@@ -117,6 +117,29 @@ turbocrypt keygen --password protected.key
 turbocrypt encrypt --key protected.key --password source/ dest/
 ```
 
+### Managing Key Passwords
+
+You can add, change, or remove password protection on existing keys:
+
+```bash
+# Add password protection to a plain key
+turbocrypt change-password secret.key
+# Enter your new password when prompted
+
+# Change the password on a protected key
+turbocrypt change-password protected.key
+# Enter current password, then new password
+
+# Remove password protection from a key
+turbocrypt change-password --remove-password protected.key
+# Enter current password to confirm
+```
+
+This is useful when you want to:
+- Add password protection to an existing plain key without regenerating it
+- Change a compromised or forgotten password while keeping the same encryption key
+- Remove password protection when moving a key to secure storage
+
 ### Adding an Extra Layer of Protection with Contexts
 
 When you encrypt a directory, you can optionally specify a context string. This adds an additional secret that's required to decrypt your files - think of it as a second password that works alongside your encryption key.
@@ -299,6 +322,15 @@ turbocrypt keygen output.key
 # Generate a password-protected key
 turbocrypt keygen --password output.key
 
+# Add password protection to existing key
+turbocrypt change-password my.key
+
+# Change password on protected key
+turbocrypt change-password protected.key
+
+# Remove password protection
+turbocrypt change-password --remove-password protected.key
+
 # Set default key in config
 turbocrypt config set-key my.key
 ```
@@ -463,7 +495,8 @@ Settings are applied in this order (highest priority first):
 
 - Generate strong keys: Always use `turbocrypt keygen` - don't create keys manually
 - Keep backups: Store a copy of your key in a safe, separate location
-- Use password protection: For keys stored on your computer, consider `--password`
+- Use password protection: For keys stored on your computer, consider using `turbocrypt keygen --password` or adding protection later with `turbocrypt change-password`
+- Change passwords when needed: If you suspect your password may be compromised, use `turbocrypt change-password` to update it without regenerating the key
 - Never share keys: Each person should have their own key, or use password-protected keys with different passwords for additional security
 
 ### Safe Workflows
