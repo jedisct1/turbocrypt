@@ -177,6 +177,7 @@ pub const WorkerPool = struct {
     error_mutex: std.Thread.Mutex,
     has_errors: bool,
     quick_verify: bool,
+    dry_run: bool,
 
     const Self = @This();
 
@@ -187,6 +188,7 @@ pub const WorkerPool = struct {
         derived_keys: crypto.DerivedKeys,
         progress_tracker: *progress.ProgressTracker,
         quick_verify: bool,
+        dry_run: bool,
     ) !Self {
         const threads = try allocator.alloc(std.Thread, thread_count);
         errdefer allocator.free(threads);
@@ -201,6 +203,7 @@ pub const WorkerPool = struct {
             .error_mutex = .{},
             .has_errors = false,
             .quick_verify = quick_verify,
+            .dry_run = dry_run,
         };
     }
 
@@ -244,40 +247,43 @@ pub const WorkerPool = struct {
                 defer if (job.dest_path) |dp| worker.allocator.free(dp);
 
                 // Process the file using thread-local allocator
-                switch (job.operation) {
-                    .encrypt => {
-                        processor.encryptFile(
-                            job.source_path,
-                            job.dest_path.?,
-                            worker.derived_keys,
-                            thread_allocator,
-                        ) catch |err| {
-                            handleJobError(worker, job, err, "[ERROR] Failed to encrypt:", true);
-                            continue; // Continue with remaining files in batch
-                        };
-                    },
-                    .decrypt => {
-                        processor.decryptFile(
-                            job.source_path,
-                            job.dest_path.?,
-                            worker.derived_keys,
-                            thread_allocator,
-                        ) catch |err| {
-                            handleJobError(worker, job, err, "[ERROR] Failed to decrypt:", false);
-                            continue; // Continue with remaining files in batch
-                        };
-                    },
-                    .verify => {
-                        processor.verifyFile(
-                            job.source_path,
-                            worker.derived_keys,
-                            thread_allocator,
-                            worker.quick_verify,
-                        ) catch |err| {
-                            handleJobError(worker, job, err, "[VERIFY FAILED]", false);
-                            continue; // Continue with remaining files in batch
-                        };
-                    },
+                // Skip actual processing in dry-run mode
+                if (!worker.dry_run) {
+                    switch (job.operation) {
+                        .encrypt => {
+                            processor.encryptFile(
+                                job.source_path,
+                                job.dest_path.?,
+                                worker.derived_keys,
+                                thread_allocator,
+                            ) catch |err| {
+                                handleJobError(worker, job, err, "[ERROR] Failed to encrypt:", true);
+                                continue; // Continue with remaining files in batch
+                            };
+                        },
+                        .decrypt => {
+                            processor.decryptFile(
+                                job.source_path,
+                                job.dest_path.?,
+                                worker.derived_keys,
+                                thread_allocator,
+                            ) catch |err| {
+                                handleJobError(worker, job, err, "[ERROR] Failed to decrypt:", false);
+                                continue; // Continue with remaining files in batch
+                            };
+                        },
+                        .verify => {
+                            processor.verifyFile(
+                                job.source_path,
+                                worker.derived_keys,
+                                thread_allocator,
+                                worker.quick_verify,
+                            ) catch |err| {
+                                handleJobError(worker, job, err, "[VERIFY FAILED]", false);
+                                continue; // Continue with remaining files in batch
+                            };
+                        },
+                    }
                 }
 
                 // Update local counters
@@ -358,7 +364,7 @@ test "worker pool initialization" {
     const derived = crypto.deriveKeys(key, null);
     var tracker = progress.ProgressTracker.init(0, 0);
 
-    var pool = try WorkerPool.init(allocator, 4, derived, &tracker, false);
+    var pool = try WorkerPool.init(allocator, 4, derived, &tracker, false, false);
     defer pool.deinit();
 
     try testing.expect(!pool.hadErrors());

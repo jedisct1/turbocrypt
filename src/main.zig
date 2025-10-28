@@ -82,6 +82,8 @@ const usage_text =
     \\  --ignore-symlinks    Ignore symbolic links (skip them during processing)
     \\  --quick              (verify only) Only check header MAC, skip full verification
     \\                       Faster but doesn't verify data integrity - only checks key correctness
+    \\  --dry-run            Show what would be processed without actually encrypting/decrypting
+    \\                       Useful for testing exclude patterns and verifying operations
     \\
     \\Examples:
     \\  turbocrypt keygen secret.key
@@ -164,6 +166,7 @@ const Options = struct {
     encrypt_filenames: bool = false,
     ignore_symlinks: bool = false,
     quick: bool = false,
+    dry_run: bool = false,
     exclude_patterns: std.ArrayList([]const u8) = std.ArrayList([]const u8){},
 };
 
@@ -228,6 +231,8 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
             opts.password = true;
         } else if (std.mem.eql(u8, arg, "--quick")) {
             opts.quick = true;
+        } else if (std.mem.eql(u8, arg, "--dry-run")) {
+            opts.dry_run = true;
         } else if (std.mem.eql(u8, arg, "--exclude")) {
             if (i + 1 >= args.len) {
                 std.debug.print("Error: --exclude requires a value\n", .{});
@@ -708,11 +713,15 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 return err;
             };
 
-            std.debug.print("{s} {d} files...\n", .{ op_name_cap, scan_ctx.file_paths.items.len });
+            if (opts.dry_run) {
+                std.debug.print("[DRY RUN] Would process {d} files...\n", .{scan_ctx.file_paths.items.len});
+            } else {
+                std.debug.print("{s} {d} files...\n", .{ op_name_cap, scan_ctx.file_paths.items.len });
+            }
 
             // Phase 2: Process all collected files
             var tracker = progress.ProgressTracker.init(scan_ctx.file_paths.items.len, scan_ctx.total_bytes);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run);
             defer pool.deinit();
 
             try tracker.startDisplay();
@@ -748,10 +757,14 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             tracker.displayFinal();
         } else {
             // Non-in-place: use concurrent scan-and-process for better performance
-            std.debug.print("Scanning and {s}...\n", .{if (is_encrypt) "encrypting" else "decrypting"});
+            if (opts.dry_run) {
+                std.debug.print("[DRY RUN] Scanning files...\n", .{});
+            } else {
+                std.debug.print("Scanning and {s}...\n", .{if (is_encrypt) "encrypting" else "decrypting"});
+            }
 
             var tracker = progress.ProgressTracker.init(0, 0);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run);
             defer pool.deinit();
 
             // Start worker threads BEFORE scanning so they can process files concurrently
@@ -923,11 +936,15 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
             return err;
         };
 
-        std.debug.print("Verifying {d} files...\n", .{scan_ctx.file_paths.items.len});
+        if (opts.dry_run) {
+            std.debug.print("[DRY RUN] Would verify {d} files...\n", .{scan_ctx.file_paths.items.len});
+        } else {
+            std.debug.print("Verifying {d} files...\n", .{scan_ctx.file_paths.items.len});
+        }
 
         // Verify all collected files
         var tracker = progress.ProgressTracker.init(scan_ctx.file_paths.items.len, scan_ctx.total_bytes);
-        var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick);
+        var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick, opts.dry_run);
         defer pool.deinit();
 
         try tracker.startDisplay();

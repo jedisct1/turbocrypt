@@ -180,6 +180,32 @@ Common exclude patterns:
 - `node_modules/` - skip Node.js dependencies
 - `__pycache__/` - skip Python cache files
 
+### Previewing Operations with Dry Run
+
+Before encrypting or decrypting files, you can preview what will happen without actually processing them:
+
+```bash
+# See what files would be encrypted
+turbocrypt encrypt --dry-run --key my-secret.key documents/ encrypted/
+
+# Test exclude patterns before committing
+turbocrypt encrypt --dry-run --key my-secret.key \
+  --exclude "*.log" \
+  --exclude "node_modules/" \
+  large-project/ encrypted-project/
+
+# Preview decryption
+turbocrypt decrypt --dry-run --key my-secret.key encrypted/ restored/
+```
+
+This is particularly useful for:
+- Testing exclude patterns before processing large directories
+- Verifying source and destination paths are correct
+- Estimating how many files will be processed
+- Checking operations before committing to them
+
+The `--dry-run` flag works with all operations (encrypt, decrypt, verify) and shows accurate file counts and sizes without modifying any files.
+
 ### Verifying File Integrity
 
 Check if encrypted files are intact without decrypting them:
@@ -268,6 +294,9 @@ turbocrypt encrypt --key KEY --enc-suffix source/ dest/
 
 # Custom thread count
 turbocrypt encrypt --key KEY --threads 16 source/ dest/
+
+# Preview without actually encrypting
+turbocrypt encrypt --key KEY --dry-run source/ dest/
 ```
 
 ### Decryption
@@ -287,6 +316,9 @@ turbocrypt decrypt --key KEY --context "project-x" encrypted/ decrypted/
 
 # Remove .enc suffix automatically
 turbocrypt decrypt --key KEY --enc-suffix encrypted/ decrypted/
+
+# Preview without actually decrypting
+turbocrypt decrypt --key KEY --dry-run encrypted/ decrypted/
 ```
 
 ### Verification
@@ -303,6 +335,9 @@ turbocrypt verify --quick --key KEY encrypted-directory/
 
 # Quick verification with context
 turbocrypt verify --quick --key KEY --context "project-x" encrypted/
+
+# Preview verification without actually verifying
+turbocrypt verify --key KEY --dry-run encrypted/
 ```
 
 ### Configuration
@@ -352,6 +387,7 @@ Options available for most commands:
 - `--exclude <pattern>` - Skip files matching pattern (can use multiple times)
 - `--ignore-symlinks` - Skip symbolic links
 - `--quick` - (verify only) Only check header MAC, skip full verification - faster but doesn't verify data integrity
+- `--dry-run` - Show what would be processed without actually encrypting/decrypting - useful for testing exclude patterns and verifying operations
 - `--force` - Overwrite existing files without asking
 - `--buffer-size <bytes>` - Set I/O buffer size (default: 4MB)
 
@@ -397,7 +433,9 @@ Settings are applied in this order (highest priority first):
 
 ### Safe Workflows
 
+- Preview first: Use `--dry-run` to see what will be processed before running the actual operation
 - Test first: Try encrypting/decrypting a small test directory before processing important data
+- Test exclude patterns: Use `--dry-run` with `--exclude` to verify your patterns work as expected
 - Verify after transfer: Use `turbocrypt verify` to check files after copying or uploading them
 - Keep originals: Don't delete unencrypted files until you've verified the encrypted versions
 - Exclude unnecessary files: Use `--exclude` to skip cache, logs, and other regenerable files
