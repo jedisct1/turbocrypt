@@ -152,10 +152,14 @@ Warning: This overwrites the original files. Make sure you have backups first!
 If you want to conceal not just the contents but also the names of your files:
 
 ```bash
-turbocrypt encrypt --key my-secret.key --enc-filenames source/ dest/
+# Encrypt with encrypted filenames
+turbocrypt encrypt --key my-secret.key --encrypted-filenames source/ dest/
+
+# Decrypt - you MUST use --encrypted-filenames to decrypt
+turbocrypt decrypt --key my-secret.key --encrypted-filenames dest/ restored/
 ```
 
-This encrypts each filename component, making it impossible to tell what files are in the encrypted directory without the key.
+This encrypts each filename component, making it impossible to tell what files are in the encrypted directory without the key. Note: You must use `--encrypted-filenames` for both encryption AND decryption.
 
 ### Skipping Certain Files
 
@@ -251,7 +255,7 @@ turbocrypt encrypt --key KEY --password source dest
 turbocrypt encrypt --key KEY --in-place source/
 
 # Encrypt filenames too
-turbocrypt encrypt --key KEY --enc-filenames source/ dest/
+turbocrypt encrypt --key KEY --encrypted-filenames source/ dest/
 
 # Exclude certain files
 turbocrypt encrypt --key KEY --exclude "*.log" --exclude ".git/" source/ dest/
@@ -274,6 +278,9 @@ turbocrypt decrypt --key KEY source dest
 
 # Decrypt in place
 turbocrypt decrypt --key KEY --in-place encrypted/
+
+# Decrypt encrypted filenames (must use --encrypted-filenames if used during encryption)
+turbocrypt decrypt --key KEY --encrypted-filenames encrypted/ decrypted/
 
 # Decrypt with context (must match encryption context)
 turbocrypt decrypt --key KEY --context "project-x" encrypted/ decrypted/
@@ -337,7 +344,7 @@ Options available for most commands:
 - `--context <string>` - Context string for key derivation (creates independent key namespace)
 - `--threads <n>` - Number of parallel threads (default: CPU count, max 64)
 - `--in-place` - Overwrite source files instead of creating new ones
-- `--enc-filenames` - Encrypt filenames (cannot be used with --in-place)
+- `--encrypted-filenames` - Encrypt/decrypt filenames (required for both encryption and decryption, cannot be used with --in-place)
 - `--enc-suffix` - Add/remove .enc suffix automatically
 - `--exclude <pattern>` - Skip files matching pattern (can use multiple times)
 - `--ignore-symlinks` - Skip symbolic links
@@ -351,11 +358,12 @@ Encrypted files can be freely moved between directories and renamed. The encrypt
 
 ### Filename Encryption
 
-When using `--enc-filenames`:
+When using `--encrypted-filenames`:
 
 - Each path component (directory or filename) is encrypted separately
 - Encoded with base91 to ensure filesystem compatibility
 - Preserves directory structure (you still see folders, just with encrypted names)
+- Must be used for both encryption and decryption operations
 
 ## Configuration File
 

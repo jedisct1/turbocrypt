@@ -70,7 +70,7 @@ const usage_text =
     \\  --force              Overwrite existing files without prompting
     \\  --enc-suffix         Add ".enc" suffix when encrypting, remove when decrypting
     \\                       (skips files without .enc suffix during decryption)
-    \\  --enc-filenames      Encrypt filenames
+    \\  --encrypted-filenames      Encrypt filenames
     \\                       (preserves directory structure, encrypts each path component)
     \\                       (incompatible with --in-place)
     \\  --exclude <pattern>  Exclude files matching pattern (can use multiple times)
@@ -129,7 +129,7 @@ fn handleDirectory(
                 std.debug.print("        Suggestion: Directory name is too long. Encrypted names must fit within 255 bytes.\n", .{});
                 std.debug.print("                   Consider shortening the directory name (max ~205 bytes for encryption).\n", .{});
             } else if (!is_encrypt) {
-                std.debug.print("        Suggestion: Ensure the directory was encrypted with --enc-filenames using the same key\n", .{});
+                std.debug.print("        Suggestion: Ensure the directory was encrypted with --encrypted-filenames using the same key\n", .{});
             }
             return err;
         };
@@ -217,7 +217,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
             opts.force = true;
         } else if (std.mem.eql(u8, arg, "--enc-suffix")) {
             opts.enc_suffix = true;
-        } else if (std.mem.eql(u8, arg, "--enc-filenames")) {
+        } else if (std.mem.eql(u8, arg, "--encrypted-filenames")) {
             opts.encrypt_filenames = true;
         } else if (std.mem.eql(u8, arg, "--ignore-symlinks")) {
             opts.ignore_symlinks = true;
@@ -275,7 +275,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
 
     // Validate incompatible flag combinations
     if (opts.in_place and opts.encrypt_filenames) {
-        std.debug.print("Error: --in-place and --enc-filenames are incompatible\n", .{});
+        std.debug.print("Error: --in-place and --encrypted-filenames are incompatible\n", .{});
         std.debug.print("       In-place encryption cannot change filenames\n", .{});
         return error.InvalidArguments;
     }
@@ -526,7 +526,7 @@ const ScanAndProcessContext = struct {
                     std.debug.print("        Suggestion: Filename is too long. Encrypted names must fit within 255 bytes.\n", .{});
                     std.debug.print("                   Consider shortening the filename (max ~205 bytes for encryption).\n", .{});
                 } else if (!self.is_encrypt) {
-                    std.debug.print("        Suggestion: Ensure the file was encrypted with --enc-filenames using the same key\n", .{});
+                    std.debug.print("        Suggestion: Ensure the file was encrypted with --encrypted-filenames using the same key\n", .{});
                 }
                 return err;
             };
