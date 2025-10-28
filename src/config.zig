@@ -29,6 +29,9 @@ pub const Config = struct {
     /// Ignore symbolic links
     ignore_symlinks: ?bool = null,
 
+    /// Encrypt filenames by default
+    encrypted_filenames: ?bool = null,
+
     /// Load config from JSON with proper memory management
     pub fn fromJson(allocator: std.mem.Allocator, json_str: []const u8) !Config {
         const parsed = try std.json.parseFromSlice(
@@ -99,6 +102,13 @@ pub const Config = struct {
             }
         }
 
+        // Parse encrypted_filenames
+        if (root.get("encrypted_filenames")) |value| {
+            if (value != .null) {
+                config.encrypted_filenames = value.bool;
+            }
+        }
+
         return config;
     }
 
@@ -111,6 +121,7 @@ pub const Config = struct {
             buffer_size: ?usize,
             exclude_patterns: []const []const u8,
             ignore_symlinks: ?bool,
+            encrypted_filenames: ?bool,
         };
 
         // Convert key to hex string if present
@@ -125,6 +136,7 @@ pub const Config = struct {
             .buffer_size = self.buffer_size,
             .exclude_patterns = self.exclude_patterns,
             .ignore_symlinks = self.ignore_symlinks,
+            .encrypted_filenames = self.encrypted_filenames,
         };
 
         // Use Writer.Allocating for JSON output

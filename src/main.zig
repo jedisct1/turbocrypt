@@ -48,6 +48,9 @@ const usage_text =
     \\  turbocrypt config set-ignore-symlinks <true|false>
     \\      Set whether to ignore symbolic links by default
     \\
+    \\  turbocrypt config set-encrypted-filenames <true|false>
+    \\      Set whether to encrypt filenames by default
+    \\
     \\  turbocrypt config show
     \\      Show the current configuration
     \\
@@ -261,6 +264,9 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
     }
     if (!opts.ignore_symlinks and cfg.ignore_symlinks != null) {
         opts.ignore_symlinks = cfg.ignore_symlinks.?;
+    }
+    if (!opts.encrypt_filenames and cfg.encrypted_filenames != null) {
+        opts.encrypt_filenames = cfg.encrypted_filenames.?;
     }
 
     // Merge config exclude patterns with CLI patterns (CLI patterns have higher priority)
@@ -972,7 +978,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
 fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
     if (args.len < 1) {
         std.debug.print("Error: Missing config subcommand\n", .{});
-        std.debug.print("Usage: turbocrypt config <set-key|set-threads|set-buffer-size|add-exclude|remove-exclude|set-ignore-symlinks|show>\n", .{});
+        std.debug.print("Usage: turbocrypt config <set-key|set-threads|set-buffer-size|add-exclude|remove-exclude|set-ignore-symlinks|set-encrypted-filenames|show>\n", .{});
         return error.InvalidArguments;
     }
 
@@ -1225,6 +1231,31 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
         try config_mod.save(cfg, allocator);
 
         std.debug.print("Ignore symlinks set to: {s}\n", .{if (value) "true" else "false"});
+    } else if (std.mem.eql(u8, subcommand, "set-encrypted-filenames")) {
+        if (args.len < 2) {
+            std.debug.print("Error: Missing value\n", .{});
+            std.debug.print("Usage: turbocrypt config set-encrypted-filenames <true|false>\n", .{});
+            return error.InvalidArguments;
+        }
+
+        const value_str = args[1];
+        const value = if (std.mem.eql(u8, value_str, "true"))
+            true
+        else if (std.mem.eql(u8, value_str, "false"))
+            false
+        else {
+            std.debug.print("Error: Invalid value '{s}'. Use 'true' or 'false'\n", .{value_str});
+            return error.InvalidArguments;
+        };
+
+        // Load config, update, and save
+        var cfg = try config_mod.load(allocator);
+        defer cfg.deinit(allocator);
+
+        cfg.encrypted_filenames = value;
+        try config_mod.save(cfg, allocator);
+
+        std.debug.print("Encrypt filenames set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "show")) {
         // Load config
         var cfg = try config_mod.load(allocator);
@@ -1275,6 +1306,13 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
             std.debug.print("Ignore symlinks: (default - false)\n", .{});
         }
 
+        // Show encrypted_filenames
+        if (cfg.encrypted_filenames) |encrypt_names| {
+            std.debug.print("Encrypt filenames: {s}\n", .{if (encrypt_names) "true" else "false"});
+        } else {
+            std.debug.print("Encrypt filenames: (default - false)\n", .{});
+        }
+
         std.debug.print("\nKey resolution priority:\n", .{});
         std.debug.print("  1. --key flag (if provided)\n", .{});
         std.debug.print("  2. {s} environment variable", .{keyloader.env_var_name});
@@ -1287,7 +1325,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
         std.debug.print("\n  3. Config file\n", .{});
     } else {
         std.debug.print("Error: Unknown config subcommand '{s}'\n", .{subcommand});
-        std.debug.print("Usage: turbocrypt config <set-key|set-threads|set-buffer-size|add-exclude|remove-exclude|set-ignore-symlinks|show>\n", .{});
+        std.debug.print("Usage: turbocrypt config <set-key|set-threads|set-buffer-size|add-exclude|remove-exclude|set-ignore-symlinks|set-encrypted-filenames|show>\n", .{});
         return error.InvalidArguments;
     }
 }

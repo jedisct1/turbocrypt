@@ -326,6 +326,9 @@ turbocrypt config remove-exclude "*.tmp"
 
 # Set symlink behavior
 turbocrypt config set-ignore-symlinks true
+
+# Set filename encryption default
+turbocrypt config set-encrypted-filenames true
 ```
 
 ### Performance Testing
@@ -342,7 +345,7 @@ Options available for most commands:
 - `--key <path>` - Path to key file (required unless set in config)
 - `--password` - Prompt for password (for password-protected keys)
 - `--context <string>` - Context string for key derivation (creates independent key namespace)
-- `--threads <n>` - Number of parallel threads (default: CPU count, max 64)
+- `--threads <n>` - Number of parallel threads (default: CPU count capped at 16, max 64)
 - `--in-place` - Overwrite source files instead of creating new ones
 - `--encrypted-filenames` - Encrypt/decrypt filenames (required for both encryption and decryption, cannot be used with --in-place)
 - `--enc-suffix` - Add/remove .enc suffix automatically
