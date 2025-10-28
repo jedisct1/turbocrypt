@@ -2,6 +2,10 @@
   <img src=".media/logo.png" width="400" alt="TurboCrypt Logo" />
 </p>
 
+# TurboCrypt
+
+A fast, easy-to-use, and secure command-line tool for encrypting and decrypting files or entire directory trees.
+
 - [TurboCrypt](#turbocrypt)
   - [What Makes TurboCrypt Different](#what-makes-turbocrypt-different)
   - [Installation](#installation)
@@ -47,11 +51,6 @@
     - [Performance is slow](#performance-is-slow)
     - [Out of memory errors](#out-of-memory-errors)
   - [Environment Variables](#environment-variables)
-
-
-# TurboCrypt
-
-A fast, easy-to-use, and secure command-line tool for encrypting and decrypting files or entire directory trees.
 
 ## What Makes TurboCrypt Different
 
