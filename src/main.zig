@@ -244,7 +244,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
             }
             i += 1;
             const value = args[i];
-            opts.threads = std.fmt.parseInt(u32, value, 10) catch {
+            opts.threads = std.fmt.parseUnsigned(u32, value, 10) catch {
                 std.debug.print("Error: Invalid thread count '{s}'\n", .{value});
                 return error.InvalidArguments;
             };
@@ -255,7 +255,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
             }
             i += 1;
             const value = args[i];
-            opts.buffer_size = std.fmt.parseInt(usize, value, 10) catch {
+            opts.buffer_size = std.fmt.parseUnsigned(usize, value, 10) catch {
                 std.debug.print("Error: Invalid buffer size '{s}'\n", .{value});
                 return error.InvalidArguments;
             };
@@ -424,7 +424,7 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator) !void {
     var password_buf: ?[]u8 = null;
     defer if (password_buf) |buf| {
         // Zero out password before freeing
-        @memset(buf, 0);
+        std.crypto.secureZero(u8, buf);
         allocator.free(buf);
     };
 
@@ -599,9 +599,7 @@ const DirectoryScanContext = struct {
         const dest_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.dest_base, dest_relative_path });
 
         // Ensure destination directory exists
-        const dest_dir = try utils.dirname(dest_path, self.allocator);
-        defer self.allocator.free(dest_dir);
-        if (dest_dir.len > 0) {
+        if (std.fs.path.dirname(dest_path)) |dest_dir| {
             utils.ensureDirectory(dest_dir) catch |err| {
                 self.allocator.free(source_path);
                 self.allocator.free(dest_path);
@@ -688,7 +686,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     // Check if we need password (only for file-based keys)
     const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts);
     defer if (password_buf) |buf| {
-        @memset(buf, 0);
+        std.crypto.secureZero(u8, buf);
         allocator.free(buf);
     };
 
@@ -838,9 +836,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         std.debug.print("{s} file: {s} -> {s}\n", .{ op_name_cap, source_path, dest_path });
 
         // Ensure destination directory exists
-        const dest_dir = try utils.dirname(dest_path, allocator);
-        defer allocator.free(dest_dir);
-        if (dest_dir.len > 0) {
+        if (std.fs.path.dirname(dest_path)) |dest_dir| {
             try utils.ensureDirectory(dest_dir);
         }
 
@@ -894,7 +890,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
     // Check if we need password (only for file-based keys)
     const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts);
     defer if (password_buf) |buf| {
-        @memset(buf, 0);
+        std.crypto.secureZero(u8, buf);
         allocator.free(buf);
     };
 
@@ -1224,7 +1220,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator) !vo
 
         const old_password_buf = try prompt.promptPassword(allocator, "Enter current password", false);
         defer {
-            @memset(old_password_buf, 0);
+            std.crypto.secureZero(u8, old_password_buf);
             allocator.free(old_password_buf);
         }
 
@@ -1247,7 +1243,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator) !vo
             // Change password: prompt for new password
             const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true);
             defer {
-                @memset(new_password_buf, 0);
+                std.crypto.secureZero(u8, new_password_buf);
                 allocator.free(new_password_buf);
             }
 
@@ -1269,7 +1265,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator) !vo
         // Add password protection
         const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true);
         defer {
-            @memset(new_password_buf, 0);
+            std.crypto.secureZero(u8, new_password_buf);
             allocator.free(new_password_buf);
         }
 

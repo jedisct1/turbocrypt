@@ -139,17 +139,11 @@ pub const Config = struct {
             .encrypted_filenames = self.encrypted_filenames,
         };
 
-        // Use Writer.Allocating for JSON output
-        var aw: std.Io.Writer.Allocating = .init(allocator);
-        defer aw.deinit();
-
-        var stringify: std.json.Stringify = .{
-            .writer = &aw.writer,
-            .options = .{ .whitespace = .indent_2 },
-        };
-        try stringify.write(json_config);
-
-        return try aw.toOwnedSlice();
+        return try std.json.Stringify.valueAlloc(
+            allocator,
+            json_config,
+            .{ .whitespace = .indent_2 },
+        );
     }
 
     /// Free all allocated memory

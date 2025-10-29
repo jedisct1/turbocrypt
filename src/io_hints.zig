@@ -33,8 +33,7 @@ pub fn adviseFile(file: std.fs.File, offset: i64, len: i64, advice: FileAdvice) 
             switch (advice) {
                 .sequential, .willneed => {
                     // Enable read-ahead (enabled by default, but we can be explicit)
-                    // F_RDAHEAD = 45
-                    _ = std.c.fcntl(file.handle, 45, @as(c_int, 1));
+                    _ = std.c.fcntl(file.handle, std.c.F.RDAHEAD, @as(c_int, 1));
                 },
                 .dontneed => {
                     // macOS doesn't have a direct equivalent to DONTNEED
