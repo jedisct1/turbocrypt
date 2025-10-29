@@ -1,4 +1,4 @@
-# turbocrypt bash completion (updated)
+# turbocrypt bash completion
 _turbocrypt() {
     local cur prev words cword
     if type _get_comp_words_by_ref &>/dev/null; then
