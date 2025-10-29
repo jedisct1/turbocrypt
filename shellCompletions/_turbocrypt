@@ -1,0 +1,103 @@
+#compdef turbocrypt
+
+# turbocrypt zsh completion — shows files for encrypt/decrypt/verify when current token is NOT an option
+
+local -a subs
+subs=( keygen change-password encrypt decrypt verify config bench )
+
+# If completing the subcommand itself (pos 2), show subcommands + top-level help
+if (( CURRENT == 2 )); then
+  compadd -a subs
+  compadd -- -h --help
+  return 0
+fi
+
+# Determine the chosen subcommand (first non-option arg)
+local subcmd
+for (( i = 2; i <= $#words; i++ )); do
+  if [[ ${words[i]} != -* ]]; then
+    subcmd=${words[i]}; break
+  fi
+done
+
+# fallback: show top-level if none found
+if [[ -z $subcmd ]]; then
+  compadd -a subs
+  compadd -- -h --help
+  return 0
+fi
+
+case $subcmd in
+  keygen)
+    if [[ ${words[CURRENT]} == --* || ${words[CURRENT]} == -* ]]; then
+      compadd -- --password
+      return 0
+    fi
+    _files && return 0
+    ;;
+  change-password)
+    if [[ ${words[CURRENT]} == --* || ${words[CURRENT]} == -* ]]; then
+      compadd -- --remove-password
+      return 0
+    fi
+    _files && return 0
+    ;;
+  encrypt|decrypt)
+    # If token starts with '-' => show options. Otherwise show filenames.
+    if [[ ${words[CURRENT]} == --* || ${words[CURRENT]} == -* ]]; then
+      compadd -- --key --password --in-place --encrypted-filenames --exclude --context --enc-suffix --threads --dry-run
+      return 0
+    fi
+
+    # If previous word is an option that expects a value, complete appropriately
+    case ${words[CURRENT-1]} in
+      --key) _files; return 0 ;;
+      --threads) compadd 1 2 4 8 16 32; return 0 ;;
+      --exclude|--context) return 0 ;; # free string/pattern -> don't list files
+      # flags with no args:
+      --password|--in-place|--encrypted-filenames|--enc-suffix|--dry-run) return 0 ;;
+    esac
+
+    # Otherwise (token doesn't start with '-') provide file/directory completions
+    _files && return 0
+    ;;
+  verify)
+    if [[ ${words[CURRENT]} == --* || ${words[CURRENT]} == -* ]]; then
+      compadd -- --key --quick --context --dry-run
+      return 0
+    fi
+
+    case ${words[CURRENT-1]} in
+      --key) _files; return 0 ;;
+      --context) return 0 ;; # free string
+      --quick|--dry-run) return 0 ;;
+    esac
+
+    _files && return 0
+    ;;
+  config)
+    local -a cfgs
+    cfgs=( show set-key set-threads set-buffer-size add-exclude remove-exclude set-ignore-symlinks set-encrypted-filenames )
+
+    # If completing config-subcommand (pos 3), list them
+    if (( CURRENT == 3 )); then
+      compadd -a cfgs
+      return 0
+    fi
+
+    case ${words[3]} in
+      set-key) _files; return 0 ;;
+      set-threads) compadd 1 2 4 8 16 32; return 0 ;;
+      set-buffer-size) compadd 4096 65536 1048576 8388608; return 0 ;;
+      add-exclude|remove-exclude) _files; return 0 ;;
+      set-ignore-symlinks|set-encrypted-filenames) compadd true false; return 0 ;;
+      *) return 0 ;;
+    esac
+    ;;
+  bench)
+    return 0
+    ;;
+  *)
+    return 0
+    ;;
+esac
