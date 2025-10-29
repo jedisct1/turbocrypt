@@ -3,7 +3,7 @@
 # turbocrypt zsh completion — shows files for encrypt/decrypt/verify when current token is NOT an option
 
 local -a subs
-subs=( keygen change-password encrypt decrypt verify config bench )
+subs=( keygen change-password encrypt decrypt verify list config bench )
 
 # If completing the subcommand itself (pos 2), show subcommands + top-level help
 if (( CURRENT == 2 )); then
@@ -45,7 +45,7 @@ case $subcmd in
   encrypt|decrypt)
     # If token starts with '-' => show options. Otherwise show filenames.
     if [[ ${words[CURRENT]} == --* || ${words[CURRENT]} == -* ]]; then
-      compadd -- --key --password --in-place --encrypted-filenames --exclude --context --enc-suffix --threads --dry-run
+      compadd -- --key --password --in-place --force --encrypted-filenames --exclude --context --enc-suffix --threads --buffer-size --ignore-symlinks --dry-run
       return 0
     fi
 
@@ -53,9 +53,10 @@ case $subcmd in
     case ${words[CURRENT-1]} in
       --key) _files; return 0 ;;
       --threads) compadd 1 2 4 8 16 32; return 0 ;;
+      --buffer-size) compadd 4096 65536 1048576 8388608; return 0 ;;
       --exclude|--context) return 0 ;; # free string/pattern -> don't list files
       # flags with no args:
-      --password|--in-place|--encrypted-filenames|--enc-suffix|--dry-run) return 0 ;;
+      --password|--in-place|--force|--encrypted-filenames|--enc-suffix|--ignore-symlinks|--dry-run) return 0 ;;
     esac
 
     # Otherwise (token doesn't start with '-') provide file/directory completions
@@ -63,17 +64,33 @@ case $subcmd in
     ;;
   verify)
     if [[ ${words[CURRENT]} == --* || ${words[CURRENT]} == -* ]]; then
-      compadd -- --key --quick --context --dry-run
+      compadd -- --key --password --quick --context --exclude --threads --buffer-size --ignore-symlinks --dry-run
       return 0
     fi
 
     case ${words[CURRENT-1]} in
       --key) _files; return 0 ;;
-      --context) return 0 ;; # free string
-      --quick|--dry-run) return 0 ;;
+      --threads) compadd 1 2 4 8 16 32; return 0 ;;
+      --buffer-size) compadd 4096 65536 1048576 8388608; return 0 ;;
+      --context|--exclude) return 0 ;; # free string/pattern
+      --password|--quick|--ignore-symlinks|--dry-run) return 0 ;;
     esac
 
     _files && return 0
+    ;;
+  list)
+    if [[ ${words[CURRENT]} == --* || ${words[CURRENT]} == -* ]]; then
+      compadd -- --key --password --encrypted-filenames --context --exclude --ignore-symlinks
+      return 0
+    fi
+
+    case ${words[CURRENT-1]} in
+      --key) _files; return 0 ;;
+      --context|--exclude) return 0 ;; # free string/pattern
+      --password|--encrypted-filenames|--ignore-symlinks) return 0 ;;
+    esac
+
+    _files -/ && return 0  # directories only
     ;;
   config)
     local -a cfgs

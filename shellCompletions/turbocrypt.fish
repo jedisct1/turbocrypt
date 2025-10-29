@@ -1,20 +1,21 @@
 # ~/.config/fish/completions/turbocrypt.fish
 # turbocrypt completions (top-level descriptions, --help, allow files for config add/remove-exclude)
 
-set -l cmds 'keygen' 'change-password' 'encrypt' 'decrypt' 'verify' 'config' 'bench'
+set -l cmds 'keygen' 'change-password' 'encrypt' 'decrypt' 'verify' 'list' 'config' 'bench'
 
 # Offer top-level commands only when none present; do not show files at this point.
 # Provide per-command descriptions (so the UI shows what each command does).
-complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a keygen -d "Generate a new key"
-complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a change-password -d "Add/change/remove password on a key file"
-complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a encrypt -d "Encrypt files or directories"
-complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a decrypt -d "Decrypt files or directories"
-complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a verify -d "Verify encrypted data integrity"
-complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a config -d "View or change configuration"
-complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a bench -d "Run performance benchmarks"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a keygen -d "Generate a new key"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a change-password -d "Add/change/remove password on a key file"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a encrypt -d "Encrypt files or directories"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a decrypt -d "Decrypt files or directories"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a verify -d "Verify encrypted data integrity"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a list -d "List encrypted directory contents"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a config -d "View or change configuration"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' --no-files -a bench -d "Run performance benchmarks"
 
 # Top-level help flags (available before a subcommand)
-complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' -l help -s h -d "Show help"
+complete -c turbocrypt -n 'not __fish_seen_subcommand_from keygen; and not __fish_seen_subcommand_from change-password; and not __fish_seen_subcommand_from encrypt; and not __fish_seen_subcommand_from decrypt; and not __fish_seen_subcommand_from verify; and not __fish_seen_subcommand_from list; and not __fish_seen_subcommand_from config; and not __fish_seen_subcommand_from bench' -l help -s h -d "Show help"
 
 # ------------------------
 # keygen
@@ -29,23 +30,46 @@ complete -c turbocrypt -n '__fish_seen_subcommand_from change-password' -l remov
 complete -c turbocrypt -n '__fish_seen_subcommand_from change-password' -a '(__fish_complete_path)' -d "Key file to modify"
 
 # ------------------------
-# encrypt / decrypt / verify common options
+# encrypt / decrypt common options
 # ------------------------
-for cmd in encrypt decrypt verify
+for cmd in encrypt decrypt
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l key -r -a '(__fish_complete_path)' -d "Path to key file"
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l password -d "Use password-protected key (prompt)"
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l in-place -d "Operate in place (overwrite source)"
+    complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l force -d "Force overwrite existing files"
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l encrypted-filenames -d "Encrypt/decrypt filenames"
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l enc-suffix -d "Automatically add/remove .enc suffix"
     # exclude/context are patterns (no file completion)
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l exclude --no-files -r -d "Exclude pattern (glob)"
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l context --no-files -r -d "Context string"
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l threads -r -a "1 2 4 8 16 32" -d "Worker threads"
+    complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l buffer-size -r -a "4096 65536 1048576 8388608" -d "IO buffer size (bytes)"
+    complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l ignore-symlinks -d "Skip symbolic links"
     complete -c turbocrypt -n "__fish_seen_subcommand_from $cmd" -l dry-run -d "Preview without performing operation"
 end
 
-# quick verification flag (verify only)
-complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l quick -d "Quick verification (check only key correctness)"
+# ------------------------
+# verify options
+# ------------------------
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l key -r -a '(__fish_complete_path)' -d "Path to key file"
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l password -d "Use password-protected key (prompt)"
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l quick -d "Quick verification (check only header/first block)"
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l context --no-files -r -d "Context string"
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l exclude --no-files -r -d "Exclude pattern (glob)"
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l threads -r -a "1 2 4 8 16 32" -d "Worker threads"
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l buffer-size -r -a "4096 65536 1048576 8388608" -d "IO buffer size (bytes)"
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l ignore-symlinks -d "Skip symbolic links"
+complete -c turbocrypt -n '__fish_seen_subcommand_from verify' -l dry-run -d "Preview without performing operation"
+
+# ------------------------
+# list options
+# ------------------------
+complete -c turbocrypt -n '__fish_seen_subcommand_from list' -l key -r -a '(__fish_complete_path)' -d "Path to key file"
+complete -c turbocrypt -n '__fish_seen_subcommand_from list' -l password -d "Use password-protected key (prompt)"
+complete -c turbocrypt -n '__fish_seen_subcommand_from list' -l encrypted-filenames -d "Decrypt filenames for display"
+complete -c turbocrypt -n '__fish_seen_subcommand_from list' -l context --no-files -r -d "Context string"
+complete -c turbocrypt -n '__fish_seen_subcommand_from list' -l exclude --no-files -r -d "Exclude pattern (glob)"
+complete -c turbocrypt -n '__fish_seen_subcommand_from list' -l ignore-symlinks -d "Skip symbolic links"
 
 # ------------------------
 # config subcommands (with helpful descriptions)
@@ -71,7 +95,9 @@ complete -c turbocrypt -n '__fish_seen_subcommand_from config; and __fish_seen_s
 complete -c turbocrypt -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from set-encrypted-filenames' -a "true false" -d "Default filename encryption (true/false)"
 
 # ------------------------
-# positional/file completions: only after encrypt/decrypt/verify
+# positional/file completions
 # ------------------------
 complete -c turbocrypt -n '__fish_seen_subcommand_from encrypt; or __fish_seen_subcommand_from decrypt; or __fish_seen_subcommand_from verify' -a '(__fish_complete_path)' -d "File or directory"
+# list command accepts directories only
+complete -c turbocrypt -n '__fish_seen_subcommand_from list' -a '(__fish_complete_directories)' -d "Directory to list"
 
