@@ -1,0 +1,117 @@
+# turbocrypt bash completion (updated)
+_turbocrypt() {
+    local cur prev words cword
+    if type _get_comp_words_by_ref &>/dev/null; then
+        _get_comp_words_by_ref -n : cur prev words cword
+    else
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+        words=("${COMP_WORDS[@]}")
+        cword=$COMP_CWORD
+    fi
+
+    local subcommands=(keygen change-password encrypt decrypt verify config bench)
+    local config_subs=(show set-key set-threads set-buffer-size add-exclude remove-exclude set-ignore-symlinks set-encrypted-filenames)
+
+    # find first non-option token (subcommand)
+    local i token subcmd=""
+    for (( i = 1; i < COMP_CWORD; i++ )); do
+        token="${COMP_WORDS[i]}"
+        if [[ "${token}" != -* ]]; then
+            subcmd="${token}"
+            break
+        fi
+    done
+
+    # If no subcommand yet -> list top-level subcommands and top-level help flag
+    if [[ -z "$subcmd" ]]; then
+        # show subcommands; Bash doesn't show descriptions inline, but we list the names.
+        COMPREPLY=( $(compgen -W "${subcommands[*]} -h --help" -- "$cur") )
+        return 0
+    fi
+
+    case "$subcmd" in
+        keygen)
+            if [[ "$cur" == --* || "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--password -h --help" -- "$cur") )
+                return 0
+            fi
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        change-password)
+            if [[ "$cur" == --* || "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--remove-password -h --help" -- "$cur") )
+                return 0
+            fi
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        encrypt|decrypt)
+            local opts="--key --password --in-place --encrypted-filenames --exclude --context --enc-suffix --threads --dry-run -h --help"
+            if [[ "$cur" == --* || "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+                return 0
+            fi
+            case "$prev" in
+                --key) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
+                --password) COMPREPLY=(); return 0 ;;
+                --exclude) COMPREPLY=(); return 0 ;;
+                --context) COMPREPLY=(); return 0 ;;
+                --threads) COMPREPLY=( $(compgen -W "1 2 4 8 16 32" -- "$cur") ); return 0 ;;
+            esac
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        verify)
+            local opts="--key --quick --context --dry-run -h --help"
+            if [[ "$cur" == --* || "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+                return 0
+            fi
+            case "$prev" in
+                --key) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
+                --context) COMPREPLY=(); return 0 ;;
+            esac
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        config)
+            # If just 'config' so far, show config subcommands and -h/--help
+            if [[ ${COMP_CWORD} -le 2 || "${COMP_WORDS[COMP_CWORD-1]}" == "config" ]]; then
+                COMPREPLY=( $(compgen -W "${config_subs[*]} -h --help" -- "$cur") )
+                return 0
+            fi
+            # determine which config subcommand is present
+            local cfg=""
+            for (( i = 2; i < COMP_CWORD; i++ )); do
+                token="${COMP_WORDS[i]}"
+                if [[ "${token}" != -* ]]; then
+                    cfg="${token}"
+                    break
+                fi
+            done
+            case "$cfg" in
+                show) COMPREPLY=(); return 0 ;;
+                set-key) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
+                set-threads) COMPREPLY=( $(compgen -W "1 2 4 8 16 32" -- "$cur") ); return 0 ;;
+                set-buffer-size) COMPREPLY=( $(compgen -W "4096 65536 1048576 8388608" -- "$cur") ); return 0 ;;
+                add-exclude|remove-exclude) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
+                set-ignore-symlinks|set-encrypted-filenames) COMPREPLY=( $(compgen -W "true false" -- "$cur") ); return 0 ;;
+                *) COMPREPLY=(); return 0 ;;
+            esac
+            ;;
+        bench)
+            COMPREPLY=()
+            return 0
+            ;;
+        *)
+            COMPREPLY=()
+            return 0
+            ;;
+    esac
+}
+
+if type complete &>/dev/null; then
+    complete -F _turbocrypt turbocrypt
+fi
