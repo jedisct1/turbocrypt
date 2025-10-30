@@ -2,6 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const password = @import("password.zig");
 
+fn readAll(file: std.fs.File, io: std.Io, buffer: []u8) !usize {
+    var file_reader = file.reader(io, &.{});
+    return file_reader.interface.readSliceShort(buffer) catch |err| switch (err) {
+        error.ReadFailed => return file_reader.err.?,
+    };
+}
+
 /// Key size for AEGIS-128X2 (16 bytes = 128 bits)
 pub const key_length = 16;
 
@@ -64,7 +71,7 @@ pub fn writeKeyFile(
 /// If password is provided and key is password-protected, it will be decrypted
 /// Returns error if file doesn't exist, is wrong size, or can't be read
 /// Warns if file permissions are too permissive
-pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8) ![key_length]u8 {
+pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8, io: std.Io) ![key_length]u8 {
     // Open file
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
@@ -94,27 +101,27 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8) ![key_length]u8 
     if (file_size == plain_key_file_size) {
         // Plain key format
         var key: [key_length]u8 = undefined;
-        const bytes_read = try file.readAll(&key);
+        const bytes_read = try readAll(file, io, &key);
         if (bytes_read != key_length) {
             return error.InvalidKeyFile;
         }
         return key;
     } else if (file_size == protected_key_file_size) {
         // Password-protected format
-        var format_buf: [1]u8 = undefined;
-        const bytes_read_flag = try file.read(&format_buf);
-        if (bytes_read_flag != 1) {
-            return error.InvalidKeyFile;
-        }
-        if (format_buf[0] != @intFromEnum(KeyFormat.password_protected)) {
+        // Read the entire file (1 byte flag + 20 bytes protected data)
+        var full_data: [21]u8 = undefined;
+        const bytes_read = try readAll(file, io, &full_data);
+        if (bytes_read != 21) {
             return error.InvalidKeyFile;
         }
 
-        var protected_data: [20]u8 = undefined;
-        const bytes_read = try file.readAll(&protected_data);
-        if (bytes_read != 20) {
+        if (full_data[0] != @intFromEnum(KeyFormat.password_protected)) {
             return error.InvalidKeyFile;
         }
+
+        // Extract protected data (skip first byte which is the format flag)
+        var protected_data: [20]u8 = undefined;
+        @memcpy(&protected_data, full_data[1..21]);
 
         // Require password for protected keys
         const pwd = password_opt orelse return error.PasswordRequired;
@@ -136,6 +143,7 @@ test "key generation" {
 
 test "key file write and read (plain)" {
     const testing = std.testing;
+    const io = testing.io;
 
     // Generate a key
     const original_key = generate();
@@ -152,7 +160,7 @@ test "key file write and read (plain)" {
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
     // Read back
-    const read_key = try readKeyFile(test_path, null);
+    const read_key = try readKeyFile(test_path, null, io);
 
     // Verify they match
     try testing.expectEqualSlices(u8, &original_key, &read_key);
@@ -160,6 +168,7 @@ test "key file write and read (plain)" {
 
 test "key file write and read (password-protected)" {
     const testing = std.testing;
+    const io = testing.io;
 
     // Generate a key
     const original_key = generate();
@@ -183,7 +192,7 @@ test "key file write and read (password-protected)" {
     try testing.expectEqual(@as(u64, protected_key_file_size), stat.size);
 
     // Read back with password
-    const read_key = try readKeyFile(test_path, test_password);
+    const read_key = try readKeyFile(test_path, test_password, io);
 
     // Verify they match
     try testing.expectEqualSlices(u8, &original_key, &read_key);
@@ -191,6 +200,7 @@ test "key file write and read (password-protected)" {
 
 test "password-protected key requires password" {
     const testing = std.testing;
+    const io = testing.io;
 
     const original_key = generate();
     const test_password = "test_password_123";
@@ -205,12 +215,13 @@ test "password-protected key requires password" {
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
     // Attempt to read without password should fail
-    const result = readKeyFile(test_path, null);
+    const result = readKeyFile(test_path, null, io);
     try testing.expectError(error.PasswordRequired, result);
 }
 
 test "wrong password fails" {
     const testing = std.testing;
+    const io = testing.io;
 
     const original_key = generate();
     const correct_password = "correct_password";
@@ -226,12 +237,13 @@ test "wrong password fails" {
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
     // Read with wrong password should fail with InvalidPassword error
-    const result = readKeyFile(test_path, wrong_password);
+    const result = readKeyFile(test_path, wrong_password, io);
     try testing.expectError(error.InvalidPassword, result);
 }
 
 test "change password on protected key" {
     const testing = std.testing;
+    const io = testing.io;
 
     const original_key = generate();
     const old_password = "old_password_123";
@@ -248,20 +260,21 @@ test "change password on protected key" {
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
     // Read with old password and re-write with new password
-    const read_key = try readKeyFile(test_path, old_password);
+    const read_key = try readKeyFile(test_path, old_password, io);
     try writeKeyFile(test_path, read_key, new_password);
 
     // Verify old password no longer works
-    const result_old = readKeyFile(test_path, old_password);
+    const result_old = readKeyFile(test_path, old_password, io);
     try testing.expectError(error.InvalidPassword, result_old);
 
     // Verify new password works
-    const read_key_new = try readKeyFile(test_path, new_password);
+    const read_key_new = try readKeyFile(test_path, new_password, io);
     try testing.expectEqualSlices(u8, &original_key, &read_key_new);
 }
 
 test "add password protection to plain key" {
     const testing = std.testing;
+    const io = testing.io;
 
     const original_key = generate();
     const test_password = "new_password_789";
@@ -283,7 +296,7 @@ test "add password protection to plain key" {
     try testing.expectEqual(@as(u64, plain_key_file_size), stat1.size);
 
     // Read and re-write with password
-    const read_key = try readKeyFile(test_path, null);
+    const read_key = try readKeyFile(test_path, null, io);
     try writeKeyFile(test_path, read_key, test_password);
 
     // Verify file size is now for protected key
@@ -293,12 +306,13 @@ test "add password protection to plain key" {
     try testing.expectEqual(@as(u64, protected_key_file_size), stat2.size);
 
     // Verify key can be read with password
-    const read_key_protected = try readKeyFile(test_path, test_password);
+    const read_key_protected = try readKeyFile(test_path, test_password, io);
     try testing.expectEqualSlices(u8, &original_key, &read_key_protected);
 }
 
 test "remove password protection from protected key" {
     const testing = std.testing;
+    const io = testing.io;
 
     const original_key = generate();
     const test_password = "temporary_password";
@@ -320,7 +334,7 @@ test "remove password protection from protected key" {
     try testing.expectEqual(@as(u64, protected_key_file_size), stat1.size);
 
     // Read with password and re-write without password
-    const read_key = try readKeyFile(test_path, test_password);
+    const read_key = try readKeyFile(test_path, test_password, io);
     try writeKeyFile(test_path, read_key, null);
 
     // Verify file size is now for plain key
@@ -330,6 +344,6 @@ test "remove password protection from protected key" {
     try testing.expectEqual(@as(u64, plain_key_file_size), stat2.size);
 
     // Verify key can be read without password
-    const read_key_plain = try readKeyFile(test_path, null);
+    const read_key_plain = try readKeyFile(test_path, null, io);
     try testing.expectEqualSlices(u8, &original_key, &read_key_plain);
 }

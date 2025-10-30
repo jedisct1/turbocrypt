@@ -41,13 +41,13 @@ pub fn resolveKeyPath(allocator: std.mem.Allocator, optional_cli_path: ?[]const 
 /// 3. Config file (use stored key)
 ///
 /// Returns error.KeyNotFound if no key is configured.
-pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, password_opt: ?[]const u8) ![16]u8 {
+pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, password_opt: ?[]const u8, io: std.Io) ![16]u8 {
     const key_path = try resolveKeyPath(allocator, optional_cli_path);
 
     if (key_path) |path| {
         // Load from file
         defer allocator.free(path);
-        return try keygen.readKeyFile(path, password_opt);
+        return try keygen.readKeyFile(path, password_opt, io);
     } else {
         // Load from config
         var cfg = try config.load(allocator);

@@ -7,27 +7,27 @@ pub const ProgressTracker = struct {
     bytes_processed: std.atomic.Value(u64),
     total_files: std.atomic.Value(u64),
     total_bytes: std.atomic.Value(u64),
-    start_time: i64,
-    last_update_time: std.atomic.Value(i64),
+    timer: std.time.Timer,
     display_thread: ?std.Thread,
     should_stop: std.atomic.Value(bool),
     mutex: std.Thread.Mutex,
+    io: std.Io,
 
     const Self = @This();
 
     /// Initialize a new progress tracker
-    pub fn init(total_files: u64, total_bytes: u64) Self {
+    pub fn init(total_files: u64, total_bytes: u64, io: std.Io) !Self {
         return Self{
             .files_processed = std.atomic.Value(u64).init(0),
             .files_failed = std.atomic.Value(u64).init(0),
             .bytes_processed = std.atomic.Value(u64).init(0),
             .total_files = std.atomic.Value(u64).init(total_files),
             .total_bytes = std.atomic.Value(u64).init(total_bytes),
-            .start_time = std.time.milliTimestamp(),
-            .last_update_time = std.atomic.Value(i64).init(std.time.milliTimestamp()),
+            .timer = try std.time.Timer.start(),
             .display_thread = null,
             .should_stop = std.atomic.Value(bool).init(false),
             .mutex = std.Thread.Mutex{},
+            .io = io,
         };
     }
 
@@ -88,12 +88,11 @@ pub const ProgressTracker = struct {
 
     /// Calculate current throughput in Mb/s (megabits per second)
     pub fn getThroughput(self: *Self) f64 {
-        const now = std.time.milliTimestamp();
-        const elapsed_ms = now - self.start_time;
-        if (elapsed_ms <= 0) return 0.0;
+        const elapsed_ns = self.timer.read();
+        if (elapsed_ns == 0) return 0.0;
 
         const bytes = @as(f64, @floatFromInt(self.getBytesProcessed()));
-        const elapsed_s = @as(f64, @floatFromInt(elapsed_ms)) / 1000.0;
+        const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
         const bits = bytes * 8.0;
         const megabits = bits / (1000.0 * 1000.0);
         return megabits / elapsed_s;
@@ -163,9 +162,8 @@ pub const ProgressTracker = struct {
         const bytes_done = self.getBytesProcessed();
         const total_files = self.getTotalFiles();
 
-        const now = std.time.milliTimestamp();
-        const elapsed_ms = now - self.start_time;
-        const elapsed_s = @as(f64, @floatFromInt(elapsed_ms)) / 1000.0;
+        const elapsed_ns = self.timer.read();
+        const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
 
         var bytes_buf: [32]u8 = undefined;
         const bytes_str = formatBytes(bytes_done, &bytes_buf);
@@ -198,7 +196,7 @@ pub const ProgressTracker = struct {
     fn displayUpdateThread(self: *Self) void {
         while (!self.should_stop.load(.acquire)) {
             self.display();
-            std.Thread.sleep(100 * std.time.ns_per_ms); // Update every 100ms
+            self.io.sleep(std.Io.Duration.fromMilliseconds(100), .awake) catch {}; // Update every 100ms
         }
     }
 
@@ -220,8 +218,9 @@ pub const ProgressTracker = struct {
 
 test "progress tracker basic operations" {
     const testing = std.testing;
+    const io = testing.io;
 
-    var tracker = ProgressTracker.init(100, 1024 * 1024 * 100);
+    var tracker = try ProgressTracker.init(100, 1024 * 1024 * 100, io);
 
     // Test initial state
     try testing.expectEqual(@as(u64, 0), tracker.getFilesProcessed());

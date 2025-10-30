@@ -6,15 +6,22 @@ const io_hints = @import("io_hints.zig");
 // Threshold for using mmap vs buffered I/O (1MB)
 const MMAP_THRESHOLD: u64 = 1024 * 1024;
 
+fn readAll(file: std.fs.File, io: std.Io, buffer: []u8) !usize {
+    var file_reader = file.reader(io, &.{});
+    return file_reader.interface.readSliceShort(buffer) catch |err| switch (err) {
+        error.ReadFailed => return file_reader.err.?,
+    };
+}
+
 /// Read file using buffered I/O with I/O hints
-fn readBuffered(file: std.fs.File, file_size: u64, allocator: std.mem.Allocator) ![]u8 {
+fn readBuffered(file: std.fs.File, file_size: u64, allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     // Advise kernel about sequential file access for better read-ahead
     io_hints.adviseFile(file, 0, @intCast(file_size), .sequential);
 
     const buffer = try allocator.alloc(u8, file_size);
     errdefer allocator.free(buffer);
 
-    const bytes_read = try file.readAll(buffer);
+    const bytes_read = try readAll(file, io, buffer);
     if (bytes_read != file_size) {
         return error.IncompleteRead;
     }
@@ -28,6 +35,7 @@ pub fn encryptFile(
     output_path: []const u8,
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
+    io: std.Io,
 ) !void {
     // Check if in-place operation
     const in_place = std.mem.eql(u8, input_path, output_path);
@@ -55,10 +63,10 @@ pub fn encryptFile(
 
     // Use zero-copy mmap for large files on non-Windows platforms
     if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
-        try encryptFileZeroCopy(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode);
+        try encryptFileZeroCopy(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode, io);
     } else {
         // Use buffered I/O for small files
-        try encryptFileBuffered(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode);
+        try encryptFileBuffered(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode, io);
     }
 
     // For in-place operation, atomically rename temp file to original
@@ -80,6 +88,7 @@ fn encryptFileZeroCopy(
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
     mode: std.fs.File.Mode,
+    io: std.Io,
 ) !void {
     // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
@@ -94,7 +103,7 @@ fn encryptFileZeroCopy(
         0,
     ) catch {
         // Fall back to buffered I/O if mmap fails
-        return encryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, mode);
+        return encryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, mode, io);
     };
     defer {
         // Drop pages from cache after processing to free memory
@@ -164,9 +173,10 @@ fn encryptFileBuffered(
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
     mode: std.fs.File.Mode,
+    io: std.Io,
 ) !void {
     // Read input file
-    const plaintext = try readBuffered(input_file, file_size, allocator);
+    const plaintext = try readBuffered(input_file, file_size, allocator, io);
     defer allocator.free(plaintext);
 
     // Encrypt
@@ -201,6 +211,7 @@ pub fn decryptFile(
     output_path: []const u8,
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
+    io: std.Io,
 ) !void {
     // Check if in-place operation
     const in_place = std.mem.eql(u8, input_path, output_path);
@@ -228,10 +239,10 @@ pub fn decryptFile(
 
     // Use zero-copy mmap for large files on non-Windows platforms
     if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
-        try decryptFileZeroCopy(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode);
+        try decryptFileZeroCopy(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode, io);
     } else {
         // Use buffered I/O for small files
-        try decryptFileBuffered(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode);
+        try decryptFileBuffered(input_file, file_size, actual_output_path, derived_keys, allocator, input_stat.mode, io);
     }
 
     // For in-place operation, atomically rename temp file to original
@@ -253,6 +264,7 @@ fn decryptFileZeroCopy(
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
     mode: std.fs.File.Mode,
+    io: std.Io,
 ) !void {
     // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
@@ -267,7 +279,7 @@ fn decryptFileZeroCopy(
         0,
     ) catch {
         // Fall back to buffered I/O if mmap fails
-        return decryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, mode);
+        return decryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, mode, io);
     };
     defer {
         // Drop pages from cache after processing to free memory
@@ -338,9 +350,10 @@ fn decryptFileBuffered(
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
     mode: std.fs.File.Mode,
+    io: std.Io,
 ) !void {
     // Read input file
-    const encrypted = try readBuffered(input_file, file_size, allocator);
+    const encrypted = try readBuffered(input_file, file_size, allocator, io);
     defer allocator.free(encrypted);
 
     // Decrypt
@@ -377,6 +390,7 @@ pub fn verifyFile(
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
     quick: bool,
+    io: std.Io,
 ) !void {
     // Open input file
     const input_file = try std.fs.cwd().openFile(input_path, .{});
@@ -387,9 +401,9 @@ pub fn verifyFile(
 
     // Use mmap for large files on non-Windows platforms, otherwise buffered I/O
     if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
-        try verifyFileZeroCopy(input_file, file_size, derived_keys, allocator, quick);
+        try verifyFileZeroCopy(input_file, file_size, derived_keys, allocator, quick, io);
     } else {
-        try verifyFileBuffered(input_file, file_size, derived_keys, allocator, quick);
+        try verifyFileBuffered(input_file, file_size, derived_keys, allocator, quick, io);
     }
 }
 
@@ -400,6 +414,7 @@ fn verifyFileZeroCopy(
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
     quick: bool,
+    io: std.Io,
 ) !void {
     // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
@@ -414,7 +429,7 @@ fn verifyFileZeroCopy(
         0,
     ) catch {
         // Fall back to buffered I/O if mmap fails
-        return verifyFileBuffered(input_file, input_size, derived_keys, allocator, quick);
+        return verifyFileBuffered(input_file, input_size, derived_keys, allocator, quick, io);
     };
     defer {
         // Drop pages from cache after processing to free memory
@@ -442,9 +457,10 @@ fn verifyFileBuffered(
     derived_keys: crypto.DerivedKeys,
     allocator: std.mem.Allocator,
     quick: bool,
+    io: std.Io,
 ) !void {
     // Read encrypted file
-    const encrypted = try readBuffered(input_file, file_size, allocator);
+    const encrypted = try readBuffered(input_file, file_size, allocator, io);
     defer allocator.free(encrypted);
 
     // Verify
@@ -458,6 +474,7 @@ fn verifyFileBuffered(
 test "encrypt and decrypt file" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     // Ensure tmp directory exists
     std.fs.cwd().makeDir("tmp") catch |err| {
@@ -483,7 +500,7 @@ test "encrypt and decrypt file" {
     const derived = crypto.deriveKeys(key, null);
 
     // Encrypt file
-    try encryptFile(input_path, encrypted_path, derived, allocator);
+    try encryptFile(input_path, encrypted_path, derived, allocator, io);
     defer std.fs.cwd().deleteFile(encrypted_path) catch {};
 
     // Verify encrypted file exists and is larger than plaintext
@@ -495,7 +512,7 @@ test "encrypt and decrypt file" {
     }
 
     // Decrypt file
-    try decryptFile(encrypted_path, decrypted_path, derived, allocator);
+    try decryptFile(encrypted_path, decrypted_path, derived, allocator, io);
     defer std.fs.cwd().deleteFile(decrypted_path) catch {};
 
     // Verify decrypted content matches original
@@ -505,7 +522,7 @@ test "encrypt and decrypt file" {
         const size = (try file.stat()).size;
         const content = try allocator.alloc(u8, size);
         defer allocator.free(content);
-        _ = try file.readAll(content);
+        _ = try readAll(file, io, content);
         try testing.expectEqualStrings(test_data, content);
     }
 }
@@ -513,6 +530,7 @@ test "encrypt and decrypt file" {
 test "decrypt with wrong key fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     // Ensure tmp directory exists
     std.fs.cwd().makeDir("tmp") catch |err| {
@@ -538,11 +556,11 @@ test "decrypt with wrong key fails" {
     const derived2 = crypto.deriveKeys(key2, null);
 
     // Encrypt with key1
-    try encryptFile(input_path, encrypted_path, derived1, allocator);
+    try encryptFile(input_path, encrypted_path, derived1, allocator, io);
     defer std.fs.cwd().deleteFile(encrypted_path) catch {};
 
     // Try to decrypt with key2 - should fail
-    const result = decryptFile(encrypted_path, decrypted_path, derived2, allocator);
+    const result = decryptFile(encrypted_path, decrypted_path, derived2, allocator, io);
     try testing.expectError(error.InvalidHeaderMAC, result);
 
     // Verify decrypted file was not created
@@ -553,6 +571,7 @@ test "decrypt with wrong key fails" {
 test "in-place encrypt/decrypt works with absolute path" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     std.fs.cwd().makeDir("tmp") catch |err| {
         if (err != error.PathAlreadyExists) return err;
@@ -577,7 +596,7 @@ test "in-place encrypt/decrypt works with absolute path" {
     const derived = crypto.deriveKeys(key, null);
 
     // Encrypt in place using absolute path
-    try encryptFile(abs_path, abs_path, derived, allocator);
+    try encryptFile(abs_path, abs_path, derived, allocator, io);
 
     // Verify encrypted file size increased by overhead
     {
@@ -588,7 +607,7 @@ test "in-place encrypt/decrypt works with absolute path" {
     }
 
     // Decrypt in place back to plaintext
-    try decryptFile(abs_path, abs_path, derived, allocator);
+    try decryptFile(abs_path, abs_path, derived, allocator, io);
 
     // Confirm content restored
     {
@@ -596,7 +615,7 @@ test "in-place encrypt/decrypt works with absolute path" {
         defer file.close();
         const buf = try allocator.alloc(u8, plaintext.len);
         defer allocator.free(buf);
-        const read = try file.readAll(buf);
+        const read = try readAll(file, io, buf);
         try testing.expectEqual(@as(usize, plaintext.len), read);
         try testing.expectEqualStrings(plaintext, buf);
     }

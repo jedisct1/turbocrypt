@@ -178,6 +178,7 @@ pub const WorkerPool = struct {
     has_errors: bool,
     quick_verify: bool,
     dry_run: bool,
+    io: std.Io,
 
     const Self = @This();
 
@@ -189,6 +190,7 @@ pub const WorkerPool = struct {
         progress_tracker: *progress.ProgressTracker,
         quick_verify: bool,
         dry_run: bool,
+        io: std.Io,
     ) !Self {
         const threads = try allocator.alloc(std.Thread, thread_count);
         errdefer allocator.free(threads);
@@ -204,6 +206,7 @@ pub const WorkerPool = struct {
             .has_errors = false,
             .quick_verify = quick_verify,
             .dry_run = dry_run,
+            .io = io,
         };
     }
 
@@ -236,7 +239,7 @@ pub const WorkerPool = struct {
 
             if (batch.len == 0) {
                 // Queue is empty but not done yet, sleep briefly and retry
-                std.Thread.sleep(1_000_000); // 1ms
+                worker.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {}; // 1ms
                 continue;
             }
 
@@ -256,6 +259,7 @@ pub const WorkerPool = struct {
                                 job.dest_path.?,
                                 worker.derived_keys,
                                 thread_allocator,
+                                worker.io,
                             ) catch |err| {
                                 handleJobError(worker, job, err, "[ERROR] Failed to encrypt:", true);
                                 continue; // Continue with remaining files in batch
@@ -267,6 +271,7 @@ pub const WorkerPool = struct {
                                 job.dest_path.?,
                                 worker.derived_keys,
                                 thread_allocator,
+                                worker.io,
                             ) catch |err| {
                                 handleJobError(worker, job, err, "[ERROR] Failed to decrypt:", false);
                                 continue; // Continue with remaining files in batch
@@ -278,6 +283,7 @@ pub const WorkerPool = struct {
                                 worker.derived_keys,
                                 thread_allocator,
                                 worker.quick_verify,
+                                worker.io,
                             ) catch |err| {
                                 handleJobError(worker, job, err, "[VERIFY FAILED]", false);
                                 continue; // Continue with remaining files in batch
@@ -327,7 +333,7 @@ pub const WorkerPool = struct {
         }
 
         // Small delay to ensure workers are started and waiting
-        std.Thread.sleep(1_000_000); // 1ms
+        self.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {}; // 1ms
     }
 
     /// Mark queue as done and wait for all worker threads to complete
@@ -359,12 +365,13 @@ pub const WorkerPool = struct {
 test "worker pool initialization" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key: [crypto.key_length]u8 = @splat(42);
     const derived = crypto.deriveKeys(key, null);
-    var tracker = progress.ProgressTracker.init(0, 0);
+    var tracker = try progress.ProgressTracker.init(0, 0, io);
 
-    var pool = try WorkerPool.init(allocator, 4, derived, &tracker, false, false);
+    var pool = try WorkerPool.init(allocator, 4, derived, &tracker, false, false, io);
     defer pool.deinit();
 
     try testing.expect(!pool.hadErrors());

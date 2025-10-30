@@ -486,7 +486,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
 }
 
 /// Benchmark multi-threaded file processing
-fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.DerivedKeys, tmp_dir: []const u8, config: BenchConfig) !void {
+fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.DerivedKeys, tmp_dir: []const u8, config: BenchConfig, io: std.Io) !void {
     std.debug.print("\n*** Multi-Threaded Benchmarks (File I/O) ***\n", .{});
     std.debug.print("Real-world file encryption with parallel processing\n", .{});
     std.debug.print("Throughput = total Mb/s across all threads\n", .{});
@@ -546,8 +546,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 
         // Warmup
         for (0..config.warmup_iterations) |_| {
-            var tracker = progress.ProgressTracker.init(file_count, total_size);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false);
+            var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
             defer pool.deinit();
 
             for (file_paths.items, file_sizes.items) |path, size| {
@@ -576,8 +576,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
         for (0..config.measured_iterations) |_| {
             var timer = try std.time.Timer.start();
             {
-                var tracker = progress.ProgressTracker.init(file_count, total_size);
-                var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false);
+                var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+                var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
                 defer pool.deinit();
 
                 for (file_paths.items, file_sizes.items) |path, size| {
@@ -621,8 +621,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 
         // Create encrypted files for decryption benchmark
         {
-            var tracker = progress.ProgressTracker.init(file_count, total_size);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false);
+            var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
             defer pool.deinit();
 
             for (file_paths.items, file_sizes.items) |path, size| {
@@ -642,8 +642,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 
         // Warmup
         for (0..config.warmup_iterations) |_| {
-            var tracker = progress.ProgressTracker.init(file_count, total_size);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false);
+            var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
             defer pool.deinit();
 
             for (file_paths.items, file_sizes.items) |path, size| {
@@ -672,8 +672,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
         for (0..config.measured_iterations) |_| {
             var timer = try std.time.Timer.start();
             {
-                var tracker = progress.ProgressTracker.init(file_count, total_size);
-                var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false);
+                var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+                var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
                 defer pool.deinit();
 
                 for (file_paths.items, file_sizes.items) |path, size| {
@@ -726,7 +726,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 }
 
 /// Run all benchmarks
-pub fn run(allocator: std.mem.Allocator) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     std.debug.print("\nTurboCrypt Performance Benchmark\n", .{});
     std.debug.print("================================\n", .{});
 
@@ -758,7 +758,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     try benchMultiThreadedInMemory(allocator, derived_keys, in_memory_config);
 
     // Run multi-threaded file I/O benchmarks
-    try benchMultiThreaded(allocator, derived_keys, tmp_dir, file_io_config);
+    try benchMultiThreaded(allocator, derived_keys, tmp_dir, file_io_config, io);
 
     std.debug.print("\nBenchmark completed!\n", .{});
     std.debug.print("Note: Results may vary based on CPU, memory speed, and system load.\n", .{});

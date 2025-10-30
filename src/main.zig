@@ -397,7 +397,8 @@ fn handleKeyLoadError(err: anyerror, command_name: []const u8) !void {
     return err;
 }
 
-fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator) !void {
+fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+    _ = io;
     // Parse options (to support --password flag)
     const parsed = try parseOptions(args, allocator);
     defer allocator.free(parsed.positional);
@@ -626,7 +627,7 @@ const DirectoryScanContext = struct {
 };
 
 /// Unified encrypt/decrypt processing function
-fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt: bool) !void {
+fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt: bool, io: std.Io) !void {
     const op_name = if (is_encrypt) "encrypt" else "decrypt";
     const op_name_cap = if (is_encrypt) "Encrypting" else "Decrypting";
     const op_complete = if (is_encrypt) "Encryption" else "Decryption";
@@ -691,7 +692,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     };
 
     // Load key (from file or config)
-    const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
+    const key = keyloader.resolveKey(allocator, opts.key, password_buf, io) catch |err| {
         return handleKeyLoadError(err, op_name);
     };
 
@@ -748,8 +749,8 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             }
 
             // Phase 2: Process all collected files
-            var tracker = progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run);
+            var tracker = try progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes, io);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
             defer pool.deinit();
 
             try tracker.startDisplay();
@@ -788,8 +789,8 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 std.debug.print("Scanning and {s}...\n", .{if (is_encrypt) "encrypting" else "decrypting"});
             }
 
-            var tracker = progress.ProgressTracker.init(0, 0);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run);
+            var tracker = try progress.ProgressTracker.init(0, 0, io);
+            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
             defer pool.deinit();
 
             // Start worker threads BEFORE scanning so they can process files concurrently
@@ -841,14 +842,14 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         }
 
         if (is_encrypt) {
-            processor.encryptFile(source_path, dest_path, derived_keys, allocator) catch |err| {
+            processor.encryptFile(source_path, dest_path, derived_keys, allocator, io) catch |err| {
                 std.debug.print("\n[ERROR] Encryption failed\n", .{});
                 std.debug.print("        File: {s}\n", .{source_path});
                 worker.printErrorDetails(err, true);
                 return err;
             };
         } else {
-            processor.decryptFile(source_path, dest_path, derived_keys, allocator) catch |err| {
+            processor.decryptFile(source_path, dest_path, derived_keys, allocator, io) catch |err| {
                 std.debug.print("\n[ERROR] Decryption failed\n", .{});
                 std.debug.print("        File: {s}\n", .{source_path});
                 worker.printErrorDetails(err, false);
@@ -859,15 +860,15 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     }
 }
 
-fn cmdEncrypt(args: []const []const u8, allocator: std.mem.Allocator) !void {
-    try cmdProcess(args, allocator, true);
+fn cmdEncrypt(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+    try cmdProcess(args, allocator, true, io);
 }
 
-fn cmdDecrypt(args: []const []const u8, allocator: std.mem.Allocator) !void {
-    try cmdProcess(args, allocator, false);
+fn cmdDecrypt(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+    try cmdProcess(args, allocator, false, io);
 }
 
-fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
+fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
     // Parse options
     const parsed = try parseOptions(args, allocator);
     defer allocator.free(parsed.positional);
@@ -895,7 +896,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
     };
 
     // Load key (from file or config)
-    const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
+    const key = keyloader.resolveKey(allocator, opts.key, password_buf, io) catch |err| {
         return handleKeyLoadError(err, "verify");
     };
 
@@ -954,8 +955,8 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
         }
 
         // Verify all collected files
-        var tracker = progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes);
-        var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick, opts.dry_run);
+        var tracker = try progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes, io);
+        var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick, opts.dry_run, io);
         defer pool.deinit();
 
         try tracker.startDisplay();
@@ -993,7 +994,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator) !void {
 
         std.debug.print("Verifying file: {s}\n", .{source_path});
 
-        processor.verifyFile(source_path, derived_keys, allocator, opts.quick) catch |err| {
+        processor.verifyFile(source_path, derived_keys, allocator, opts.quick, io) catch |err| {
             std.debug.print("\n[VERIFY FAILED] {s}\n", .{source_path});
             worker.printErrorDetails(err, false);
             return err;
@@ -1044,7 +1045,7 @@ const ListContext = struct {
     }
 };
 
-fn cmdList(args: []const []const u8, allocator: std.mem.Allocator) !void {
+fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
     // Parse options
     const parsed = try parseOptions(args, allocator);
     defer allocator.free(parsed.positional);
@@ -1087,7 +1088,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator) !void {
         };
 
         // Load key (from file or config)
-        const key = keyloader.resolveKey(allocator, opts.key, password_buf) catch |err| {
+        const key = keyloader.resolveKey(allocator, opts.key, password_buf, io) catch |err| {
             return handleKeyLoadError(err, "list");
         };
 
@@ -1177,7 +1178,7 @@ fn formatSize(bytes: u64) []const u8 {
     }
 }
 
-fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator) !void {
+fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
     // Parse options (to support --remove-password flag)
     const parsed = try parseOptions(args, allocator);
     defer allocator.free(parsed.positional);
@@ -1225,7 +1226,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator) !vo
         }
 
         // Read and decrypt the key
-        actual_key = keygen.readKeyFile(key_path, old_password_buf) catch |err| {
+        actual_key = keygen.readKeyFile(key_path, old_password_buf, io) catch |err| {
             if (err == error.InvalidPassword) {
                 std.debug.print("Error: Invalid current password\n", .{});
                 return error.InvalidPassword;
@@ -1260,7 +1261,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator) !vo
         std.debug.print("Current key is not password-protected\n", .{});
 
         // Read the plain key
-        actual_key = try keygen.readKeyFile(key_path, null);
+        actual_key = try keygen.readKeyFile(key_path, null, io);
 
         // Add password protection
         const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true);
@@ -1354,7 +1355,8 @@ fn modifyExcludePattern(
     }
 }
 
-fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator) !void {
+fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+    _ = io;
     if (args.len < 1) {
         std.debug.print("Error: Missing config subcommand\n", .{});
         std.debug.print("Usage: turbocrypt config <set-key|set-threads|set-buffer-size|add-exclude|remove-exclude|set-ignore-symlinks|set-encrypted-filenames|show>\n", .{});
@@ -1660,6 +1662,11 @@ pub fn main() !void {
     else
         gpa.allocator();
 
+    // Initialize I/O subsystem
+    var io_instance = std.Io.Threaded.init(allocator);
+    defer io_instance.deinit();
+    const io = io_instance.io();
+
     // Get command-line arguments
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -1674,35 +1681,35 @@ pub fn main() !void {
     const command_args = args[2..];
 
     if (std.mem.eql(u8, command, "keygen")) {
-        cmdKeygen(command_args, allocator) catch {
+        cmdKeygen(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "change-password")) {
-        cmdChangePassword(command_args, allocator) catch {
+        cmdChangePassword(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "encrypt")) {
-        cmdEncrypt(command_args, allocator) catch {
+        cmdEncrypt(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "decrypt")) {
-        cmdDecrypt(command_args, allocator) catch {
+        cmdDecrypt(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "verify")) {
-        cmdVerify(command_args, allocator) catch {
+        cmdVerify(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "list")) {
-        cmdList(command_args, allocator) catch {
+        cmdList(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "config")) {
-        cmdConfig(command_args, allocator) catch {
+        cmdConfig(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "bench")) {
-        bench.run(allocator) catch {
+        bench.run(allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
