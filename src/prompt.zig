@@ -38,19 +38,48 @@ pub fn promptPassword(
     const should_close = builtin.os.tag != .windows and stdin_file.handle != std.fs.File.stdin().handle;
     defer if (should_close) stdin_file.close();
 
-    // Check if stdin is a terminal
-    const is_terminal = stdin_file.isTty();
+    const has_termios = builtin.os.tag != .wasi and builtin.os.tag != .windows;
+    const is_terminal = if (has_termios) std.posix.isatty(stdin_file.handle) else (builtin.os.tag == .windows and stdin_file.isTty());
 
-    if (is_terminal) {
-        // Set raw mode for password input (disables echo and buffering)
-        var terminal_state: TerminalState = undefined;
-        try setRawMode(stdin_file, &terminal_state);
-        defer restoreMode(stdin_file, terminal_state) catch {};
+    var original: TerminalState = undefined;
+    if (has_termios and is_terminal) {
+        original = try std.posix.tcgetattr(stdin_file.handle);
+        var raw = original;
+
+        raw.lflag.ICANON = false;
+        raw.lflag.ECHO = false;
+        raw.lflag.ECHONL = false;
+        raw.lflag.ISIG = false;
+        raw.lflag.IEXTEN = false;
+
+        raw.iflag.BRKINT = false;
+        raw.iflag.ICRNL = false;
+        raw.iflag.INPCK = false;
+        raw.iflag.ISTRIP = false;
+        raw.iflag.IXON = false;
+
+        raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+        raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+
+        try std.posix.tcsetattr(stdin_file.handle, .FLUSH, raw);
+        try stdout.writeAll(prompt_text);
+        try stdout.writeAll(": ");
+    } else if (builtin.os.tag == .windows and is_terminal) {
+        try setRawMode(stdin_file, &original);
+        try stdout.writeAll(prompt_text);
+        try stdout.writeAll(": ");
+    } else {
+        try stdout.writeAll(prompt_text);
+        try stdout.writeAll(": ");
     }
-
-    // First prompt
-    try stdout.writeAll(prompt_text);
-    try stdout.writeAll(": ");
+    defer if (is_terminal) {
+        stdout.writeAll("\n") catch {};
+        if (has_termios) {
+            std.posix.tcsetattr(stdin_file.handle, .FLUSH, original) catch {};
+        } else if (builtin.os.tag == .windows) {
+            restoreMode(stdin_file, original) catch {};
+        }
+    };
 
     var buffer: [MAX_PASSWORD_LENGTH]u8 = undefined;
 
@@ -58,7 +87,6 @@ pub fn promptPassword(
     var read_any = false;
     var byte_buf: [1]u8 = undefined;
 
-    // Read until newline, tolerate CRLF without embedding '\r'
     while (pos < buffer.len) {
         const bytes_read = try stdin_file.read(&byte_buf);
         if (bytes_read == 0) {
@@ -68,11 +96,8 @@ pub fn promptPassword(
         read_any = true;
 
         const byte = byte_buf[0];
-        if (byte == '\n') {
+        if (byte == '\n' or byte == '\r') {
             break;
-        }
-        if (byte == '\r') {
-            continue;
         }
 
         buffer[pos] = byte;
@@ -81,13 +106,7 @@ pub fn promptPassword(
 
     const password1 = buffer[0..pos];
 
-    if (is_terminal) {
-        // Print newline since echo was disabled
-        try stdout.writeAll("\n");
-    }
-
     if (confirm) {
-        // Confirmation prompt
         try stdout.writeAll("Confirm password: ");
 
         var buffer2: [MAX_PASSWORD_LENGTH]u8 = undefined;
@@ -105,11 +124,8 @@ pub fn promptPassword(
             read_any2 = true;
 
             const byte = byte_buf2[0];
-            if (byte == '\n') {
+            if (byte == '\n' or byte == '\r') {
                 break;
-            }
-            if (byte == '\r') {
-                continue;
             }
 
             buffer2[pos2] = byte;
@@ -118,16 +134,11 @@ pub fn promptPassword(
 
         const password2 = buffer2[0..pos2];
 
-        if (is_terminal) {
-            try stdout.writeAll("\n");
-        }
-
         if (!std.mem.eql(u8, password1, password2)) {
             return error.PasswordMismatch;
         }
     }
 
-    // Allocate and return password
     return try allocator.dupe(u8, password1);
 }
 
@@ -138,12 +149,10 @@ fn setRawMode(file: std.fs.File, state: *TerminalState) !void {
         const handle = file.handle;
         state.handle = handle;
 
-        // Get current console mode
         if (std.os.windows.kernel32.GetConsoleMode(handle, &state.original_mode) == 0) {
             return error.GetConsoleModeFailure;
         }
 
-        // Disable ENABLE_ECHO_INPUT (0x0004) and ENABLE_LINE_INPUT (0x0002)
         const ENABLE_ECHO_INPUT: std.os.windows.DWORD = 0x0004;
         const ENABLE_LINE_INPUT: std.os.windows.DWORD = 0x0002;
         const new_mode = state.original_mode & ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT);
@@ -152,25 +161,26 @@ fn setRawMode(file: std.fs.File, state: *TerminalState) !void {
             return error.SetConsoleModeFailure;
         }
     } else {
-        // Save original terminal settings
         state.* = try std.posix.tcgetattr(file.handle);
-
-        // Set raw mode: disable echo, canonical mode, and signal generation
         var new_termios = state.*;
 
-        // Disable echo, canonical mode (line buffering), and signal chars
-        new_termios.lflag.ECHO = false; // No echo
-        new_termios.lflag.ICANON = false; // No line buffering
-        new_termios.lflag.ISIG = false; // No signal generation (Ctrl-C, etc.)
-        new_termios.lflag.IEXTEN = false; // No extended processing
+        new_termios.lflag.ECHO = false;
+        new_termios.lflag.ECHOE = false;
+        new_termios.lflag.ECHOK = false;
+        new_termios.lflag.ECHONL = false;
+        new_termios.lflag.ECHOCTL = false;
+        new_termios.lflag.ECHOPRT = false;
+        new_termios.lflag.ECHOKE = false;
 
-        // Disable input processing
-        new_termios.iflag.IXON = false; // No XON/XOFF flow control
-        new_termios.iflag.ICRNL = false; // No CR to NL translation
-        new_termios.iflag.INLCR = false; // No NL to CR translation
-        new_termios.iflag.IGNCR = false; // Don't ignore CR
+        new_termios.lflag.ICANON = false;
+        new_termios.lflag.ISIG = false;
+        new_termios.lflag.IEXTEN = false;
 
-        // Read settings: return immediately with 1+ chars, no timeout
+        new_termios.iflag.IXON = false;
+        new_termios.iflag.ICRNL = false;
+        new_termios.iflag.INLCR = false;
+        new_termios.iflag.IGNCR = false;
+
         new_termios.cc[@intFromEnum(std.posix.V.MIN)] = 1;
         new_termios.cc[@intFromEnum(std.posix.V.TIME)] = 0;
 
