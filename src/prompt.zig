@@ -21,17 +21,31 @@ pub fn promptPassword(
     prompt_text: []const u8,
     confirm: bool,
 ) ![]u8 {
-    const stdin = std.fs.File.stdin();
     const stdout = std.fs.File.stdout();
 
+    // On Unix, try to open /dev/tty directly to avoid stdin buffering issues
+    // If the process is killed, buffered stdin could be echoed in cleartext
+    // Fall back to stdin if /dev/tty can't be opened (e.g., non-interactive scenarios)
+    const stdin_file = if (builtin.os.tag == .windows)
+        std.fs.File.stdin()
+    else blk: {
+        const tty = std.fs.openFileAbsolute("/dev/tty", .{ .mode = .read_write }) catch {
+            break :blk std.fs.File.stdin();
+        };
+        break :blk tty;
+    };
+
+    const should_close = builtin.os.tag != .windows and stdin_file.handle != std.fs.File.stdin().handle;
+    defer if (should_close) stdin_file.close();
+
     // Check if stdin is a terminal
-    const is_terminal = stdin.isTty();
+    const is_terminal = stdin_file.isTty();
 
     if (is_terminal) {
-        // Disable echo for password input
+        // Set raw mode for password input (disables echo and buffering)
         var terminal_state: TerminalState = undefined;
-        try disableEcho(stdin, &terminal_state);
-        defer enableEcho(stdin, terminal_state) catch {};
+        try setRawMode(stdin_file, &terminal_state);
+        defer restoreMode(stdin_file, terminal_state) catch {};
     }
 
     // First prompt
@@ -46,7 +60,7 @@ pub fn promptPassword(
 
     // Read until newline, tolerate CRLF without embedding '\r'
     while (pos < buffer.len) {
-        const bytes_read = try stdin.read(&byte_buf);
+        const bytes_read = try stdin_file.read(&byte_buf);
         if (bytes_read == 0) {
             if (!read_any) return error.EndOfStream;
             break;
@@ -83,7 +97,7 @@ pub fn promptPassword(
         var byte_buf2: [1]u8 = undefined;
 
         while (pos2 < buffer2.len) {
-            const bytes_read = try stdin.read(&byte_buf2);
+            const bytes_read = try stdin_file.read(&byte_buf2);
             if (bytes_read == 0) {
                 if (!read_any2) return error.EndOfStream;
                 break;
@@ -117,8 +131,9 @@ pub fn promptPassword(
     return try allocator.dupe(u8, password1);
 }
 
-/// Disable terminal echo for password input
-fn disableEcho(file: std.fs.File, state: *TerminalState) !void {
+/// Set raw mode for password input (disables echo, buffering, and line processing)
+/// This prevents buffered input from being echoed if the process is killed
+fn setRawMode(file: std.fs.File, state: *TerminalState) !void {
     if (builtin.os.tag == .windows) {
         const handle = file.handle;
         state.handle = handle;
@@ -128,25 +143,43 @@ fn disableEcho(file: std.fs.File, state: *TerminalState) !void {
             return error.GetConsoleModeFailure;
         }
 
-        // Disable ENABLE_ECHO_INPUT (0x0004)
+        // Disable ENABLE_ECHO_INPUT (0x0004) and ENABLE_LINE_INPUT (0x0002)
         const ENABLE_ECHO_INPUT: std.os.windows.DWORD = 0x0004;
-        const new_mode = state.original_mode & ~ENABLE_ECHO_INPUT;
+        const ENABLE_LINE_INPUT: std.os.windows.DWORD = 0x0002;
+        const new_mode = state.original_mode & ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT);
 
         if (std.os.windows.kernel32.SetConsoleMode(handle, new_mode) == 0) {
             return error.SetConsoleModeFailure;
         }
     } else {
+        // Save original terminal settings
         state.* = try std.posix.tcgetattr(file.handle);
 
+        // Set raw mode: disable echo, canonical mode, and signal generation
         var new_termios = state.*;
-        new_termios.lflag.ECHO = false;
+
+        // Disable echo, canonical mode (line buffering), and signal chars
+        new_termios.lflag.ECHO = false; // No echo
+        new_termios.lflag.ICANON = false; // No line buffering
+        new_termios.lflag.ISIG = false; // No signal generation (Ctrl-C, etc.)
+        new_termios.lflag.IEXTEN = false; // No extended processing
+
+        // Disable input processing
+        new_termios.iflag.IXON = false; // No XON/XOFF flow control
+        new_termios.iflag.ICRNL = false; // No CR to NL translation
+        new_termios.iflag.INLCR = false; // No NL to CR translation
+        new_termios.iflag.IGNCR = false; // Don't ignore CR
+
+        // Read settings: return immediately with 1+ chars, no timeout
+        new_termios.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+        new_termios.cc[@intFromEnum(std.posix.V.TIME)] = 0;
 
         try std.posix.tcsetattr(file.handle, .FLUSH, new_termios);
     }
 }
 
-/// Restore terminal echo
-fn enableEcho(file: std.fs.File, state: TerminalState) !void {
+/// Restore terminal to original mode
+fn restoreMode(file: std.fs.File, state: TerminalState) !void {
     if (builtin.os.tag == .windows) {
         if (std.os.windows.kernel32.SetConsoleMode(state.handle, state.original_mode) == 0) {
             return error.SetConsoleModeFailure;
