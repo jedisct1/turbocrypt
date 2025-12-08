@@ -73,7 +73,7 @@ pub fn build(b: *std.Build) void {
 
     // Link libc on Windows (required for Console API)
     if (target.result.os.tag == .windows) {
-        exe.linkLibC();
+        exe.root_module.link_libc = true;
     }
 
     // This declares intent for the executable to be installed into the
