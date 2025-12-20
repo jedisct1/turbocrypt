@@ -11,6 +11,9 @@ const Argon2 = std.crypto.pwhash.argon2;
 pub fn deriveKey(password: []const u8) ![20]u8 {
     var key: [20]u8 = undefined;
 
+    var threaded_io = std.Io.Threaded.init(std.heap.page_allocator);
+    defer threaded_io.deinit();
+
     try Argon2.kdf(
         std.heap.page_allocator,
         &key,
@@ -18,6 +21,7 @@ pub fn deriveKey(password: []const u8) ![20]u8 {
         SALT,
         Argon2.Params.interactive_2id,
         .argon2id,
+        threaded_io.io(),
     );
 
     return key;
