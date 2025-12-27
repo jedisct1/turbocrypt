@@ -118,12 +118,13 @@ fn encryptFileZeroCopy(
 
     // Create output file with correct size and read/write permissions for mmap
     // If it fails due to existing read-only file, delete and retry
+    // Note: mmap with PROT.WRITE requires the file to be opened with read access
     const output_file = blk: {
-        break :blk std.Io.Dir.createFile(.cwd(), io, output_path, .{}) catch |err| {
+        break :blk std.Io.Dir.createFile(.cwd(), io, output_path, .{ .read = true }) catch |err| {
             if (err == error.AccessDenied) {
                 // Try deleting the existing file (might be read-only) and retry
                 std.Io.Dir.deleteFile(.cwd(), io, output_path) catch {};
-                break :blk try std.Io.Dir.createFile(.cwd(), io, output_path, .{});
+                break :blk try std.Io.Dir.createFile(.cwd(), io, output_path, .{ .read = true });
             }
             return err;
         };
@@ -294,12 +295,13 @@ fn decryptFileZeroCopy(
 
     // Create output file with correct size and read/write permissions for mmap
     // If it fails due to existing read-only file, delete and retry
+    // Note: mmap with PROT.WRITE requires the file to be opened with read access
     const output_file = blk: {
-        break :blk std.Io.Dir.createFile(.cwd(), io, output_path, .{}) catch |err| {
+        break :blk std.Io.Dir.createFile(.cwd(), io, output_path, .{ .read = true }) catch |err| {
             if (err == error.AccessDenied) {
                 // Try deleting the existing file (might be read-only) and retry
                 std.Io.Dir.deleteFile(.cwd(), io, output_path) catch {};
-                break :blk try std.Io.Dir.createFile(.cwd(), io, output_path, .{});
+                break :blk try std.Io.Dir.createFile(.cwd(), io, output_path, .{ .read = true });
             }
             return err;
         };
