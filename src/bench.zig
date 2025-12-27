@@ -528,13 +528,13 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
         try file_sizes.append(allocator, file_size);
 
         // Create file with random data
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.createFile(.cwd(), io, path, .{});
+        defer file.close(io);
 
         const data = try allocator.alloc(u8, file_size);
         defer allocator.free(data);
         std.crypto.random.bytes(data);
-        try file.writeAll(data);
+        try file.writeStreamingAll(io, data);
     }
 
     std.debug.print("Test files ready. Starting benchmarks...\n", .{});
@@ -568,7 +568,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
             for (file_paths.items) |path| {
                 const enc_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
                 defer allocator.free(enc_path);
-                std.fs.cwd().deleteFile(enc_path) catch {};
+                std.Io.Dir.deleteFile(.cwd(), io, enc_path) catch {};
             }
         }
 
@@ -601,7 +601,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
             for (file_paths.items) |path| {
                 const enc_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
                 defer allocator.free(enc_path);
-                std.fs.cwd().deleteFile(enc_path) catch {};
+                std.Io.Dir.deleteFile(.cwd(), io, enc_path) catch {};
             }
         }
 
@@ -664,7 +664,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
             for (file_paths.items) |path| {
                 const dec_path = try std.fmt.allocPrint(allocator, "{s}.dec", .{path});
                 defer allocator.free(dec_path);
-                std.fs.cwd().deleteFile(dec_path) catch {};
+                std.Io.Dir.deleteFile(.cwd(), io, dec_path) catch {};
             }
         }
 
@@ -697,7 +697,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
             for (file_paths.items) |path| {
                 const dec_path = try std.fmt.allocPrint(allocator, "{s}.dec", .{path});
                 defer allocator.free(dec_path);
-                std.fs.cwd().deleteFile(dec_path) catch {};
+                std.Io.Dir.deleteFile(.cwd(), io, dec_path) catch {};
             }
         }
 
@@ -715,13 +715,13 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
         for (file_paths.items) |path| {
             const enc_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
             defer allocator.free(enc_path);
-            std.fs.cwd().deleteFile(enc_path) catch {};
+            std.Io.Dir.deleteFile(.cwd(), io, enc_path) catch {};
         }
     }
 
     // Cleanup original test files
     for (file_paths.items) |path| {
-        std.fs.cwd().deleteFile(path) catch {};
+        std.Io.Dir.deleteFile(.cwd(), io, path) catch {};
     }
 }
 
@@ -747,7 +747,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
 
     // Ensure tmp/ directory exists
     const tmp_dir = "tmp";
-    std.fs.cwd().makeDir(tmp_dir) catch |err| {
+    std.Io.Dir.createDir(.cwd(), io, tmp_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 

@@ -17,17 +17,18 @@ pub fn walkDirectory(
     context: *anyopaque,
     allocator: std.mem.Allocator,
     ignore_symlinks: bool,
+    io: std.Io,
 ) !void {
     // Open the base directory for walking
-    var dir = try std.fs.cwd().openDir(base_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDir(.cwd(), io, base_path, .{ .iterate = true });
+    defer dir.close(io);
 
     // Create walker
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
     // Iterate over all entries
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         // Construct full path by joining base_path with relative path
         const full_path = try std.fs.path.join(allocator, &[_][]const u8{ base_path, entry.path });
         defer allocator.free(full_path);
@@ -44,7 +45,7 @@ pub fn walkDirectory(
             }
 
             // Follow symlinks to determine their actual type
-            const stat = std.fs.cwd().statFile(full_path) catch |err| {
+            const stat = std.Io.Dir.statFile(.cwd(), io, full_path, .{}) catch |err| {
                 // Skip broken or inaccessible symlinks
                 std.debug.print("Warning: skipping symlink '{s}' ({})\n", .{ full_path, err });
                 continue;
@@ -63,8 +64,8 @@ pub fn walkDirectory(
 }
 
 /// Create directory and all parent directories if they don't exist
-pub fn ensureDirectory(path: []const u8) !void {
-    std.fs.cwd().makePath(path) catch |err| {
+pub fn ensureDirectory(path: []const u8, io: std.Io) !void {
+    std.Io.Dir.createDirPath(.cwd(), io, path) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 }
@@ -76,14 +77,14 @@ pub fn dirname(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
 }
 
 /// Check if a path exists
-pub fn pathExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+pub fn pathExists(path: []const u8, io: std.Io) bool {
+    std.Io.Dir.access(.cwd(), io, path, .{}) catch return false;
     return true;
 }
 
 /// Check if a path is a directory
-pub fn isDirectory(path: []const u8) !bool {
-    const stat = std.fs.cwd().statFile(path) catch |err| {
+pub fn isDirectory(path: []const u8, io: std.Io) !bool {
+    const stat = std.Io.Dir.statFile(.cwd(), io, path, .{}) catch |err| {
         // On Windows, statFile() returns error.IsDir for directories
         if (err == error.IsDir) return true;
         return err;
@@ -155,6 +156,7 @@ fn matchesPattern(path: []const u8, pattern: []const u8) bool {
 test "directory walking" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     // Create test directory structure
     // tmp/walk_test/
@@ -163,24 +165,24 @@ test "directory walking" {
     //     file2.txt
     //     file3.txt
 
-    try ensureDirectory("tmp/walk_test/subdir");
-    defer std.fs.cwd().deleteTree("tmp/walk_test") catch {};
+    try ensureDirectory("tmp/walk_test/subdir", io);
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/walk_test") catch {};
 
     // Create test files
     {
-        const f1 = try std.fs.cwd().createFile("tmp/walk_test/file1.txt", .{});
-        defer f1.close();
-        try f1.writeAll("test1");
+        const f1 = try std.Io.Dir.createFile(.cwd(), io, "tmp/walk_test/file1.txt", .{});
+        defer f1.close(io);
+        try f1.writeStreamingAll(io, "test1");
     }
     {
-        const f2 = try std.fs.cwd().createFile("tmp/walk_test/subdir/file2.txt", .{});
-        defer f2.close();
-        try f2.writeAll("test2");
+        const f2 = try std.Io.Dir.createFile(.cwd(), io, "tmp/walk_test/subdir/file2.txt", .{});
+        defer f2.close(io);
+        try f2.writeStreamingAll(io, "test2");
     }
     {
-        const f3 = try std.fs.cwd().createFile("tmp/walk_test/subdir/file3.txt", .{});
-        defer f3.close();
-        try f3.writeAll("test3");
+        const f3 = try std.Io.Dir.createFile(.cwd(), io, "tmp/walk_test/subdir/file3.txt", .{});
+        defer f3.close(io);
+        try f3.writeStreamingAll(io, "test3");
     }
 
     // Walk and collect files
@@ -217,7 +219,7 @@ test "directory walking" {
         ctx.dirs.deinit(allocator);
     }
 
-    try walkDirectory("tmp/walk_test", Context.callback, &ctx, allocator, false);
+    try walkDirectory("tmp/walk_test", Context.callback, &ctx, allocator, false, io);
 
     // Should find 3 files
     try testing.expectEqual(@as(usize, 3), ctx.files.items.len);
@@ -228,12 +230,13 @@ test "directory walking" {
 
 test "ensureDirectory creates nested directories" {
     const testing = std.testing;
+    const io = testing.io;
 
-    try ensureDirectory("tmp/nested/deeply/nested/path");
-    defer std.fs.cwd().deleteTree("tmp/nested") catch {};
+    try ensureDirectory("tmp/nested/deeply/nested/path", io);
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/nested") catch {};
 
     // Verify it exists and is a directory
-    try testing.expect(try isDirectory("tmp/nested/deeply/nested/path"));
+    try testing.expect(try isDirectory("tmp/nested/deeply/nested/path", io));
 }
 
 test "dirname extracts directory" {
@@ -248,38 +251,41 @@ test "dirname extracts directory" {
 
 test "pathExists checks existence" {
     const testing = std.testing;
+    const io = testing.io;
 
-    try ensureDirectory("tmp");
-    defer std.fs.cwd().deleteTree("tmp") catch {};
+    try ensureDirectory("tmp", io);
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp") catch {};
 
     {
-        const f = try std.fs.cwd().createFile("tmp/exists.txt", .{});
-        defer f.close();
+        const f = try std.Io.Dir.createFile(.cwd(), io, "tmp/exists.txt", .{});
+        defer f.close(io);
     }
-    defer std.fs.cwd().deleteFile("tmp/exists.txt") catch {};
+    defer std.Io.Dir.deleteFile(.cwd(), io, "tmp/exists.txt") catch {};
 
-    try testing.expect(pathExists("tmp/exists.txt"));
-    try testing.expect(!pathExists("tmp/does_not_exist.txt"));
+    try testing.expect(pathExists("tmp/exists.txt", io));
+    try testing.expect(!pathExists("tmp/does_not_exist.txt", io));
 }
 
 test "symlinks to files are followed" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     // Create test directory with a file and a symlink to it
-    try ensureDirectory("tmp/symlink_test");
-    defer std.fs.cwd().deleteTree("tmp/symlink_test") catch {};
+    try ensureDirectory("tmp/symlink_test", io);
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/symlink_test") catch {};
 
     // Create target file
     {
-        const f = try std.fs.cwd().createFile("tmp/symlink_test/target.txt", .{});
-        defer f.close();
-        try f.writeAll("target content");
+        const f = try std.Io.Dir.createFile(.cwd(), io, "tmp/symlink_test/target.txt", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, "target content");
     }
 
     // Create symlink to the file
-    const target_dir = try std.fs.cwd().openDir("tmp/symlink_test", .{});
-    target_dir.symLink("target.txt", "link.txt", .{}) catch |err| {
+    var target_dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/symlink_test", .{});
+    defer target_dir.close(io);
+    target_dir.symLink(io, "target.txt", "link.txt", .{}) catch |err| {
         // Skip test if symlinks are not supported on this platform
         if (err == error.Unexpected) return error.SkipZigTest;
         return err;
@@ -313,7 +319,7 @@ test "symlinks to files are followed" {
         ctx.files.deinit(allocator);
     }
 
-    try walkDirectory("tmp/symlink_test", Context.callback, &ctx, allocator, false);
+    try walkDirectory("tmp/symlink_test", Context.callback, &ctx, allocator, false, io);
 
     // Should find 2 files: target.txt and link.txt (the symlink treated as a file)
     try testing.expectEqual(@as(usize, 2), ctx.files.items.len);
@@ -350,21 +356,23 @@ test "exclude pattern matching" {
 test "ignore symlinks flag" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     // Create test directory with a file and a symlink to it
-    try ensureDirectory("tmp/ignore_symlinks_test");
-    defer std.fs.cwd().deleteTree("tmp/ignore_symlinks_test") catch {};
+    try ensureDirectory("tmp/ignore_symlinks_test", io);
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/ignore_symlinks_test") catch {};
 
     // Create target file
     {
-        const f = try std.fs.cwd().createFile("tmp/ignore_symlinks_test/target.txt", .{});
-        defer f.close();
-        try f.writeAll("target content");
+        const f = try std.Io.Dir.createFile(.cwd(), io, "tmp/ignore_symlinks_test/target.txt", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, "target content");
     }
 
     // Create symlink to the file
-    const target_dir = try std.fs.cwd().openDir("tmp/ignore_symlinks_test", .{});
-    target_dir.symLink("target.txt", "link.txt", .{}) catch |err| {
+    var target_dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/ignore_symlinks_test", .{});
+    defer target_dir.close(io);
+    target_dir.symLink(io, "target.txt", "link.txt", .{}) catch |err| {
         // Skip test if symlinks are not supported on this platform
         if (err == error.Unexpected) return error.SkipZigTest;
         return err;
@@ -399,7 +407,7 @@ test "ignore symlinks flag" {
             ctx.files.deinit(allocator);
         }
 
-        try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, false);
+        try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, false, io);
 
         // Should find 2 files: target.txt and link.txt (symlink)
         try testing.expectEqual(@as(usize, 2), ctx.files.items.len);
@@ -434,7 +442,7 @@ test "ignore symlinks flag" {
             ctx.files.deinit(allocator);
         }
 
-        try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, true);
+        try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, true, io);
 
         // Should find 1 file: only target.txt (symlink ignored)
         try testing.expectEqual(@as(usize, 1), ctx.files.items.len);

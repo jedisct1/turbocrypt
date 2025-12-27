@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const password = @import("password.zig");
 
-fn readAll(file: std.fs.File, io: std.Io, buffer: []u8) !usize {
+fn readAll(file: std.Io.File, io: std.Io, buffer: []u8) !usize {
     var file_reader = file.reader(io, &.{});
     return file_reader.interface.readSliceShort(buffer) catch |err| switch (err) {
         error.ReadFailed => return file_reader.err.?,
@@ -40,30 +40,30 @@ pub fn writeKeyFile(
     path: []const u8,
     key: [key_length]u8,
     password_opt: ?[]const u8,
+    io: std.Io,
 ) !void {
     // Create/open file
-    const file = try std.fs.cwd().createFile(path, .{
-        .read = true,
+    const file = try std.Io.Dir.createFile(.cwd(), io, path, .{
         .truncate = true,
     });
-    defer file.close();
+    defer file.close(io);
 
     if (password_opt) |pwd| {
         // Password-protected format: flag byte + XOR'd key
         const protected = try password.protectKey(key, pwd);
         const flag = [1]u8{@intFromEnum(KeyFormat.password_protected)};
-        try file.writeAll(&flag);
-        try file.writeAll(&protected);
+        try file.writeStreamingAll(io, &flag);
+        try file.writeStreamingAll(io, &protected);
     } else {
         // Plain format: just the key bytes
-        try file.writeAll(&key);
+        try file.writeStreamingAll(io, &key);
     }
 
     // Set restrictive permissions (owner read/write only)
     // chmod 600 (rw-------)
     // Note: Windows doesn't support Unix-style permissions
     if (builtin.os.tag != .windows) {
-        try file.chmod(0o600);
+        try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
     }
 }
 
@@ -73,14 +73,14 @@ pub fn writeKeyFile(
 /// Warns if file permissions are too permissive
 pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8, io: std.Io) ![key_length]u8 {
     // Open file
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.openFile(.cwd(), io, path, .{});
+    defer file.close(io);
 
     // Check file permissions (Unix-like systems only)
-    const stat = try file.stat();
+    const stat = try file.stat(io);
 
     if (builtin.os.tag != .windows) {
-        const mode = stat.mode;
+        const mode = stat.permissions.toMode();
 
         // Warn if permissions are too permissive (not 0600 or stricter)
         // On Unix-like systems, check if group or other have any permissions
@@ -152,12 +152,12 @@ test "key file write and read (plain)" {
     const test_path = "tmp/test_key_plain.bin";
 
     // Ensure tmp directory exists
-    std.fs.cwd().makeDir("tmp") catch |err| {
+    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    try writeKeyFile(test_path, original_key, null);
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try writeKeyFile(test_path, original_key, null, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Read back
     const read_key = try readKeyFile(test_path, null, io);
@@ -178,17 +178,17 @@ test "key file write and read (password-protected)" {
     const test_path = "tmp/test_key_protected.bin";
 
     // Ensure tmp directory exists
-    std.fs.cwd().makeDir("tmp") catch |err| {
+    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    try writeKeyFile(test_path, original_key, test_password);
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try writeKeyFile(test_path, original_key, test_password, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Verify file size is correct for password-protected keys
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
-    const stat = try file.stat();
+    const file = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
     try testing.expectEqual(@as(u64, protected_key_file_size), stat.size);
 
     // Read back with password
@@ -207,12 +207,12 @@ test "password-protected key requires password" {
     const test_path = "tmp/test_key_no_pwd.bin";
 
     // Ensure tmp directory exists
-    std.fs.cwd().makeDir("tmp") catch |err| {
+    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    try writeKeyFile(test_path, original_key, test_password);
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try writeKeyFile(test_path, original_key, test_password, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Attempt to read without password should fail
     const result = readKeyFile(test_path, null, io);
@@ -229,12 +229,12 @@ test "wrong password fails" {
     const test_path = "tmp/test_key_wrong_pwd.bin";
 
     // Ensure tmp directory exists
-    std.fs.cwd().makeDir("tmp") catch |err| {
+    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    try writeKeyFile(test_path, original_key, correct_password);
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try writeKeyFile(test_path, original_key, correct_password, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Read with wrong password should fail with InvalidPassword error
     const result = readKeyFile(test_path, wrong_password, io);
@@ -251,17 +251,17 @@ test "change password on protected key" {
     const test_path = "tmp/test_key_change_pwd.bin";
 
     // Ensure tmp directory exists
-    std.fs.cwd().makeDir("tmp") catch |err| {
+    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
     // Write with old password
-    try writeKeyFile(test_path, original_key, old_password);
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try writeKeyFile(test_path, original_key, old_password, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Read with old password and re-write with new password
     const read_key = try readKeyFile(test_path, old_password, io);
-    try writeKeyFile(test_path, read_key, new_password);
+    try writeKeyFile(test_path, read_key, new_password, io);
 
     // Verify old password no longer works
     const result_old = readKeyFile(test_path, old_password, io);
@@ -281,28 +281,28 @@ test "add password protection to plain key" {
     const test_path = "tmp/test_key_add_pwd.bin";
 
     // Ensure tmp directory exists
-    std.fs.cwd().makeDir("tmp") catch |err| {
+    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
     // Write as plain key
-    try writeKeyFile(test_path, original_key, null);
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try writeKeyFile(test_path, original_key, null, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Verify file size is for plain key
-    const file1 = try std.fs.cwd().openFile(test_path, .{});
-    defer file1.close();
-    const stat1 = try file1.stat();
+    const file1 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
+    defer file1.close(io);
+    const stat1 = try file1.stat(io);
     try testing.expectEqual(@as(u64, plain_key_file_size), stat1.size);
 
     // Read and re-write with password
     const read_key = try readKeyFile(test_path, null, io);
-    try writeKeyFile(test_path, read_key, test_password);
+    try writeKeyFile(test_path, read_key, test_password, io);
 
     // Verify file size is now for protected key
-    const file2 = try std.fs.cwd().openFile(test_path, .{});
-    defer file2.close();
-    const stat2 = try file2.stat();
+    const file2 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
+    defer file2.close(io);
+    const stat2 = try file2.stat(io);
     try testing.expectEqual(@as(u64, protected_key_file_size), stat2.size);
 
     // Verify key can be read with password
@@ -319,28 +319,28 @@ test "remove password protection from protected key" {
     const test_path = "tmp/test_key_remove_pwd.bin";
 
     // Ensure tmp directory exists
-    std.fs.cwd().makeDir("tmp") catch |err| {
+    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
     // Write with password
-    try writeKeyFile(test_path, original_key, test_password);
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try writeKeyFile(test_path, original_key, test_password, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Verify file size is for protected key
-    const file1 = try std.fs.cwd().openFile(test_path, .{});
-    defer file1.close();
-    const stat1 = try file1.stat();
+    const file1 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
+    defer file1.close(io);
+    const stat1 = try file1.stat(io);
     try testing.expectEqual(@as(u64, protected_key_file_size), stat1.size);
 
     // Read with password and re-write without password
     const read_key = try readKeyFile(test_path, test_password, io);
-    try writeKeyFile(test_path, read_key, null);
+    try writeKeyFile(test_path, read_key, null, io);
 
     // Verify file size is now for plain key
-    const file2 = try std.fs.cwd().openFile(test_path, .{});
-    defer file2.close();
-    const stat2 = try file2.stat();
+    const file2 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
+    defer file2.close(io);
+    const stat2 = try file2.stat(io);
     try testing.expectEqual(@as(u64, plain_key_file_size), stat2.size);
 
     // Verify key can be read without password

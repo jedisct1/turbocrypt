@@ -50,7 +50,7 @@ pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, 
         return try keygen.readKeyFile(path, password_opt, io);
     } else {
         // Load from config
-        var cfg = try config.load(allocator);
+        var cfg = try config.load(allocator, io);
         defer cfg.deinit(allocator);
 
         if (cfg.key) |key_data| {
@@ -94,9 +94,9 @@ pub fn getConfigFilePath(allocator: std.mem.Allocator) ![]const u8 {
 /// key_data should be in the same format as key files:
 /// - 16 bytes: plain key
 /// - 21 bytes: password-protected (1 flag byte + 16 XOR'd bytes + 4 checksum bytes)
-pub fn setDefaultKey(allocator: std.mem.Allocator, key_data: []const u8) !void {
+pub fn setDefaultKey(allocator: std.mem.Allocator, key_data: []const u8, io: std.Io) !void {
     // Load existing config
-    var cfg = try config.load(allocator);
+    var cfg = try config.load(allocator, io);
     defer cfg.deinit(allocator);
 
     // Free old key if exists
@@ -108,11 +108,11 @@ pub fn setDefaultKey(allocator: std.mem.Allocator, key_data: []const u8) !void {
     cfg.key = try allocator.dupe(u8, key_data);
 
     // Save config
-    try config.save(cfg, allocator);
+    try config.save(cfg, allocator, io);
 }
 
 /// Get information about where the key would be loaded from (for user feedback)
-pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8) ![]const u8 {
+pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, io: std.Io) ![]const u8 {
     // Check CLI argument
     if (optional_cli_path) |cli_path| {
         if (cli_path.len > 0) {
@@ -132,7 +132,7 @@ pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]con
     const config_path = try config.getConfigFilePath(allocator);
     defer allocator.free(config_path);
 
-    var cfg = config.load(allocator) catch {
+    var cfg = config.load(allocator, io) catch {
         return try allocator.dupe(u8, "No key configured");
     };
     defer cfg.deinit(allocator);

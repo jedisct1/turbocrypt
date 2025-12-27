@@ -126,6 +126,7 @@ fn handleDirectory(
     is_encrypt: bool,
     key: [16]u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
 ) !void {
     var dest_relative_path = relative_path;
     var encrypted_path: ?[]u8 = null;
@@ -154,7 +155,7 @@ fn handleDirectory(
 
     const dest_dir = try std.fs.path.join(allocator, &[_][]const u8{ dest_base, dest_relative_path });
     defer allocator.free(dest_dir);
-    utils.ensureDirectory(dest_dir) catch |err| {
+    utils.ensureDirectory(dest_dir, io) catch |err| {
         std.debug.print("\n[ERROR] Failed to create directory: {s}\n", .{dest_dir});
         std.debug.print("        Reason: {}\n", .{err});
         if (encrypt_filenames and !is_encrypt) {
@@ -214,7 +215,7 @@ fn applyEncSuffix(
 
 /// Parse command-line options from arguments
 /// Returns the parsed options and the remaining positional arguments
-fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct { options: Options, positional: []const []const u8 } {
+fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !struct { options: Options, positional: []const []const u8 } {
     var opts = Options{};
     var positional = std.ArrayList([]const u8){};
     defer positional.deinit(allocator);
@@ -295,7 +296,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
     }
 
     // Load config and apply defaults for unspecified options
-    var cfg = config_mod.load(allocator) catch |err| blk: {
+    var cfg = config_mod.load(allocator, io) catch |err| blk: {
         // If config loading fails, that's ok - just don't apply defaults
         if (err != error.FileNotFound) {
             std.debug.print("Warning: Failed to load config file: {}\n", .{err});
@@ -343,16 +344,16 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator) !struct 
 
 /// Prompt for password if needed (based on key file protection status or --password flag)
 /// Returns owned password buffer that caller must zero and free
-fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options) !?[]u8 {
+fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options, io: std.Io) !?[]u8 {
     // Determine if key is password-protected
     const is_protected = blk: {
         const key_path = try keyloader.resolveKeyPath(allocator, opts.key);
         if (key_path) |path| {
             defer allocator.free(path);
-            break :blk try prompt.isKeyPasswordProtected(path);
+            break :blk try prompt.isKeyPasswordProtected(path, io);
         } else {
             // Check config-stored key
-            var cfg = config_mod.load(allocator) catch break :blk false;
+            var cfg = config_mod.load(allocator, io) catch break :blk false;
             defer cfg.deinit(allocator);
             if (cfg.key) |key_data| {
                 break :blk key_data.len == keygen.protected_key_file_size;
@@ -363,7 +364,7 @@ fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options) !?[]u8
 
     // Prompt if protected or if --password flag is set
     if (is_protected or opts.password) {
-        return try prompt.promptPassword(allocator, "Enter key password", false);
+        return try prompt.promptPassword(allocator, "Enter key password", false, io);
     }
     return null;
 }
@@ -398,9 +399,8 @@ fn handleKeyLoadError(err: anyerror, command_name: []const u8) !void {
 }
 
 fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
-    _ = io;
     // Parse options (to support --password flag)
-    const parsed = try parseOptions(args, allocator);
+    const parsed = try parseOptions(args, allocator, io);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -430,7 +430,7 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
     };
 
     if (opts.password) {
-        password_buf = prompt.promptPassword(allocator, "Enter password to protect key", true) catch |err| {
+        password_buf = prompt.promptPassword(allocator, "Enter password to protect key", true, io) catch |err| {
             if (err == error.PasswordMismatch) {
                 std.debug.print("Error: Passwords do not match\n", .{});
                 return error.PasswordMismatch;
@@ -440,7 +440,7 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
     }
 
     // Write to file
-    try keygen.writeKeyFile(output_path, key, password_buf);
+    try keygen.writeKeyFile(output_path, key, password_buf, io);
 
     std.debug.print("Key generated and saved to: {s}\n", .{output_path});
     if (opts.password) {
@@ -478,6 +478,7 @@ const DirectoryScanContext = struct {
     key: [16]u8,
     exclude_patterns: std.ArrayList([]const u8),
     ignore_symlinks: bool,
+    io: std.Io,
 
     // Mode-specific data
     mode: ProcessingMode,
@@ -499,6 +500,7 @@ const DirectoryScanContext = struct {
                 self.is_encrypt,
                 self.key,
                 self.allocator,
+                self.io,
             );
             return;
         }
@@ -516,9 +518,9 @@ const DirectoryScanContext = struct {
         }
 
         // Shared logic for file size retrieval
-        const file = try std.fs.cwd().openFile(full_path, .{});
-        defer file.close();
-        const file_size = (try file.stat()).size;
+        const file = try std.Io.Dir.openFile(.cwd(), self.io, full_path, .{});
+        defer file.close(self.io);
+        const file_size = (try file.stat(self.io)).size;
 
         // Mode-specific processing
         switch (self.mode) {
@@ -601,7 +603,7 @@ const DirectoryScanContext = struct {
 
         // Ensure destination directory exists
         if (std.fs.path.dirname(dest_path)) |dest_dir| {
-            utils.ensureDirectory(dest_dir) catch |err| {
+            utils.ensureDirectory(dest_dir, self.io) catch |err| {
                 self.allocator.free(source_path);
                 self.allocator.free(dest_path);
                 std.debug.print("\n[ERROR] Failed to create destination directory: {s}\n", .{dest_dir});
@@ -633,7 +635,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     const op_complete = if (is_encrypt) "Encryption" else "Decryption";
 
     // Parse options
-    const parsed = try parseOptions(args, allocator);
+    const parsed = try parseOptions(args, allocator, io);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -652,7 +654,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     const source_path = parsed.positional[0];
 
     // Check if source is a file or directory early (needed for dest path logic)
-    const is_dir = utils.isDirectory(source_path) catch false;
+    const is_dir = utils.isDirectory(source_path, io) catch false;
 
     // Determine destination path
     var dest_path_buf: ?[]u8 = null;
@@ -685,7 +687,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     };
 
     // Check if we need password (only for file-based keys)
-    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts);
+    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io);
     defer if (password_buf) |buf| {
         std.crypto.secureZero(u8, buf);
         allocator.free(buf);
@@ -705,7 +707,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         std.debug.print("{s} directory: {s} -> {s}\n", .{ op_name_cap, source_path, dest_path });
 
         // Ensure destination directory exists
-        try utils.ensureDirectory(dest_path);
+        try utils.ensureDirectory(dest_path, io);
 
         // Determine thread count (use option or default)
         const thread_count = try getThreadCount(opts);
@@ -725,6 +727,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
+                .io = io,
                 .mode = .{ .scan_only = .{
                     .file_paths = std.ArrayList([]const u8){},
                     .file_sizes = std.ArrayList(u64){},
@@ -737,7 +740,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 scan_ctx.mode.scan_only.file_sizes.deinit(allocator);
             }
 
-            utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks) catch |err| {
+            utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
                 std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
                 return err;
             };
@@ -809,13 +812,14 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
+                .io = io,
                 .mode = .{ .scan_and_process = .{
                     .worker_pool = &pool,
                     .progress_tracker = &tracker,
                 } },
             };
 
-            utils.walkDirectory(source_path, DirectoryScanContext.callback, &ctx, allocator, opts.ignore_symlinks) catch |err| {
+            utils.walkDirectory(source_path, DirectoryScanContext.callback, &ctx, allocator, opts.ignore_symlinks, io) catch |err| {
                 tracker.stopDisplay();
                 pool.finish();
                 std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
@@ -838,7 +842,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
 
         // Ensure destination directory exists
         if (std.fs.path.dirname(dest_path)) |dest_dir| {
-            try utils.ensureDirectory(dest_dir);
+            try utils.ensureDirectory(dest_dir, io);
         }
 
         if (is_encrypt) {
@@ -870,7 +874,7 @@ fn cmdDecrypt(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io
 
 fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
     // Parse options
-    const parsed = try parseOptions(args, allocator);
+    const parsed = try parseOptions(args, allocator, io);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -889,7 +893,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
     const source_path = parsed.positional[0];
 
     // Check if we need password (only for file-based keys)
-    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts);
+    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io);
     defer if (password_buf) |buf| {
         std.crypto.secureZero(u8, buf);
         allocator.free(buf);
@@ -904,7 +908,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
     const derived_keys = crypto.deriveKeys(key, opts.context);
 
     // Check if source is a file or directory
-    const is_dir = utils.isDirectory(source_path) catch false;
+    const is_dir = utils.isDirectory(source_path, io) catch false;
 
     if (is_dir) {
         // Verify directory with parallel processing
@@ -931,6 +935,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
             .key = derived_keys.filename_key,
             .exclude_patterns = opts.exclude_patterns,
             .ignore_symlinks = opts.ignore_symlinks,
+            .io = io,
             .mode = .{ .scan_only = .{
                 .file_paths = std.ArrayList([]const u8){},
                 .file_sizes = std.ArrayList(u64){},
@@ -943,7 +948,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
             scan_ctx.mode.scan_only.file_sizes.deinit(allocator);
         }
 
-        utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks) catch |err| {
+        utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
             std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
             return err;
         };
@@ -1014,6 +1019,7 @@ const ListContext = struct {
     decrypt_filenames: bool,
     filename_key: [16]u8,
     exclude_patterns: std.ArrayList([]const u8),
+    io: std.Io,
 
     fn callback(
         relative_path: []const u8,
@@ -1032,7 +1038,7 @@ const ListContext = struct {
         }
 
         // Get file size
-        const stat = try std.fs.cwd().statFile(full_path);
+        const stat = try std.Io.Dir.statFile(.cwd(), self.io, full_path, .{});
         const file_size = stat.size;
 
         // Store path and size for later display
@@ -1047,7 +1053,7 @@ const ListContext = struct {
 
 fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
     // Parse options
-    const parsed = try parseOptions(args, allocator);
+    const parsed = try parseOptions(args, allocator, io);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -1066,7 +1072,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !
     const source_path = parsed.positional[0];
 
     // Check if source is a directory
-    const is_dir = utils.isDirectory(source_path) catch {
+    const is_dir = utils.isDirectory(source_path, io) catch {
         std.debug.print("Error: Path is not a directory: {s}\n", .{source_path});
         return error.InvalidPath;
     };
@@ -1081,7 +1087,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !
     var filename_key: [16]u8 = undefined;
     if (opts.encrypt_filenames) {
         // Check if we need password (only for file-based keys)
-        const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts);
+        const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io);
         defer if (password_buf) |buf| {
             @memset(buf, 0);
             allocator.free(buf);
@@ -1109,6 +1115,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !
         .decrypt_filenames = opts.encrypt_filenames,
         .filename_key = filename_key,
         .exclude_patterns = opts.exclude_patterns,
+        .io = io,
     };
     defer {
         for (list_ctx.file_paths.items) |path| allocator.free(path);
@@ -1116,7 +1123,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !
         list_ctx.file_sizes.deinit(allocator);
     }
 
-    utils.walkDirectory(source_path, ListContext.callback, &list_ctx, allocator, opts.ignore_symlinks) catch |err| {
+    utils.walkDirectory(source_path, ListContext.callback, &list_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
         std.debug.print("Error: Failed to walk directory\n", .{});
         return err;
     };
@@ -1180,7 +1187,7 @@ fn formatSize(bytes: u64) []const u8 {
 
 fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
     // Parse options (to support --remove-password flag)
-    const parsed = try parseOptions(args, allocator);
+    const parsed = try parseOptions(args, allocator, io);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -1200,9 +1207,9 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
     const remove_password = opts.remove_password;
 
     // Read the current key file to determine its format
-    const file = try std.fs.cwd().openFile(key_path, .{});
-    defer file.close();
-    const stat = try file.stat();
+    const file = try std.Io.Dir.openFile(.cwd(), io, key_path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
     const file_size = stat.size;
 
     if (file_size != keygen.plain_key_file_size and file_size != keygen.protected_key_file_size) {
@@ -1219,7 +1226,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
         // Password-protected: need old password to decrypt
         std.debug.print("Current key is password-protected\n", .{});
 
-        const old_password_buf = try prompt.promptPassword(allocator, "Enter current password", false);
+        const old_password_buf = try prompt.promptPassword(allocator, "Enter current password", false, io);
         defer {
             std.crypto.secureZero(u8, old_password_buf);
             allocator.free(old_password_buf);
@@ -1236,19 +1243,19 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
 
         if (remove_password) {
             // Remove password protection: write as plain key
-            try keygen.writeKeyFile(key_path, actual_key, null);
+            try keygen.writeKeyFile(key_path, actual_key, null, io);
             std.debug.print("Password protection removed from key file: {s}\n", .{key_path});
             std.debug.print("WARNING: The key is now stored in plain text. Keep it secure!\n", .{});
             return;
         } else {
             // Change password: prompt for new password
-            const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true);
+            const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true, io);
             defer {
                 std.crypto.secureZero(u8, new_password_buf);
                 allocator.free(new_password_buf);
             }
 
-            try keygen.writeKeyFile(key_path, actual_key, new_password_buf);
+            try keygen.writeKeyFile(key_path, actual_key, new_password_buf, io);
             std.debug.print("Password changed successfully for key file: {s}\n", .{key_path});
         }
     } else {
@@ -1264,13 +1271,13 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
         actual_key = try keygen.readKeyFile(key_path, null, io);
 
         // Add password protection
-        const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true);
+        const new_password_buf = try prompt.promptPassword(allocator, "Enter new password", true, io);
         defer {
             std.crypto.secureZero(u8, new_password_buf);
             allocator.free(new_password_buf);
         }
 
-        try keygen.writeKeyFile(key_path, actual_key, new_password_buf);
+        try keygen.writeKeyFile(key_path, actual_key, new_password_buf, io);
         std.debug.print("Password protection added to key file: {s}\n", .{key_path});
     }
 }
@@ -1356,7 +1363,6 @@ fn modifyExcludePattern(
 }
 
 fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
-    _ = io;
     if (args.len < 1) {
         std.debug.print("Error: Missing config subcommand\n", .{});
         std.debug.print("Usage: turbocrypt config <set-key|set-threads|set-buffer-size|add-exclude|remove-exclude|set-ignore-symlinks|set-encrypted-filenames|show>\n", .{});
@@ -1377,7 +1383,9 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         // Read the entire key file
         // We store it in the same format as the file
         const max_key_size = keygen.protected_key_file_size + 1; // Max size + margin
-        const key_data = std.fs.cwd().readFileAlloc(
+        const key_data = std.Io.Dir.readFileAlloc(
+            .cwd(),
+            io,
             key_path,
             allocator,
             std.Io.Limit.limited(max_key_size),
@@ -1404,7 +1412,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
             }
 
             // Prompt for password to verify
-            const password_buf = try prompt.promptPassword(allocator, "Enter key password (to verify)", false);
+            const password_buf = try prompt.promptPassword(allocator, "Enter key password (to verify)", false, io);
             defer {
                 std.crypto.secureZero(u8, password_buf);
                 allocator.free(password_buf);
@@ -1422,7 +1430,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         }
 
         // Save key data to config (in same format as file: 16 or 21 bytes)
-        try keyloader.setDefaultKey(allocator, key_data);
+        try keyloader.setDefaultKey(allocator, key_data, io);
 
         // Get and display config file path
         const config_path = try keyloader.getConfigFilePath(allocator);
@@ -1461,11 +1469,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         }
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator);
+        var cfg = try config_mod.load(allocator, io);
         defer cfg.deinit(allocator);
 
         cfg.threads = threads;
-        try config_mod.save(cfg, allocator);
+        try config_mod.save(cfg, allocator, io);
 
         std.debug.print("Default thread count set to: {d}\n", .{threads});
     } else if (std.mem.eql(u8, subcommand, "set-buffer-size")) {
@@ -1486,11 +1494,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         }
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator);
+        var cfg = try config_mod.load(allocator, io);
         defer cfg.deinit(allocator);
 
         cfg.buffer_size = buffer_size;
-        try config_mod.save(cfg, allocator);
+        try config_mod.save(cfg, allocator, io);
 
         std.debug.print("Default buffer size set to: {d} bytes\n", .{buffer_size});
     } else if (std.mem.eql(u8, subcommand, "add-exclude")) {
@@ -1500,11 +1508,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
             return error.InvalidArguments;
         }
 
-        var cfg = try config_mod.load(allocator);
+        var cfg = try config_mod.load(allocator, io);
         defer cfg.deinit(allocator);
 
         try modifyExcludePattern(&cfg, args[1], .add, allocator);
-        try config_mod.save(cfg, allocator);
+        try config_mod.save(cfg, allocator, io);
     } else if (std.mem.eql(u8, subcommand, "remove-exclude")) {
         if (args.len < 2) {
             std.debug.print("Error: Missing exclude pattern\n", .{});
@@ -1512,11 +1520,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
             return error.InvalidArguments;
         }
 
-        var cfg = try config_mod.load(allocator);
+        var cfg = try config_mod.load(allocator, io);
         defer cfg.deinit(allocator);
 
         try modifyExcludePattern(&cfg, args[1], .remove, allocator);
-        try config_mod.save(cfg, allocator);
+        try config_mod.save(cfg, allocator, io);
     } else if (std.mem.eql(u8, subcommand, "set-ignore-symlinks")) {
         if (args.len < 2) {
             std.debug.print("Error: Missing value\n", .{});
@@ -1535,11 +1543,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         };
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator);
+        var cfg = try config_mod.load(allocator, io);
         defer cfg.deinit(allocator);
 
         cfg.ignore_symlinks = value;
-        try config_mod.save(cfg, allocator);
+        try config_mod.save(cfg, allocator, io);
 
         std.debug.print("Ignore symlinks set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "set-encrypted-filenames")) {
@@ -1560,16 +1568,16 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         };
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator);
+        var cfg = try config_mod.load(allocator, io);
         defer cfg.deinit(allocator);
 
         cfg.encrypted_filenames = value;
-        try config_mod.save(cfg, allocator);
+        try config_mod.save(cfg, allocator, io);
 
         std.debug.print("Encrypt filenames set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "show")) {
         // Load config
-        var cfg = try config_mod.load(allocator);
+        var cfg = try config_mod.load(allocator, io);
         defer cfg.deinit(allocator);
 
         const config_path = try config_mod.getConfigFilePath(allocator);
@@ -1663,7 +1671,7 @@ pub fn main() !void {
         gpa.allocator();
 
     // Initialize I/O subsystem
-    var io_instance = std.Io.Threaded.init(allocator);
+    var io_instance = std.Io.Threaded.init(allocator, .{});
     defer io_instance.deinit();
     const io = io_instance.io();
 

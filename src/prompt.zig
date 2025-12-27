@@ -20,26 +20,27 @@ pub fn promptPassword(
     allocator: std.mem.Allocator,
     prompt_text: []const u8,
     confirm: bool,
+    io: std.Io,
 ) ![]u8 {
-    const stdout = std.fs.File.stdout();
+    const stdout = std.Io.File.stdout();
 
     // On Unix, try to open /dev/tty directly to avoid stdin buffering issues
     // If the process is killed, buffered stdin could be echoed in cleartext
     // Fall back to stdin if /dev/tty can't be opened (e.g., non-interactive scenarios)
     const stdin_file = if (builtin.os.tag == .windows)
-        std.fs.File.stdin()
+        std.Io.File.stdin()
     else blk: {
-        const tty = std.fs.openFileAbsolute("/dev/tty", .{ .mode = .read_write }) catch {
-            break :blk std.fs.File.stdin();
+        const tty = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write }) catch {
+            break :blk std.Io.File.stdin();
         };
         break :blk tty;
     };
 
-    const should_close = builtin.os.tag != .windows and stdin_file.handle != std.fs.File.stdin().handle;
-    defer if (should_close) stdin_file.close();
+    const should_close = builtin.os.tag != .windows and stdin_file.handle != std.Io.File.stdin().handle;
+    defer if (should_close) stdin_file.close(io);
 
     const has_termios = builtin.os.tag != .wasi and builtin.os.tag != .windows;
-    const is_terminal = if (has_termios) std.posix.isatty(stdin_file.handle) else (builtin.os.tag == .windows and stdin_file.isTty());
+    const is_terminal = stdin_file.isTty(io) catch false;
 
     var original: TerminalState = undefined;
     if (has_termios and is_terminal) {
@@ -62,18 +63,18 @@ pub fn promptPassword(
         raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
 
         try std.posix.tcsetattr(stdin_file.handle, .FLUSH, raw);
-        try stdout.writeAll(prompt_text);
-        try stdout.writeAll(": ");
+        try stdout.writeStreamingAll(io, prompt_text);
+        try stdout.writeStreamingAll(io, ": ");
     } else if (builtin.os.tag == .windows and is_terminal) {
-        try setRawMode(stdin_file, &original);
-        try stdout.writeAll(prompt_text);
-        try stdout.writeAll(": ");
+        try setRawMode(stdin_file, &original, io);
+        try stdout.writeStreamingAll(io, prompt_text);
+        try stdout.writeStreamingAll(io, ": ");
     } else {
-        try stdout.writeAll(prompt_text);
-        try stdout.writeAll(": ");
+        try stdout.writeStreamingAll(io, prompt_text);
+        try stdout.writeStreamingAll(io, ": ");
     }
     defer if (is_terminal) {
-        stdout.writeAll("\n") catch {};
+        stdout.writeStreamingAll(io, "\n") catch {};
         if (has_termios) {
             std.posix.tcsetattr(stdin_file.handle, .FLUSH, original) catch {};
         } else if (builtin.os.tag == .windows) {
@@ -88,7 +89,7 @@ pub fn promptPassword(
     var byte_buf: [1]u8 = undefined;
 
     while (pos < buffer.len) {
-        const bytes_read = try stdin_file.read(&byte_buf);
+        const bytes_read = try stdin_file.readStreaming(io, &.{&byte_buf});
         if (bytes_read == 0) {
             if (!read_any) return error.EndOfStream;
             break;
@@ -107,7 +108,7 @@ pub fn promptPassword(
     const password1 = buffer[0..pos];
 
     if (confirm) {
-        try stdout.writeAll("Confirm password: ");
+        try stdout.writeStreamingAll(io, "Confirm password: ");
 
         var buffer2: [MAX_PASSWORD_LENGTH]u8 = undefined;
 
@@ -116,7 +117,7 @@ pub fn promptPassword(
         var byte_buf2: [1]u8 = undefined;
 
         while (pos2 < buffer2.len) {
-            const bytes_read = try stdin_file.read(&byte_buf2);
+            const bytes_read = try stdin_file.readStreaming(io, &.{&byte_buf2});
             if (bytes_read == 0) {
                 if (!read_any2) return error.EndOfStream;
                 break;
@@ -144,7 +145,8 @@ pub fn promptPassword(
 
 /// Set raw mode for password input (disables echo, buffering, and line processing)
 /// This prevents buffered input from being echoed if the process is killed
-fn setRawMode(file: std.fs.File, state: *TerminalState) !void {
+fn setRawMode(file: std.Io.File, state: *TerminalState, io: std.Io) !void {
+    _ = io;
     if (builtin.os.tag == .windows) {
         const handle = file.handle;
         state.handle = handle;
@@ -189,7 +191,7 @@ fn setRawMode(file: std.fs.File, state: *TerminalState) !void {
 }
 
 /// Restore terminal to original mode
-fn restoreMode(file: std.fs.File, state: TerminalState) !void {
+fn restoreMode(file: std.Io.File, state: TerminalState) !void {
     if (builtin.os.tag == .windows) {
         if (std.os.windows.kernel32.SetConsoleMode(state.handle, state.original_mode) == 0) {
             return error.SetConsoleModeFailure;
@@ -200,10 +202,10 @@ fn restoreMode(file: std.fs.File, state: TerminalState) !void {
 }
 
 /// Check if a key file is password-protected
-pub fn isKeyPasswordProtected(path: []const u8) !bool {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+pub fn isKeyPasswordProtected(path: []const u8, io: std.Io) !bool {
+    const file = try std.Io.Dir.openFile(.cwd(), io, path, .{});
+    defer file.close(io);
 
-    const stat = try file.stat();
+    const stat = try file.stat(io);
     return stat.size == keygen.protected_key_file_size;
 }

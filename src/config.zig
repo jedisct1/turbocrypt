@@ -173,12 +173,14 @@ pub fn getConfigFilePath(allocator: std.mem.Allocator) ![]const u8 {
 
 /// Load config from file
 /// Returns a default config if file doesn't exist
-pub fn load(allocator: std.mem.Allocator) !Config {
+pub fn load(allocator: std.mem.Allocator, io: std.Io) !Config {
     const config_path = try getConfigFilePath(allocator);
     defer allocator.free(config_path);
 
     const max_size = 1024 * 1024; // 1MB max config file
-    const json_str = std.fs.cwd().readFileAlloc(
+    const json_str = std.Io.Dir.readFileAlloc(
+        .cwd(),
+        io,
         config_path,
         allocator,
         std.Io.Limit.limited(max_size),
@@ -195,19 +197,19 @@ pub fn load(allocator: std.mem.Allocator) !Config {
 }
 
 /// Save config to file with secure permissions
-pub fn save(config: Config, allocator: std.mem.Allocator) !void {
+pub fn save(config: Config, allocator: std.mem.Allocator, io: std.Io) !void {
     // Get app data directory
     const app_data_dir = try std.fs.getAppDataDir(allocator, "turbocrypt");
     defer allocator.free(app_data_dir);
 
     // Ensure directory exists
-    std.fs.cwd().makePath(app_data_dir) catch |err| switch (err) {
+    std.Io.Dir.createDirPath(.cwd(), io, app_data_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {}, // That's fine
         else => return err,
     };
 
     // Get config file path
-    const config_path = try std.fs.path.join(allocator, &[_][]const u8{ app_data_dir, config_filename });
+    const config_path = try std.Io.Dir.path.join(allocator, &[_][]const u8{ app_data_dir, config_filename });
     defer allocator.free(config_path);
 
     // Serialize to JSON
@@ -219,20 +221,20 @@ pub fn save(config: Config, allocator: std.mem.Allocator) !void {
     defer allocator.free(temp_path);
 
     // Create temp file and immediately set restrictive permissions
-    const file = try std.fs.cwd().createFile(temp_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.createFile(.cwd(), io, temp_path, .{});
+    defer file.close(io);
 
     // Set restrictive permissions before writing (owner read/write only)
     // Note: Windows doesn't support Unix-style permissions
     if (builtin.os.tag != .windows) {
-        try file.chmod(0o600);
+        try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
     }
 
-    try file.writeAll(json_str);
-    try file.sync(); // Ensure data is written to disk
+    try file.writeStreamingAll(io, json_str);
+    try file.sync(io); // Ensure data is written to disk
 
     // Atomically rename temp to final path
-    try std.fs.cwd().rename(temp_path, config_path);
+    try std.Io.Dir.rename(.cwd(), temp_path, .cwd(), config_path, io);
 }
 
 test "Config - default config" {

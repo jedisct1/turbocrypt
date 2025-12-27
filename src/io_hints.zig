@@ -13,7 +13,7 @@ pub const FileAdvice = enum {
 };
 
 /// Advise kernel about file access pattern (Linux: fadvise, macOS: fcntl F_RDADVISE)
-pub fn adviseFile(file: std.fs.File, offset: i64, len: i64, advice: FileAdvice) void {
+pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) void {
     switch (builtin.os.tag) {
         .linux => {
             const linux_advice: usize = switch (advice) {
@@ -85,7 +85,7 @@ pub fn flushSync(mapped: []align(std.heap.page_size_min) u8) void {
 }
 
 /// Sync file data to disk (metadata may not be synced)
-pub fn syncFileData(file: std.fs.File) void {
+pub fn syncFileData(file: std.Io.File) void {
     switch (builtin.os.tag) {
         .macos, .ios, .tvos, .watchos => {
             // macOS requires F_FULLFSYNC for true durability (forces drive cache flush)
