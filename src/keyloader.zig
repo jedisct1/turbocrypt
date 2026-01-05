@@ -13,7 +13,7 @@ pub const env_var_name = "TURBOCRYPT_KEY_FILE";
 ///
 /// Returns an owned slice that the caller must free.
 /// Returns null if key should be loaded from config.
-pub fn resolveKeyPath(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8) !?[]const u8 {
+pub fn resolveKeyPath(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, environ_map: *const std.process.Environ.Map) !?[]const u8 {
     // Priority 1: CLI argument
     if (optional_cli_path) |cli_path| {
         if (cli_path.len > 0) {
@@ -22,13 +22,10 @@ pub fn resolveKeyPath(allocator: std.mem.Allocator, optional_cli_path: ?[]const 
     }
 
     // Priority 2: Environment variable
-    if (std.process.getEnvVarOwned(allocator, env_var_name)) |env_path| {
+    if (environ_map.get(env_var_name)) |env_path| {
         if (env_path.len > 0) {
-            return env_path; // Already owned
+            return try allocator.dupe(u8, env_path);
         }
-        allocator.free(env_path);
-    } else |_| {
-        // Environment variable not set or error reading it - continue to next priority
     }
 
     // Priority 3: Config file - return null to signal key should be loaded from config
@@ -41,8 +38,8 @@ pub fn resolveKeyPath(allocator: std.mem.Allocator, optional_cli_path: ?[]const 
 /// 3. Config file (use stored key)
 ///
 /// Returns error.KeyNotFound if no key is configured.
-pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, password_opt: ?[]const u8, io: std.Io) ![16]u8 {
-    const key_path = try resolveKeyPath(allocator, optional_cli_path);
+pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, password_opt: ?[]const u8, io: std.Io, environ_map: *const std.process.Environ.Map) ![16]u8 {
+    const key_path = try resolveKeyPath(allocator, optional_cli_path, environ_map);
 
     if (key_path) |path| {
         // Load from file
@@ -50,7 +47,7 @@ pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, 
         return try keygen.readKeyFile(path, password_opt, io);
     } else {
         // Load from config
-        var cfg = try config.load(allocator, io);
+        var cfg = try config.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         if (cfg.key) |key_data| {
@@ -86,17 +83,17 @@ pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, 
 }
 
 /// Get the full path to the config file
-pub fn getConfigFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    return try config.getConfigFilePath(allocator);
+pub fn getConfigFilePath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
+    return try config.getConfigFilePath(allocator, environ_map);
 }
 
 /// Set the default key in the config file
 /// key_data should be in the same format as key files:
 /// - 16 bytes: plain key
 /// - 21 bytes: password-protected (1 flag byte + 16 XOR'd bytes + 4 checksum bytes)
-pub fn setDefaultKey(allocator: std.mem.Allocator, key_data: []const u8, io: std.Io) !void {
+pub fn setDefaultKey(allocator: std.mem.Allocator, key_data: []const u8, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     // Load existing config
-    var cfg = try config.load(allocator, io);
+    var cfg = try config.load(allocator, io, environ_map);
     defer cfg.deinit(allocator);
 
     // Free old key if exists
@@ -108,11 +105,11 @@ pub fn setDefaultKey(allocator: std.mem.Allocator, key_data: []const u8, io: std
     cfg.key = try allocator.dupe(u8, key_data);
 
     // Save config
-    try config.save(cfg, allocator, io);
+    try config.save(cfg, allocator, io, environ_map);
 }
 
 /// Get information about where the key would be loaded from (for user feedback)
-pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, io: std.Io) ![]const u8 {
+pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, io: std.Io, environ_map: *const std.process.Environ.Map) ![]const u8 {
     // Check CLI argument
     if (optional_cli_path) |cli_path| {
         if (cli_path.len > 0) {
@@ -121,18 +118,17 @@ pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]con
     }
 
     // Check environment variable
-    if (std.process.getEnvVarOwned(allocator, env_var_name)) |env_path| {
-        defer allocator.free(env_path);
+    if (environ_map.get(env_var_name)) |env_path| {
         if (env_path.len > 0) {
             return try std.fmt.allocPrint(allocator, "Environment variable {s}: {s}", .{ env_var_name, env_path });
         }
-    } else |_| {}
+    }
 
     // Check config file
-    const config_path = try config.getConfigFilePath(allocator);
+    const config_path = try config.getConfigFilePath(allocator, environ_map);
     defer allocator.free(config_path);
 
-    var cfg = config.load(allocator, io) catch {
+    var cfg = config.load(allocator, io, environ_map) catch {
         return try allocator.dupe(u8, "No key configured");
     };
     defer cfg.deinit(allocator);
@@ -151,8 +147,10 @@ pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]con
 
 test "resolveKeyPath - CLI argument takes priority" {
     const allocator = std.testing.allocator;
+    var environ_map = std.process.Environ.Map.init(allocator);
+    defer environ_map.deinit();
 
-    const result = try resolveKeyPath(allocator, "/path/from/cli");
+    const result = try resolveKeyPath(allocator, "/path/from/cli", &environ_map);
     defer if (result) |path| allocator.free(path);
 
     try std.testing.expectEqualStrings("/path/from/cli", result.?);
@@ -160,7 +158,9 @@ test "resolveKeyPath - CLI argument takes priority" {
 
 test "resolveKeyPath - returns null when no path configured" {
     const allocator = std.testing.allocator;
+    var environ_map = std.process.Environ.Map.init(allocator);
+    defer environ_map.deinit();
 
-    const result = try resolveKeyPath(allocator, null);
+    const result = try resolveKeyPath(allocator, null, &environ_map);
     try std.testing.expect(result == null);
 }

@@ -215,7 +215,7 @@ fn applyEncSuffix(
 
 /// Parse command-line options from arguments
 /// Returns the parsed options and the remaining positional arguments
-fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !struct { options: Options, positional: []const []const u8 } {
+fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !struct { options: Options, positional: []const []const u8 } {
     var opts = Options{};
     var positional = std.ArrayList([]const u8){};
     defer positional.deinit(allocator);
@@ -296,7 +296,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
     }
 
     // Load config and apply defaults for unspecified options
-    var cfg = config_mod.load(allocator, io) catch |err| blk: {
+    var cfg = config_mod.load(allocator, io, environ_map) catch |err| blk: {
         // If config loading fails, that's ok - just don't apply defaults
         if (err != error.FileNotFound) {
             std.debug.print("Warning: Failed to load config file: {}\n", .{err});
@@ -344,16 +344,16 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
 
 /// Prompt for password if needed (based on key file protection status or --password flag)
 /// Returns owned password buffer that caller must zero and free
-fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options, io: std.Io) !?[]u8 {
+fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options, io: std.Io, environ_map: *const std.process.Environ.Map) !?[]u8 {
     // Determine if key is password-protected
     const is_protected = blk: {
-        const key_path = try keyloader.resolveKeyPath(allocator, opts.key);
+        const key_path = try keyloader.resolveKeyPath(allocator, opts.key, environ_map);
         if (key_path) |path| {
             defer allocator.free(path);
             break :blk try prompt.isKeyPasswordProtected(path, io);
         } else {
             // Check config-stored key
-            var cfg = config_mod.load(allocator, io) catch break :blk false;
+            var cfg = config_mod.load(allocator, io, environ_map) catch break :blk false;
             defer cfg.deinit(allocator);
             if (cfg.key) |key_data| {
                 break :blk key_data.len == keygen.protected_key_file_size;
@@ -398,9 +398,9 @@ fn handleKeyLoadError(err: anyerror, command_name: []const u8) !void {
     return err;
 }
 
-fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     // Parse options (to support --password flag)
-    const parsed = try parseOptions(args, allocator, io);
+    const parsed = try parseOptions(args, allocator, io, environ_map);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -629,13 +629,13 @@ const DirectoryScanContext = struct {
 };
 
 /// Unified encrypt/decrypt processing function
-fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt: bool, io: std.Io) !void {
+fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt: bool, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     const op_name = if (is_encrypt) "encrypt" else "decrypt";
     const op_name_cap = if (is_encrypt) "Encrypting" else "Decrypting";
     const op_complete = if (is_encrypt) "Encryption" else "Decryption";
 
     // Parse options
-    const parsed = try parseOptions(args, allocator, io);
+    const parsed = try parseOptions(args, allocator, io, environ_map);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -687,14 +687,14 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     };
 
     // Check if we need password (only for file-based keys)
-    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io);
+    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io, environ_map);
     defer if (password_buf) |buf| {
         std.crypto.secureZero(u8, buf);
         allocator.free(buf);
     };
 
     // Load key (from file or config)
-    const key = keyloader.resolveKey(allocator, opts.key, password_buf, io) catch |err| {
+    const key = keyloader.resolveKey(allocator, opts.key, password_buf, io, environ_map) catch |err| {
         return handleKeyLoadError(err, op_name);
     };
 
@@ -864,17 +864,17 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     }
 }
 
-fn cmdEncrypt(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
-    try cmdProcess(args, allocator, true, io);
+fn cmdEncrypt(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
+    try cmdProcess(args, allocator, true, io, environ_map);
 }
 
-fn cmdDecrypt(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
-    try cmdProcess(args, allocator, false, io);
+fn cmdDecrypt(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
+    try cmdProcess(args, allocator, false, io, environ_map);
 }
 
-fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     // Parse options
-    const parsed = try parseOptions(args, allocator, io);
+    const parsed = try parseOptions(args, allocator, io, environ_map);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -893,14 +893,14 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
     const source_path = parsed.positional[0];
 
     // Check if we need password (only for file-based keys)
-    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io);
+    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io, environ_map);
     defer if (password_buf) |buf| {
         std.crypto.secureZero(u8, buf);
         allocator.free(buf);
     };
 
     // Load key (from file or config)
-    const key = keyloader.resolveKey(allocator, opts.key, password_buf, io) catch |err| {
+    const key = keyloader.resolveKey(allocator, opts.key, password_buf, io, environ_map) catch |err| {
         return handleKeyLoadError(err, "verify");
     };
 
@@ -1051,9 +1051,9 @@ const ListContext = struct {
     }
 };
 
-fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     // Parse options
-    const parsed = try parseOptions(args, allocator, io);
+    const parsed = try parseOptions(args, allocator, io, environ_map);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -1087,14 +1087,14 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !
     var filename_key: [16]u8 = undefined;
     if (opts.encrypt_filenames) {
         // Check if we need password (only for file-based keys)
-        const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io);
+        const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io, environ_map);
         defer if (password_buf) |buf| {
             @memset(buf, 0);
             allocator.free(buf);
         };
 
         // Load key (from file or config)
-        const key = keyloader.resolveKey(allocator, opts.key, password_buf, io) catch |err| {
+        const key = keyloader.resolveKey(allocator, opts.key, password_buf, io, environ_map) catch |err| {
             return handleKeyLoadError(err, "list");
         };
 
@@ -1185,9 +1185,9 @@ fn formatSize(bytes: u64) []const u8 {
     }
 }
 
-fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     // Parse options (to support --remove-password flag)
-    const parsed = try parseOptions(args, allocator, io);
+    const parsed = try parseOptions(args, allocator, io, environ_map);
     defer allocator.free(parsed.positional);
     var opts = parsed.options;
     defer {
@@ -1362,7 +1362,7 @@ fn modifyExcludePattern(
     }
 }
 
-fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     if (args.len < 1) {
         std.debug.print("Error: Missing config subcommand\n", .{});
         std.debug.print("Usage: turbocrypt config <set-key|set-threads|set-buffer-size|add-exclude|remove-exclude|set-ignore-symlinks|set-encrypted-filenames|show>\n", .{});
@@ -1430,10 +1430,10 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         }
 
         // Save key data to config (in same format as file: 16 or 21 bytes)
-        try keyloader.setDefaultKey(allocator, key_data, io);
+        try keyloader.setDefaultKey(allocator, key_data, io, environ_map);
 
         // Get and display config file path
-        const config_path = try keyloader.getConfigFilePath(allocator);
+        const config_path = try keyloader.getConfigFilePath(allocator, environ_map);
         defer allocator.free(config_path);
 
         std.debug.print("Default key has been stored in config\n", .{});
@@ -1469,11 +1469,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         }
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator, io);
+        var cfg = try config_mod.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         cfg.threads = threads;
-        try config_mod.save(cfg, allocator, io);
+        try config_mod.save(cfg, allocator, io, environ_map);
 
         std.debug.print("Default thread count set to: {d}\n", .{threads});
     } else if (std.mem.eql(u8, subcommand, "set-buffer-size")) {
@@ -1494,11 +1494,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         }
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator, io);
+        var cfg = try config_mod.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         cfg.buffer_size = buffer_size;
-        try config_mod.save(cfg, allocator, io);
+        try config_mod.save(cfg, allocator, io, environ_map);
 
         std.debug.print("Default buffer size set to: {d} bytes\n", .{buffer_size});
     } else if (std.mem.eql(u8, subcommand, "add-exclude")) {
@@ -1508,11 +1508,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
             return error.InvalidArguments;
         }
 
-        var cfg = try config_mod.load(allocator, io);
+        var cfg = try config_mod.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         try modifyExcludePattern(&cfg, args[1], .add, allocator);
-        try config_mod.save(cfg, allocator, io);
+        try config_mod.save(cfg, allocator, io, environ_map);
     } else if (std.mem.eql(u8, subcommand, "remove-exclude")) {
         if (args.len < 2) {
             std.debug.print("Error: Missing exclude pattern\n", .{});
@@ -1520,11 +1520,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
             return error.InvalidArguments;
         }
 
-        var cfg = try config_mod.load(allocator, io);
+        var cfg = try config_mod.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         try modifyExcludePattern(&cfg, args[1], .remove, allocator);
-        try config_mod.save(cfg, allocator, io);
+        try config_mod.save(cfg, allocator, io, environ_map);
     } else if (std.mem.eql(u8, subcommand, "set-ignore-symlinks")) {
         if (args.len < 2) {
             std.debug.print("Error: Missing value\n", .{});
@@ -1543,11 +1543,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         };
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator, io);
+        var cfg = try config_mod.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         cfg.ignore_symlinks = value;
-        try config_mod.save(cfg, allocator, io);
+        try config_mod.save(cfg, allocator, io, environ_map);
 
         std.debug.print("Ignore symlinks set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "set-encrypted-filenames")) {
@@ -1568,19 +1568,19 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         };
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator, io);
+        var cfg = try config_mod.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         cfg.encrypted_filenames = value;
-        try config_mod.save(cfg, allocator, io);
+        try config_mod.save(cfg, allocator, io, environ_map);
 
         std.debug.print("Encrypt filenames set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "show")) {
         // Load config
-        var cfg = try config_mod.load(allocator, io);
+        var cfg = try config_mod.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
-        const config_path = try config_mod.getConfigFilePath(allocator);
+        const config_path = try config_mod.getConfigFilePath(allocator, environ_map);
         defer allocator.free(config_path);
 
         std.debug.print("Current configuration:\n", .{});
@@ -1635,10 +1635,9 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
         std.debug.print("\nKey resolution priority:\n", .{});
         std.debug.print("  1. --key flag (if provided)\n", .{});
         std.debug.print("  2. {s} environment variable", .{keyloader.env_var_name});
-        if (std.process.getEnvVarOwned(allocator, keyloader.env_var_name)) |env_val| {
-            defer allocator.free(env_val);
-            std.debug.print(" (currently: {s})", .{env_val});
-        } else |_| {
+        if (std.c.getenv(keyloader.env_var_name)) |env_val| {
+            std.debug.print(" (currently: {s})", .{std.mem.span(env_val)});
+        } else {
             std.debug.print(" (not set)", .{});
         }
         std.debug.print("\n  3. Config file\n", .{});
@@ -1649,8 +1648,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io)
     }
 }
 
-pub fn main() !void {
-    // Use SmpAllocator for release builds, DebugAllocator for debug builds
+pub fn main(init: std.process.Init) !void {
     const builtin = @import("builtin");
 
     // Print build mode if Debug
@@ -1658,26 +1656,11 @@ pub fn main() !void {
         std.debug.print("Debug build\n", .{});
     }
 
-    const use_smp = builtin.mode == .ReleaseFast or builtin.mode == .ReleaseSmall;
-
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer {
-        if (!use_smp) _ = gpa.deinit();
-    }
-
-    const allocator = if (use_smp)
-        std.heap.smp_allocator
-    else
-        gpa.allocator();
-
-    // Initialize I/O subsystem
-    var io_instance = std.Io.Threaded.init(allocator, .{});
-    defer io_instance.deinit();
-    const io = io_instance.io();
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Get command-line arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     // Need at least one argument (command)
     if (args.len < 2) {
@@ -1689,31 +1672,31 @@ pub fn main() !void {
     const command_args = args[2..];
 
     if (std.mem.eql(u8, command, "keygen")) {
-        cmdKeygen(command_args, allocator, io) catch {
+        cmdKeygen(command_args, allocator, io, init.environ_map) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "change-password")) {
-        cmdChangePassword(command_args, allocator, io) catch {
+        cmdChangePassword(command_args, allocator, io, init.environ_map) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "encrypt")) {
-        cmdEncrypt(command_args, allocator, io) catch {
+        cmdEncrypt(command_args, allocator, io, init.environ_map) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "decrypt")) {
-        cmdDecrypt(command_args, allocator, io) catch {
+        cmdDecrypt(command_args, allocator, io, init.environ_map) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "verify")) {
-        cmdVerify(command_args, allocator, io) catch {
+        cmdVerify(command_args, allocator, io, init.environ_map) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "list")) {
-        cmdList(command_args, allocator, io) catch {
+        cmdList(command_args, allocator, io, init.environ_map) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "config")) {
-        cmdConfig(command_args, allocator, io) catch {
+        cmdConfig(command_args, allocator, io, init.environ_map) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "bench")) {

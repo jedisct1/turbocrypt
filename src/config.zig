@@ -163,9 +163,32 @@ pub const Config = struct {
     }
 };
 
+/// Get the application data directory for turbocrypt
+/// - macOS: ~/Library/Application Support/turbocrypt
+/// - Linux: $XDG_DATA_HOME/turbocrypt or ~/.local/share/turbocrypt
+/// - Windows: %LOCALAPPDATA%\turbocrypt
+fn getAppDataDir(allocator: std.mem.Allocator, appname: []const u8, environ_map: *const std.process.Environ.Map) ![]const u8 {
+    const native_os = builtin.os.tag;
+    if (native_os == .windows) {
+        const local_app_data = environ_map.get("LOCALAPPDATA") orelse return error.EnvironmentVariableNotFound;
+        return try std.fs.path.join(allocator, &[_][]const u8{ local_app_data, appname });
+    } else if (native_os == .macos) {
+        const home = environ_map.get("HOME") orelse return error.EnvironmentVariableNotFound;
+        return try std.fs.path.join(allocator, &[_][]const u8{ home, "Library", "Application Support", appname });
+    } else {
+        // Linux/Unix: use XDG_DATA_HOME or default to ~/.local/share
+        if (environ_map.get("XDG_DATA_HOME")) |xdg_data| {
+            return try std.fs.path.join(allocator, &[_][]const u8{ xdg_data, appname });
+        } else {
+            const home = environ_map.get("HOME") orelse return error.EnvironmentVariableNotFound;
+            return try std.fs.path.join(allocator, &[_][]const u8{ home, ".local", "share", appname });
+        }
+    }
+}
+
 /// Get the full path to the config file
-pub fn getConfigFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    const app_data_dir = try std.fs.getAppDataDir(allocator, "turbocrypt");
+pub fn getConfigFilePath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
+    const app_data_dir = try getAppDataDir(allocator, "turbocrypt", environ_map);
     defer allocator.free(app_data_dir);
 
     return try std.fs.path.join(allocator, &[_][]const u8{ app_data_dir, config_filename });
@@ -173,8 +196,8 @@ pub fn getConfigFilePath(allocator: std.mem.Allocator) ![]const u8 {
 
 /// Load config from file
 /// Returns a default config if file doesn't exist
-pub fn load(allocator: std.mem.Allocator, io: std.Io) !Config {
-    const config_path = try getConfigFilePath(allocator);
+pub fn load(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !Config {
+    const config_path = try getConfigFilePath(allocator, environ_map);
     defer allocator.free(config_path);
 
     const max_size = 1024 * 1024; // 1MB max config file
@@ -197,9 +220,9 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io) !Config {
 }
 
 /// Save config to file with secure permissions
-pub fn save(config: Config, allocator: std.mem.Allocator, io: std.Io) !void {
+pub fn save(config: Config, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
     // Get app data directory
-    const app_data_dir = try std.fs.getAppDataDir(allocator, "turbocrypt");
+    const app_data_dir = try getAppDataDir(allocator, "turbocrypt", environ_map);
     defer allocator.free(app_data_dir);
 
     // Ensure directory exists
