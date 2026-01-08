@@ -158,7 +158,7 @@ fn encryptFileZeroCopy(
     io_hints.adviseMemory(output_mapped.ptr, output_size, .sequential);
 
     // Zero-copy encrypt: input_mapped → output_mapped
-    crypto.encryptZeroCopy(output_mapped, input_mapped, derived_keys);
+    crypto.encryptZeroCopy(output_mapped, input_mapped, derived_keys, io);
 
     // Preserve original file permissions (Unix-like systems only)
     if (builtin.os.tag != .windows) {
@@ -181,7 +181,7 @@ fn encryptFileBuffered(
     defer allocator.free(plaintext);
 
     // Encrypt
-    const encrypted = try crypto.encrypt(plaintext, derived_keys, allocator);
+    const encrypted = try crypto.encrypt(plaintext, derived_keys, allocator, io);
     defer allocator.free(encrypted);
 
     // Write output file

@@ -111,10 +111,11 @@ pub fn encrypt(
     plaintext: []const u8,
     derived_keys: DerivedKeys,
     allocator: std.mem.Allocator,
+    io: std.Io,
 ) ![]u8 {
     // Generate random nonce
     var nonce: [nonce_length]u8 = undefined;
-    std.crypto.random.bytes(&nonce);
+    io.random(&nonce);
 
     // Compute header MAC using derived header_mac_key
     const header_mac = computeHeaderMac(nonce, derived_keys.header_mac_key);
@@ -157,13 +158,14 @@ pub fn encryptZeroCopy(
     output: []u8,
     plaintext: []const u8,
     derived_keys: DerivedKeys,
+    io: std.Io,
 ) void {
     // Verify output buffer size
     std.debug.assert(output.len == plaintext.len + overhead_size);
 
     // Generate random nonce
     var nonce: [nonce_length]u8 = undefined;
-    std.crypto.random.bytes(&nonce);
+    io.random(&nonce);
 
     // Compute header MAC using derived header_mac_key
     const header_mac = computeHeaderMac(nonce, derived_keys.header_mac_key);
@@ -308,13 +310,14 @@ pub fn verify(
 test "encrypt/decrypt round-trip" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Hello, World! This is a test message.";
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, derived, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator, io);
     defer allocator.free(encrypted);
 
     // Verify size
@@ -331,6 +334,7 @@ test "encrypt/decrypt round-trip" {
 test "decrypt with wrong key fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key1: [key_length]u8 = @splat(1);
     const key2: [key_length]u8 = @splat(2);
@@ -339,7 +343,7 @@ test "decrypt with wrong key fails" {
     const plaintext = "Secret message";
 
     // Encrypt with key1
-    const encrypted = try encrypt(plaintext, derived1, allocator);
+    const encrypted = try encrypt(plaintext, derived1, allocator, io);
     defer allocator.free(encrypted);
 
     // Try to decrypt with key2 - should fail with InvalidHeaderMAC
@@ -350,13 +354,14 @@ test "decrypt with wrong key fails" {
 test "decrypt corrupted ciphertext fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Test message";
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, derived, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator, io);
     defer allocator.free(encrypted);
 
     // Corrupt ciphertext (modify a byte in the ciphertext portion)
@@ -382,13 +387,14 @@ test "decrypt invalid file size" {
 test "empty plaintext encryption" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "";
 
     // Encrypt empty plaintext
-    const encrypted = try encrypt(plaintext, derived, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator, io);
     defer allocator.free(encrypted);
 
     // Should have only overhead
@@ -405,6 +411,7 @@ test "empty plaintext encryption" {
 test "large data encryption" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key: [key_length]u8 = @splat(42);
     const derived = deriveKeys(key, null);
@@ -420,7 +427,7 @@ test "large data encryption" {
     }
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, derived, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator, io);
     defer allocator.free(encrypted);
 
     // Decrypt
@@ -434,13 +441,14 @@ test "large data encryption" {
 test "verify valid encrypted data" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Test message for verification";
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, derived, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator, io);
     defer allocator.free(encrypted);
 
     // Verify should succeed
@@ -450,6 +458,7 @@ test "verify valid encrypted data" {
 test "verify with wrong key fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key1: [key_length]u8 = @splat(1);
     const key2: [key_length]u8 = @splat(2);
@@ -458,7 +467,7 @@ test "verify with wrong key fails" {
     const plaintext = "Secret message";
 
     // Encrypt with key1
-    const encrypted = try encrypt(plaintext, derived1, allocator);
+    const encrypted = try encrypt(plaintext, derived1, allocator, io);
     defer allocator.free(encrypted);
 
     // Verify with key2 should fail with InvalidHeaderMAC
@@ -469,13 +478,14 @@ test "verify with wrong key fails" {
 test "verify corrupted ciphertext fails" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Test message";
 
     // Encrypt
-    const encrypted = try encrypt(plaintext, derived, allocator);
+    const encrypted = try encrypt(plaintext, derived, allocator, io);
     defer allocator.free(encrypted);
 
     // Corrupt ciphertext

@@ -419,7 +419,7 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     const output_path = parsed.positional[0];
 
     // Generate key
-    const key = keygen.generate();
+    const key = keygen.generate(io);
 
     // Optionally protect with password
     var password_buf: ?[]u8 = null;

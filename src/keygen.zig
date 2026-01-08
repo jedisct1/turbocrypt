@@ -27,9 +27,9 @@ pub const KeyFormat = enum(u8) {
 };
 
 /// Generate a cryptographically secure 128-bit key
-pub fn generate() [key_length]u8 {
+pub fn generate(io: std.Io) [key_length]u8 {
     var key: [key_length]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    io.random(&key);
     return key;
 }
 
@@ -134,11 +134,14 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8, io: std.Io) ![ke
 }
 
 test "key generation" {
-    // Generate two keys and ensure they're different
-    const key1 = generate();
-    const key2 = generate();
+    const testing = std.testing;
+    const io = testing.io;
 
-    try std.testing.expect(!std.mem.eql(u8, &key1, &key2));
+    // Generate two keys and ensure they're different
+    const key1 = generate(io);
+    const key2 = generate(io);
+
+    try testing.expect(!std.mem.eql(u8, &key1, &key2));
 }
 
 test "key file write and read (plain)" {
@@ -146,7 +149,7 @@ test "key file write and read (plain)" {
     const io = testing.io;
 
     // Generate a key
-    const original_key = generate();
+    const original_key = generate(io);
 
     // Write to temp file
     const test_path = "tmp/test_key_plain.bin";
@@ -171,7 +174,7 @@ test "key file write and read (password-protected)" {
     const io = testing.io;
 
     // Generate a key
-    const original_key = generate();
+    const original_key = generate(io);
     const test_password = "test_password_123";
 
     // Write to temp file with password
@@ -202,7 +205,7 @@ test "password-protected key requires password" {
     const testing = std.testing;
     const io = testing.io;
 
-    const original_key = generate();
+    const original_key = generate(io);
     const test_password = "test_password_123";
     const test_path = "tmp/test_key_no_pwd.bin";
 
@@ -223,7 +226,7 @@ test "wrong password fails" {
     const testing = std.testing;
     const io = testing.io;
 
-    const original_key = generate();
+    const original_key = generate(io);
     const correct_password = "correct_password";
     const wrong_password = "wrong_password";
     const test_path = "tmp/test_key_wrong_pwd.bin";
@@ -245,7 +248,7 @@ test "change password on protected key" {
     const testing = std.testing;
     const io = testing.io;
 
-    const original_key = generate();
+    const original_key = generate(io);
     const old_password = "old_password_123";
     const new_password = "new_password_456";
     const test_path = "tmp/test_key_change_pwd.bin";
@@ -276,7 +279,7 @@ test "add password protection to plain key" {
     const testing = std.testing;
     const io = testing.io;
 
-    const original_key = generate();
+    const original_key = generate(io);
     const test_password = "new_password_789";
     const test_path = "tmp/test_key_add_pwd.bin";
 
@@ -314,7 +317,7 @@ test "remove password protection from protected key" {
     const testing = std.testing;
     const io = testing.io;
 
-    const original_key = generate();
+    const original_key = generate(io);
     const test_password = "temporary_password";
     const test_path = "tmp/test_key_remove_pwd.bin";
 
