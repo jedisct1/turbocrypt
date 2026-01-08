@@ -139,8 +139,8 @@ const WorkQueue = struct {
 
         // Move remaining items forward
         const remaining = self.items.items.len - batch_size;
-        if (remaining > 0) {
-            @memcpy(self.items.items[0..remaining], self.items.items[batch_size..]);
+        if (remaining > 0 and batch_size > 0) {
+            @memmove(self.items.items[0..remaining], self.items.items[batch_size..]);
         }
         self.items.shrinkRetainingCapacity(remaining);
 
