@@ -97,7 +97,7 @@ fn encryptFileZeroCopy(
     const input_mapped = std.posix.mmap(
         null,
         input_size,
-        std.posix.PROT.READ,
+        .{ .READ = true },
         .{ .TYPE = .PRIVATE },
         input_file.handle,
         0,
@@ -141,7 +141,7 @@ fn encryptFileZeroCopy(
     const output_mapped = try std.posix.mmap(
         null,
         output_size,
-        std.posix.PROT.WRITE,
+        .{ .WRITE = true },
         .{ .TYPE = .SHARED }, // SHARED to write back to file
         output_file.handle,
         0,
@@ -274,7 +274,7 @@ fn decryptFileZeroCopy(
     const input_mapped = std.posix.mmap(
         null,
         input_size,
-        std.posix.PROT.READ,
+        .{ .READ = true },
         .{ .TYPE = .PRIVATE },
         input_file.handle,
         0,
@@ -319,7 +319,7 @@ fn decryptFileZeroCopy(
     const output_mapped = try std.posix.mmap(
         null,
         output_size,
-        std.posix.PROT.WRITE,
+        .{ .WRITE = true },
         .{ .TYPE = .SHARED }, // SHARED to write back to file
         output_file.handle,
         0,
@@ -425,7 +425,7 @@ fn verifyFileZeroCopy(
     const input_mapped = std.posix.mmap(
         null,
         input_size,
-        std.posix.PROT.READ,
+        .{ .READ = true },
         .{ .TYPE = .PRIVATE },
         input_file.handle,
         0,
