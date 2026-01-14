@@ -1659,6 +1659,17 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
+    // Verify secure randomness is available by collecting a dummy byte.
+    // This fails fast if the environment cannot generate proper entropy.
+    {
+        var dummy: [1]u8 = undefined;
+        io.randomSecure(&dummy) catch |err| {
+            std.debug.print("FATAL: Secure randomness unavailable: {}\n", .{err});
+            std.debug.print("Cannot safely perform cryptographic operations.\n", .{});
+            std.process.exit(1);
+        };
+    }
+
     // Get command-line arguments
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
