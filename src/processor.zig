@@ -93,36 +93,26 @@ fn encryptFileZeroCopy(
     // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
 
-    // mmap input file (read-only)
-    const input_mapped = std.posix.mmap(
-        null,
-        input_size,
-        .{ .READ = true },
-        .{ .TYPE = .PRIVATE },
-        input_file.handle,
-        0,
-    ) catch {
+    // Memory-map input file (read-only)
+    var input_mm = std.Io.File.MemoryMap.create(io, input_file, .{
+        .len = input_size,
+        .protection = .{ .read = true, .write = false },
+        .populate = true,
+    }) catch {
         // Fall back to buffered I/O if mmap fails
         return encryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, permissions, io);
     };
-    defer {
-        // Drop pages from cache after processing to free memory
-        io_hints.adviseMemory(input_mapped.ptr, input_size, .dontneed);
-        std.posix.munmap(input_mapped);
-    }
+    defer input_mm.destroy(io);
 
     // Advise kernel about memory access pattern
-    io_hints.adviseMemory(input_mapped.ptr, input_size, .sequential);
-    // Proactively start prefetching data into memory
-    io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
+    io_hints.adviseMemory(input_mm.memory.ptr, input_size, .sequential);
+    io_hints.adviseMemory(input_mm.memory.ptr, input_size, .willneed);
 
-    // Create output file with correct size and read/write permissions for mmap
+    // Create output file with read/write permissions for mmap
     // If it fails due to existing read-only file, delete and retry
-    // Note: mmap with PROT.WRITE requires the file to be opened with read access
     const output_file = blk: {
         break :blk std.Io.Dir.createFile(.cwd(), io, output_path, .{ .read = true }) catch |err| {
             if (err == error.AccessDenied) {
-                // Try deleting the existing file (might be read-only) and retry
                 std.Io.Dir.deleteFile(.cwd(), io, output_path) catch {};
                 break :blk try std.Io.Dir.createFile(.cwd(), io, output_path, .{ .read = true });
             }
@@ -137,28 +127,27 @@ fn encryptFileZeroCopy(
     };
     try output_file.setLength(io, output_size);
 
-    // mmap output file (write)
-    const output_mapped = try std.posix.mmap(
-        null,
-        output_size,
-        .{ .WRITE = true },
-        .{ .TYPE = .SHARED }, // SHARED to write back to file
-        output_file.handle,
-        0,
-    );
+    // Memory-map output file (write)
+    var output_mm = try std.Io.File.MemoryMap.create(io, output_file, .{
+        .len = output_size,
+        .protection = .{ .read = true, .write = true },
+        .undefined_contents = true,
+        .populate = false,
+    });
     defer {
-        // Flush asynchronously (non-blocking) - kernel will write in background
-        io_hints.flushAsync(output_mapped);
-        std.posix.munmap(output_mapped);
-        // Optional: sync file data for durability (can be skipped for performance)
-        // io_hints.syncFileData(output_file);
+        // Sync changes to file before destroying
+        output_mm.write(io) catch {};
+        output_mm.destroy(io);
     }
 
     // Advise kernel about sequential write pattern
-    io_hints.adviseMemory(output_mapped.ptr, output_size, .sequential);
+    io_hints.adviseMemory(output_mm.memory.ptr, output_size, .sequential);
 
-    // Zero-copy encrypt: input_mapped → output_mapped
-    crypto.encryptZeroCopy(output_mapped, input_mapped, derived_keys, io);
+    // Zero-copy encrypt: input_mm.memory → output_mm.memory
+    crypto.encryptZeroCopy(output_mm.memory, input_mm.memory, derived_keys, io);
+
+    // Drop input pages from cache after processing
+    io_hints.adviseMemory(input_mm.memory.ptr, input_size, .dontneed);
 
     // Preserve original file permissions (Unix-like systems only)
     if (builtin.os.tag != .windows) {
@@ -270,36 +259,26 @@ fn decryptFileZeroCopy(
     // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
 
-    // mmap input file (read-only)
-    const input_mapped = std.posix.mmap(
-        null,
-        input_size,
-        .{ .READ = true },
-        .{ .TYPE = .PRIVATE },
-        input_file.handle,
-        0,
-    ) catch {
+    // Memory-map input file (read-only)
+    var input_mm = std.Io.File.MemoryMap.create(io, input_file, .{
+        .len = input_size,
+        .protection = .{ .read = true, .write = false },
+        .populate = true,
+    }) catch {
         // Fall back to buffered I/O if mmap fails
         return decryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, permissions, io);
     };
-    defer {
-        // Drop pages from cache after processing to free memory
-        io_hints.adviseMemory(input_mapped.ptr, input_size, .dontneed);
-        std.posix.munmap(input_mapped);
-    }
+    defer input_mm.destroy(io);
 
     // Advise kernel about memory access pattern
-    io_hints.adviseMemory(input_mapped.ptr, input_size, .sequential);
-    // Proactively start prefetching data into memory
-    io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
+    io_hints.adviseMemory(input_mm.memory.ptr, input_size, .sequential);
+    io_hints.adviseMemory(input_mm.memory.ptr, input_size, .willneed);
 
-    // Create output file with correct size and read/write permissions for mmap
+    // Create output file with read/write permissions for mmap
     // If it fails due to existing read-only file, delete and retry
-    // Note: mmap with PROT.WRITE requires the file to be opened with read access
     const output_file = blk: {
         break :blk std.Io.Dir.createFile(.cwd(), io, output_path, .{ .read = true }) catch |err| {
             if (err == error.AccessDenied) {
-                // Try deleting the existing file (might be read-only) and retry
                 std.Io.Dir.deleteFile(.cwd(), io, output_path) catch {};
                 break :blk try std.Io.Dir.createFile(.cwd(), io, output_path, .{ .read = true });
             }
@@ -315,28 +294,27 @@ fn decryptFileZeroCopy(
     const output_size = input_size - crypto.overhead_size;
     try output_file.setLength(io, output_size);
 
-    // mmap output file (write)
-    const output_mapped = try std.posix.mmap(
-        null,
-        output_size,
-        .{ .WRITE = true },
-        .{ .TYPE = .SHARED }, // SHARED to write back to file
-        output_file.handle,
-        0,
-    );
+    // Memory-map output file (write)
+    var output_mm = try std.Io.File.MemoryMap.create(io, output_file, .{
+        .len = output_size,
+        .protection = .{ .read = true, .write = true },
+        .undefined_contents = true,
+        .populate = false,
+    });
     defer {
-        // Flush asynchronously (non-blocking) - kernel will write in background
-        io_hints.flushAsync(output_mapped);
-        std.posix.munmap(output_mapped);
-        // Optional: sync file data for durability (can be skipped for performance)
-        // io_hints.syncFileData(output_file);
+        // Sync changes to file before destroying
+        output_mm.write(io) catch {};
+        output_mm.destroy(io);
     }
 
     // Advise kernel about sequential write pattern
-    io_hints.adviseMemory(output_mapped.ptr, output_size, .sequential);
+    io_hints.adviseMemory(output_mm.memory.ptr, output_size, .sequential);
 
-    // Zero-copy decrypt: input_mapped → output_mapped
-    try crypto.decryptZeroCopy(output_mapped, input_mapped, derived_keys);
+    // Zero-copy decrypt: input_mm.memory → output_mm.memory
+    try crypto.decryptZeroCopy(output_mm.memory, input_mm.memory, derived_keys);
+
+    // Drop input pages from cache after processing
+    io_hints.adviseMemory(input_mm.memory.ptr, input_size, .dontneed);
 
     // Preserve original file permissions (Unix-like systems only)
     if (builtin.os.tag != .windows) {
@@ -421,34 +399,30 @@ fn verifyFileZeroCopy(
     // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
 
-    // mmap input file (read-only)
-    const input_mapped = std.posix.mmap(
-        null,
-        input_size,
-        .{ .READ = true },
-        .{ .TYPE = .PRIVATE },
-        input_file.handle,
-        0,
-    ) catch {
+    // Memory-map input file (read-only)
+    var input_mm = std.Io.File.MemoryMap.create(io, input_file, .{
+        .len = input_size,
+        .protection = .{ .read = true, .write = false },
+        .populate = true,
+    }) catch {
         // Fall back to buffered I/O if mmap fails
         return verifyFileBuffered(input_file, input_size, derived_keys, allocator, quick, io);
     };
     defer {
-        // Drop pages from cache after processing to free memory
-        io_hints.adviseMemory(input_mapped.ptr, input_size, .dontneed);
-        std.posix.munmap(input_mapped);
+        // Drop pages from cache after processing
+        io_hints.adviseMemory(input_mm.memory.ptr, input_size, .dontneed);
+        input_mm.destroy(io);
     }
 
     // Advise kernel about memory access pattern
-    io_hints.adviseMemory(input_mapped.ptr, input_size, .sequential);
-    // Proactively start prefetching data into memory
-    io_hints.adviseMemory(input_mapped.ptr, input_size, .willneed);
+    io_hints.adviseMemory(input_mm.memory.ptr, input_size, .sequential);
+    io_hints.adviseMemory(input_mm.memory.ptr, input_size, .willneed);
 
     // Verify the encrypted data
     if (quick) {
-        try crypto.verifyHeaderOnly(input_mapped, derived_keys);
+        try crypto.verifyHeaderOnly(input_mm.memory, derived_keys);
     } else {
-        try crypto.verify(input_mapped, derived_keys, allocator);
+        try crypto.verify(input_mm.memory, derived_keys, allocator);
     }
 }
 
