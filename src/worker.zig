@@ -68,10 +68,10 @@ fn handleJobError(
     printErrorDetails(err, is_encrypt);
 
     // Only hold mutex for state updates
-    worker.error_mutex.lock();
+    worker.error_mutex.lockUncancelable(worker.io);
     worker.has_errors = true;
     worker.progress_tracker.addFileFailed();
-    worker.error_mutex.unlock();
+    worker.error_mutex.unlock(worker.io);
 }
 
 /// Operation type for file processing
@@ -91,19 +91,21 @@ pub const FileJob = struct {
 
 /// Thread-safe work queue with batch popping capability
 const WorkQueue = struct {
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     items: std.ArrayList(FileJob),
     allocator: std.mem.Allocator,
     done: bool,
+    io: std.Io,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
             .items = std.ArrayList(FileJob){},
             .allocator = allocator,
             .done = false,
+            .io = io,
         };
     }
 
@@ -113,8 +115,8 @@ const WorkQueue = struct {
 
     /// Add a job to the queue
     pub fn push(self: *Self, job: FileJob) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         try self.items.append(self.allocator, job);
     }
 
@@ -122,8 +124,8 @@ const WorkQueue = struct {
     /// Returns an owned slice that caller must free, or null if done
     /// Returns empty slice if queue is empty but not done yet
     pub fn popBatch(self: *Self, max_count: usize) !?[]FileJob {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.items.items.len == 0) {
             if (self.done) return null;
@@ -149,15 +151,15 @@ const WorkQueue = struct {
 
     /// Mark queue as done (no more items will be added)
     pub fn markDone(self: *Self) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.done = true;
     }
 
     /// Check if queue is empty and done
     pub fn isEmpty(self: *Self) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.items.items.len == 0 and self.done;
     }
 };
@@ -174,7 +176,7 @@ pub const WorkerPool = struct {
     thread_count: u32,
     derived_keys: crypto.DerivedKeys,
     progress_tracker: *progress.ProgressTracker,
-    error_mutex: std.Thread.Mutex,
+    error_mutex: std.Io.Mutex,
     has_errors: bool,
     quick_verify: bool,
     dry_run: bool,
@@ -197,12 +199,12 @@ pub const WorkerPool = struct {
 
         return Self{
             .allocator = allocator,
-            .work_queue = WorkQueue.init(allocator),
+            .work_queue = WorkQueue.init(allocator, io),
             .threads = threads,
             .thread_count = thread_count,
             .derived_keys = derived_keys,
             .progress_tracker = progress_tracker,
-            .error_mutex = .{},
+            .error_mutex = std.Io.Mutex.init,
             .has_errors = false,
             .quick_verify = quick_verify,
             .dry_run = dry_run,
@@ -356,8 +358,8 @@ pub const WorkerPool = struct {
 
     /// Check if any errors occurred
     pub fn hadErrors(self: *Self) bool {
-        self.error_mutex.lock();
-        defer self.error_mutex.unlock();
+        self.error_mutex.lockUncancelable(self.io);
+        defer self.error_mutex.unlock(self.io);
         return self.has_errors;
     }
 };
@@ -369,7 +371,7 @@ test "worker pool initialization" {
 
     const key: [crypto.key_length]u8 = @splat(42);
     const derived = crypto.deriveKeys(key, null);
-    var tracker = try progress.ProgressTracker.init(0, 0, io);
+    var tracker = progress.ProgressTracker.init(0, 0, io);
 
     var pool = try WorkerPool.init(allocator, 4, derived, &tracker, false, false, io);
     defer pool.deinit();

@@ -752,7 +752,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             }
 
             // Phase 2: Process all collected files
-            var tracker = try progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes, io);
+            var tracker = progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes, io);
             var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
             defer pool.deinit();
 
@@ -792,7 +792,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 std.debug.print("Scanning and {s}...\n", .{if (is_encrypt) "encrypting" else "decrypting"});
             }
 
-            var tracker = try progress.ProgressTracker.init(0, 0, io);
+            var tracker = progress.ProgressTracker.init(0, 0, io);
             var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
             defer pool.deinit();
 
@@ -960,7 +960,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         }
 
         // Verify all collected files
-        var tracker = try progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes, io);
+        var tracker = progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes, io);
         var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick, opts.dry_run, io);
         defer pool.deinit();
 

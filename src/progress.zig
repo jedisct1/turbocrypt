@@ -7,26 +7,26 @@ pub const ProgressTracker = struct {
     bytes_processed: std.atomic.Value(u64),
     total_files: std.atomic.Value(u64),
     total_bytes: std.atomic.Value(u64),
-    timer: std.time.Timer,
+    start_time: std.Io.Clock.Timestamp,
     display_thread: ?std.Thread,
     should_stop: std.atomic.Value(bool),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     io: std.Io,
 
     const Self = @This();
 
     /// Initialize a new progress tracker
-    pub fn init(total_files: u64, total_bytes: u64, io: std.Io) !Self {
+    pub fn init(total_files: u64, total_bytes: u64, io: std.Io) Self {
         return Self{
             .files_processed = std.atomic.Value(u64).init(0),
             .files_failed = std.atomic.Value(u64).init(0),
             .bytes_processed = std.atomic.Value(u64).init(0),
             .total_files = std.atomic.Value(u64).init(total_files),
             .total_bytes = std.atomic.Value(u64).init(total_bytes),
-            .timer = try std.time.Timer.start(),
+            .start_time = std.Io.Clock.Timestamp.now(io, .awake),
             .display_thread = null,
             .should_stop = std.atomic.Value(bool).init(false),
-            .mutex = std.Thread.Mutex{},
+            .mutex = std.Io.Mutex.init,
             .io = io,
         };
     }
@@ -88,8 +88,9 @@ pub const ProgressTracker = struct {
 
     /// Calculate current throughput in Mb/s (megabits per second)
     pub fn getThroughput(self: *Self) f64 {
-        const elapsed_ns = self.timer.read();
-        if (elapsed_ns == 0) return 0.0;
+        const elapsed = self.start_time.untilNow(self.io);
+        const elapsed_ns = elapsed.raw.nanoseconds;
+        if (elapsed_ns <= 0) return 0.0;
 
         const bytes = @as(f64, @floatFromInt(self.getBytesProcessed()));
         const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
@@ -136,8 +137,8 @@ pub const ProgressTracker = struct {
 
         // Lock only for the printf to avoid interleaved output
         // This is much faster than locking for the entire computation
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Use \r to overwrite the same line
         std.debug.print("\rProcessing: {d}/{d} files ({d:.1}%) | {s} / {s} | {d:.1} Mb/s", .{
@@ -162,7 +163,8 @@ pub const ProgressTracker = struct {
         const bytes_done = self.getBytesProcessed();
         const total_files = self.getTotalFiles();
 
-        const elapsed_ns = self.timer.read();
+        const elapsed = self.start_time.untilNow(self.io);
+        const elapsed_ns = elapsed.raw.nanoseconds;
         const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
 
         var bytes_buf: [32]u8 = undefined;
@@ -177,8 +179,8 @@ pub const ProgressTracker = struct {
         }
 
         // Lock only for output
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         std.debug.print("\n\nCompleted in {d:.2}s\n", .{elapsed_s});
         std.debug.print("Files processed: {d}/{d}\n", .{ files_done, total_files });
@@ -220,7 +222,7 @@ test "progress tracker basic operations" {
     const testing = std.testing;
     const io = testing.io;
 
-    var tracker = try ProgressTracker.init(100, 1024 * 1024 * 100, io);
+    var tracker = ProgressTracker.init(100, 1024 * 1024 * 100, io);
 
     // Test initial state
     try testing.expectEqual(@as(u64, 0), tracker.getFilesProcessed());

@@ -172,9 +172,9 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derive
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
-            var timer = try std.time.Timer.start();
+            const start_time = std.Io.Clock.Timestamp.now(io, .awake);
             crypto.encryptZeroCopy(ciphertext, plaintext, derived_keys, io);
-            const encrypt_time = timer.read();
+            const encrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             std.mem.doNotOptimizeAway(&ciphertext);
             try encrypt_stats.add(encrypt_time, allocator);
         }
@@ -201,9 +201,9 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derive
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
-            var timer = try std.time.Timer.start();
+            const start_time = std.Io.Clock.Timestamp.now(io, .awake);
             try crypto.decryptZeroCopy(decrypted, ciphertext, derived_keys);
-            const decrypt_time = timer.read();
+            const decrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             std.mem.doNotOptimizeAway(&decrypted);
             try decrypt_stats.add(decrypt_time, allocator);
         }
@@ -353,7 +353,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
-            var timer = try std.time.Timer.start();
+            const start_time = std.Io.Clock.Timestamp.now(io, .awake);
 
             // Launch threads for first chunk of each thread
             for (0..thread_count) |i| {
@@ -383,7 +383,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
                 }
             }
 
-            const encrypt_time = timer.read();
+            const encrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             try encrypt_stats.add(encrypt_time, allocator);
 
             // Check for errors
@@ -440,7 +440,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
-            var timer = try std.time.Timer.start();
+            const start_time = std.Io.Clock.Timestamp.now(io, .awake);
 
             // Launch decryption threads
             for (0..thread_count) |i| {
@@ -469,7 +469,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
                 }
             }
 
-            const decrypt_time = timer.read();
+            const decrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             try decrypt_stats.add(decrypt_time, allocator);
 
             // Check for errors
@@ -553,7 +553,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 
         // Warmup
         for (0..config.warmup_iterations) |_| {
-            var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+            var tracker = progress.ProgressTracker.init(file_count, total_size, io);
             var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
             defer pool.deinit();
 
@@ -581,9 +581,9 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
-            var timer = try std.time.Timer.start();
+            const start_time = std.Io.Clock.Timestamp.now(io, .awake);
             {
-                var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+                var tracker = progress.ProgressTracker.init(file_count, total_size, io);
                 var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
                 defer pool.deinit();
 
@@ -601,7 +601,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                 }
                 pool.waitAll();
             }
-            const encrypt_time = timer.read();
+            const encrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             try encrypt_stats.add(encrypt_time, allocator);
 
             // Cleanup encrypted files for next iteration
@@ -628,7 +628,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 
         // Create encrypted files for decryption benchmark
         {
-            var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+            var tracker = progress.ProgressTracker.init(file_count, total_size, io);
             var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
             defer pool.deinit();
 
@@ -649,7 +649,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 
         // Warmup
         for (0..config.warmup_iterations) |_| {
-            var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+            var tracker = progress.ProgressTracker.init(file_count, total_size, io);
             var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
             defer pool.deinit();
 
@@ -677,9 +677,9 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
-            var timer = try std.time.Timer.start();
+            const start_time = std.Io.Clock.Timestamp.now(io, .awake);
             {
-                var tracker = try progress.ProgressTracker.init(file_count, total_size, io);
+                var tracker = progress.ProgressTracker.init(file_count, total_size, io);
                 var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, false, io);
                 defer pool.deinit();
 
@@ -697,7 +697,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                 }
                 pool.waitAll();
             }
-            const decrypt_time = timer.read();
+            const decrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             try decrypt_stats.add(decrypt_time, allocator);
 
             // Cleanup decrypted files for next iteration
