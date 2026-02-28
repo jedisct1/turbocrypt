@@ -1089,7 +1089,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
         // Check if we need password (only for file-based keys)
         const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io, environ_map);
         defer if (password_buf) |buf| {
-            @memset(buf, 0);
+            std.crypto.secureZero(u8, buf);
             allocator.free(buf);
         };
 
@@ -1302,8 +1302,14 @@ fn modifyExcludePattern(
 
             // Add new pattern
             var new_patterns = try allocator.alloc([]const u8, cfg.exclude_patterns.len + 1);
+            var duped_count: usize = 0;
+            errdefer {
+                for (new_patterns[0..duped_count]) |p| allocator.free(p);
+                allocator.free(new_patterns);
+            }
             for (cfg.exclude_patterns, 0..) |old_pattern, i| {
                 new_patterns[i] = try allocator.dupe(u8, old_pattern);
+                duped_count += 1;
             }
             new_patterns[cfg.exclude_patterns.len] = try allocator.dupe(u8, pattern);
 

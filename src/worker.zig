@@ -173,6 +173,7 @@ pub const WorkerPool = struct {
     allocator: std.mem.Allocator,
     work_queue: WorkQueue,
     threads: []std.Thread,
+    spawned_count: usize,
     thread_count: u32,
     derived_keys: crypto.DerivedKeys,
     progress_tracker: *progress.ProgressTracker,
@@ -201,6 +202,7 @@ pub const WorkerPool = struct {
             .allocator = allocator,
             .work_queue = WorkQueue.init(allocator, io),
             .threads = threads,
+            .spawned_count = 0,
             .thread_count = thread_count,
             .derived_keys = derived_keys,
             .progress_tracker = progress_tracker,
@@ -327,11 +329,12 @@ pub const WorkerPool = struct {
 
     /// Start worker threads (call this before submitting jobs for concurrent processing)
     pub fn start(self: *Self) void {
-        for (self.threads) |*thread| {
+        for (self.threads[0..self.thread_count]) |*thread| {
             thread.* = std.Thread.spawn(.{}, workerThread, .{self}) catch |err| {
                 std.debug.print("[ERROR] Failed to spawn worker thread: {}\n", .{err});
-                continue;
+                break;
             };
+            self.spawned_count += 1;
         }
 
         // Small delay to ensure workers are started and waiting
@@ -343,8 +346,8 @@ pub const WorkerPool = struct {
         // Mark queue as done (no more jobs will be added)
         self.work_queue.markDone();
 
-        // Wait for all threads to complete
-        for (self.threads) |thread| {
+        // Wait for all successfully spawned threads to complete
+        for (self.threads[0..self.spawned_count]) |thread| {
             thread.join();
         }
     }

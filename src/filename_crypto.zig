@@ -46,7 +46,7 @@ pub fn encryptFilename(
         return allocator.dupe(u8, plaintext_name);
     }
 
-    // Pad to minimum 64 bytes with null bytes
+    // Pad to minimum 16 bytes with null bytes
     const padded_len = @max(plaintext_name.len, min_padded_length);
 
     // Use stack buffers for typical filenames
@@ -306,7 +306,7 @@ test "long filename encryption" {
     const allocator = testing.allocator;
 
     const key: [16]u8 = @splat(0x42);
-    const long_name = "this_is_a_very_long_filename_that_exceeds_the_minimum_padding_length_of_64_bytes_for_testing.txt";
+    const long_name = "this_is_a_very_long_filename_that_exceeds_the_minimum_padding_length_of_16_bytes_for_testing.txt";
 
     const encrypted = try encryptFilename(allocator, long_name, key);
     defer allocator.free(encrypted);
