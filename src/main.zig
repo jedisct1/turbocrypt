@@ -180,7 +180,7 @@ const Options = struct {
     quick: bool = false,
     dry_run: bool = false,
     remove_password: bool = false,
-    exclude_patterns: std.ArrayList([]const u8) = std.ArrayList([]const u8){},
+    exclude_patterns: std.ArrayList([]const u8) = .empty,
 };
 
 /// Constant for the .enc file extension suffix
@@ -217,7 +217,7 @@ fn applyEncSuffix(
 /// Returns the parsed options and the remaining positional arguments
 fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !struct { options: Options, positional: []const []const u8 } {
     var opts = Options{};
-    var positional = std.ArrayList([]const u8){};
+    var positional: std.ArrayList([]const u8) = .empty;
     defer positional.deinit(allocator);
 
     var i: usize = 0;
@@ -729,8 +729,8 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .ignore_symlinks = opts.ignore_symlinks,
                 .io = io,
                 .mode = .{ .scan_only = .{
-                    .file_paths = std.ArrayList([]const u8){},
-                    .file_sizes = std.ArrayList(u64){},
+                    .file_paths = .empty,
+                    .file_sizes = .empty,
                     .total_bytes = 0,
                 } },
             };
@@ -937,8 +937,8 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             .ignore_symlinks = opts.ignore_symlinks,
             .io = io,
             .mode = .{ .scan_only = .{
-                .file_paths = std.ArrayList([]const u8){},
-                .file_sizes = std.ArrayList(u64){},
+                .file_paths = .empty,
+                .file_sizes = .empty,
                 .total_bytes = 0,
             } },
         };
@@ -1108,8 +1108,8 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
 
     var list_ctx = ListContext{
         .allocator = allocator,
-        .file_paths = std.ArrayList([]const u8){},
-        .file_sizes = std.ArrayList(u64){},
+        .file_paths = .empty,
+        .file_sizes = .empty,
         .total_bytes = 0,
         .total_files = 0,
         .decrypt_filenames = opts.encrypt_filenames,

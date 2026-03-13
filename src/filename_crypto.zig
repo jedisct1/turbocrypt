@@ -202,7 +202,7 @@ pub fn encryptPath(
     filename_key: [16]u8,
 ) ![]u8 {
     // Split path by separator
-    var components = std.ArrayList([]const u8){};
+    var components: std.ArrayList([]const u8) = .empty;
     defer {
         for (components.items) |component| {
             allocator.free(component);
@@ -233,7 +233,7 @@ pub fn decryptPath(
     filename_key: [16]u8,
 ) ![]u8 {
     // Split path by separator
-    var components = std.ArrayList([]const u8){};
+    var components: std.ArrayList([]const u8) = .empty;
     defer {
         for (components.items) |component| {
             allocator.free(component);

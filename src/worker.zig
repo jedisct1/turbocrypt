@@ -102,7 +102,7 @@ const WorkQueue = struct {
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
             .mutex = std.Io.Mutex.init,
-            .items = std.ArrayList(FileJob){},
+            .items = .empty,
             .allocator = allocator,
             .done = false,
             .io = io,

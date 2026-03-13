@@ -208,8 +208,8 @@ test "directory walking" {
     };
 
     var ctx = Context{
-        .files = std.ArrayList([]const u8){},
-        .dirs = std.ArrayList([]const u8){},
+        .files = .empty,
+        .dirs = .empty,
         .alloc = allocator,
     };
     defer {
@@ -311,7 +311,7 @@ test "symlinks to files are followed" {
     };
 
     var ctx = Context{
-        .files = std.ArrayList([]const u8){},
+        .files = .empty,
         .alloc = allocator,
     };
     defer {
@@ -329,7 +329,7 @@ test "exclude pattern matching" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var patterns = std.ArrayList([]const u8){};
+    var patterns: std.ArrayList([]const u8) = .empty;
     defer patterns.deinit(allocator);
 
     // Add test patterns
@@ -399,7 +399,7 @@ test "ignore symlinks flag" {
         };
 
         var ctx = Context{
-            .files = std.ArrayList([]const u8){},
+            .files = .empty,
             .alloc = allocator,
         };
         defer {
@@ -434,7 +434,7 @@ test "ignore symlinks flag" {
         };
 
         var ctx = Context{
-            .files = std.ArrayList([]const u8){},
+            .files = .empty,
             .alloc = allocator,
         };
         defer {

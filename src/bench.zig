@@ -13,7 +13,7 @@ const BenchConfig = struct {
 
 /// Statistics for multiple benchmark iterations
 const BenchStats = struct {
-    durations_ns: std.ArrayListUnmanaged(u64) = .{},
+    durations_ns: std.ArrayList(u64) = .empty,
 
     fn deinit(self: *BenchStats, allocator: std.mem.Allocator) void {
         self.durations_ns.deinit(allocator);
@@ -273,7 +273,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
         const total_size = total_chunks * chunk_size;
 
         // Pre-allocate all test data (reused across iterations)
-        var test_data = std.ArrayList([]u8){};
+        var test_data: std.ArrayList([]u8) = .empty;
         defer {
             for (test_data.items) |data| allocator.free(data);
             test_data.deinit(allocator);
@@ -286,7 +286,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
         }
 
         // Pre-allocate output buffers for encryption (reused across iterations)
-        var encrypted_outputs = std.ArrayList([]u8){};
+        var encrypted_outputs: std.ArrayList([]u8) = .empty;
         defer {
             for (encrypted_outputs.items) |output| allocator.free(output);
             encrypted_outputs.deinit(allocator);
@@ -298,7 +298,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
         }
 
         // Pre-allocate output buffers for decryption (reused across iterations)
-        var decrypted_outputs = std.ArrayList([]u8){};
+        var decrypted_outputs: std.ArrayList([]u8) = .empty;
         defer {
             for (decrypted_outputs.items) |output| allocator.free(output);
             decrypted_outputs.deinit(allocator);
@@ -520,13 +520,13 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
     // Pre-create all test files once (outside timing loop)
     std.debug.print("\nGenerating {d} × {d}MB test files...\n", .{ file_count, file_size / (1024 * 1024) });
 
-    var file_paths = std.ArrayList([]u8){};
+    var file_paths: std.ArrayList([]u8) = .empty;
     defer {
         for (file_paths.items) |path| allocator.free(path);
         file_paths.deinit(allocator);
     }
 
-    var file_sizes = std.ArrayList(u64){};
+    var file_sizes: std.ArrayList(u64) = .empty;
     defer file_sizes.deinit(allocator);
 
     for (0..file_count) |i| {
