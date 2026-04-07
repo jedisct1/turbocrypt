@@ -214,7 +214,7 @@ Sometimes you want to encrypt files directly without creating copies:
 turbocrypt encrypt --key my-secret.key --in-place my-documents/
 ```
 
-Warning: This overwrites the original files. Make sure you have backups first!
+Warning: This overwrites the original files. For safety, TurboCrypt writes the encrypted data to a temporary file first and then atomically replaces the original. Make sure you have backups first!
 
 ### Hiding Filenames
 
