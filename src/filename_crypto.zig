@@ -91,7 +91,7 @@ pub fn encryptFilename(
 
         // Encrypt with HCTR2 using empty tweak
         var cipher = hctr2.Hctr2_128.init(filename_key);
-        var ciphertext = try allocator.alloc(u8, padded_len);
+        const ciphertext = try allocator.alloc(u8, padded_len);
         defer allocator.free(ciphertext);
 
         try cipher.encrypt(ciphertext, padded, &[_]u8{});
