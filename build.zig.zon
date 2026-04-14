@@ -33,12 +33,12 @@
     // internet connectivity.
     .dependencies = .{
         .hctr2 = .{
-            .url = "https://github.com/jedisct1/zig-hctr2/archive/refs/tags/0.1.7.tar.gz",
-            .hash = "hctr2-0.1.6-mu7McUKBAgA-wNLPu8IW5VyepYgZ70sEftCHpvnrxj8r",
+            .url = "git+https://github.com/jedisct1/zig-hctr2.git?ref=0.1.8#fcb2771f2be949eda296bbc1f2a2887b67005532",
+            .hash = "hctr2-0.1.6-mu7McdIoAwB4BY7OgLazIChsNvSpyMLbTRgx2Et68FYd",
         },
         .base91 = .{
-            .url = "git+https://github.com/jedisct1/zig-base91.git#c927de569893d4754f6fb16fc3b5e2a4ea07c496",
-            .hash = "base91-0.1.1-OsJq7DYpAABUwf5-5CeRvwDHFe8WcBieatow6uVDHWoo",
+            .url = "git+https://github.com/jedisct1/zig-base91.git?ref=0.1.2#3822e02acf9b55ee05589c160565d4d00c6694bd",
+            .hash = "base91-0.1.1-OsJq7IgpAABjEssUCiNhmT8BD9dwGQNld4F0v0CqNLzP",
         },
     },
     .paths = .{
