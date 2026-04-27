@@ -1641,8 +1641,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         std.debug.print("\nKey resolution priority:\n", .{});
         std.debug.print("  1. --key flag (if provided)\n", .{});
         std.debug.print("  2. {s} environment variable", .{keyloader.env_var_name});
-        if (std.c.getenv(keyloader.env_var_name)) |env_val| {
-            std.debug.print(" (currently: {s})", .{std.mem.span(env_val)});
+        if (environ_map.get(keyloader.env_var_name)) |env_val| {
+            std.debug.print(" (currently: {s})", .{env_val});
         } else {
             std.debug.print(" (not set)", .{});
         }
