@@ -112,21 +112,13 @@ pub fn matchesExcludePattern(
 
 /// Simple glob pattern matching
 fn matchesPattern(path: []const u8, pattern: []const u8) bool {
-    // Handle directory patterns: "node_modules/" matches any path starting with it
+    // Directory patterns match a whole path component at any depth,
+    // so ".git/" does not match ".gitignore"
     if (std.mem.endsWith(u8, pattern, "/")) {
         const dir_name = pattern[0 .. pattern.len - 1];
-        // Check if path starts with this directory
-        if (std.mem.startsWith(u8, path, dir_name)) {
-            return true;
-        }
-        // Check if path contains this directory as component
-        if (std.mem.indexOf(u8, path, dir_name)) |idx| {
-            // Verify it's a complete path component
-            if (idx == 0 or path[idx - 1] == '/') {
-                if (idx + dir_name.len >= path.len or path[idx + dir_name.len] == '/') {
-                    return true;
-                }
-            }
+        var components = std.fs.path.componentIterator(path);
+        while (components.next()) |component| {
+            if (std.mem.eql(u8, component.name, dir_name)) return true;
         }
         return false;
     }
@@ -351,6 +343,14 @@ test "exclude pattern matching" {
     // Test non-matches
     try testing.expect(!matchesExcludePattern("src/main.zig", patterns));
     try testing.expect(!matchesExcludePattern("README.md", patterns));
+
+    // Directory patterns only match whole path components
+    try testing.expect(!matchesExcludePattern(".gitignore", patterns));
+    try testing.expect(!matchesExcludePattern(".github/workflows/ci.yml", patterns));
+    try testing.expect(matchesExcludePattern("src/.git", patterns));
+    try testing.expect(matchesExcludePattern("src/node_modules/x.js", patterns));
+    try testing.expect(matchesExcludePattern("my_node_modules/node_modules/x.js", patterns));
+    try testing.expect(!matchesExcludePattern("my_node_modules/x.js", patterns));
 }
 
 test "ignore symlinks flag" {
