@@ -29,8 +29,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Import the base91 dependency
-    const base91 = b.dependency("base91", .{
+    // Import the base84 dependency
+    const base84 = b.dependency("base84", .{
         .target = target,
         .optimize = optimize,
     });
@@ -71,7 +71,7 @@ pub fn build(b: *std.Build) void {
             // root module.
             .imports = &.{
                 .{ .name = "hctr2", .module = hctr2.module("hctr2") },
-                .{ .name = "base91", .module = base91.module("base91") },
+                .{ .name = "base84", .module = base84.module("base84") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),

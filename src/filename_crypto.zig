@@ -1,19 +1,24 @@
 const std = @import("std");
 const hctr2 = @import("hctr2");
-const base91 = @import("base91");
+const base84 = @import("base84");
 const path_sep = std.fs.path.sep;
 const path_sep_str = std.fs.path.sep_str;
 
 /// Minimum filename length before encryption (padded with null bytes)
 /// HCTR2 requires minimum 16 bytes (one AES block).
 /// This prevents path length explosion for deeply nested directories.
+/// Sixteen bytes encode to at least 20 characters.
+/// Such a name can never be a reserved Windows device name like CON.
 const min_padded_length = 16;
 
 /// Maximum filename length to use stack buffers (typical filesystem limit is 255)
 const max_stack_filename_length = 256;
 
-/// Maximum base91 encoded size for stack buffer (conservative upper bound)
-const max_stack_encoded_length = 384;
+/// Longest encoded name that fits the stack buffers
+const max_stack_encoded_length = base84.standard.calcSizeUpperBound(max_stack_filename_length);
+
+/// Longest decoded name that an encoded name of that size can hold
+const max_stack_decoded_length = base84.standard.calcDecodedSizeUpperBound(max_stack_encoded_length);
 
 /// Filesystem filename length limit (ext4, APFS, NTFS all support 255 bytes)
 const filesystem_filename_limit = 255;
@@ -29,11 +34,11 @@ pub const StrictError = error{
     UnsafeDecryptedFilename,
 };
 
-/// Encrypt a single filename component using HCTR2 and base91 encoding
+/// Encrypt a single filename component using HCTR2 and base84 encoding
 ///
 /// The filename is padded to a minimum of 16 bytes (HCTR2 minimum block size) with null bytes (0x00),
-/// encrypted with HCTR2 using an empty tweak, then encoded with base91
-/// using the filesystem-safe alphabet.
+/// encrypted with HCTR2 using an empty tweak, then encoded with base84,
+/// whose alphabet is valid in file names on Linux, macOS and Windows.
 ///
 /// Special filenames "." and ".." are not encrypted.
 ///
@@ -73,9 +78,9 @@ pub fn encryptFilename(
 
         try cipher.encrypt(ciphertext, padded, &[_]u8{});
 
-        // Encode with base91 filesystem alphabet
+        // Encode with base84
         var encode_buf: [max_stack_encoded_length]u8 = undefined;
-        const encoded = try base91.filesystem.encode(&encode_buf, ciphertext);
+        const encoded = try base84.standard.encode(&encode_buf, ciphertext);
 
         // Validate that encrypted filename fits within filesystem limit
         if (encoded.len > filesystem_filename_limit) {
@@ -102,12 +107,12 @@ pub fn encryptFilename(
 
         try cipher.encrypt(ciphertext, padded, &[_]u8{});
 
-        // Encode with base91 filesystem alphabet
-        const upper_bound = base91.filesystem.calcSizeUpperBound(ciphertext.len);
+        // Encode with base84
+        const upper_bound = base84.standard.calcSizeUpperBound(ciphertext.len);
         const encode_buf = try allocator.alloc(u8, upper_bound);
         errdefer allocator.free(encode_buf);
 
-        const encoded = try base91.filesystem.encode(encode_buf, ciphertext);
+        const encoded = try base84.standard.encode(encode_buf, ciphertext);
 
         // Validate that encrypted filename fits within filesystem limit
         if (encoded.len > filesystem_filename_limit) {
@@ -121,10 +126,10 @@ pub fn encryptFilename(
 
 /// Decrypt a filename encrypted with encryptFilename
 ///
-/// Decodes from base91, decrypts with HCTR2, and removes null byte padding.
+/// Decodes from base84, decrypts with HCTR2, and removes null byte padding.
 /// If the filename cannot be decoded (i.e., never encrypted), returns it unchanged.
 ///
-/// Uses stack buffers for typical filenames (<=384 bytes encoded), falls back to heap for longer names.
+/// Uses stack buffers for typical filenames, falls back to heap for longer names.
 ///
 /// Note: The key parameter should be the derived filename_key from DerivedKeys.
 ///
@@ -141,17 +146,17 @@ pub fn decryptFilename(
 
     // Use stack buffers for typical filenames
     if (encrypted_name.len <= max_stack_encoded_length) {
-        // Try to decode from base91 using stack buffer
-        var decode_buf: [max_stack_filename_length]u8 = undefined;
+        // Try to decode from base84 using stack buffer
+        var decode_buf: [max_stack_decoded_length]u8 = undefined;
 
-        const ciphertext = base91.filesystem.decode(&decode_buf, encrypted_name) catch {
-            // Not a valid base91 string - return as-is (was never encrypted)
+        const ciphertext = base84.standard.decode(&decode_buf, encrypted_name) catch {
+            // Not a valid base84 string - return as-is (was never encrypted)
             return allocator.dupe(u8, encrypted_name);
         };
 
         // Decrypt with HCTR2
         var cipher = hctr2.Hctr2_128.init(filename_key);
-        var padded_buf: [max_stack_filename_length]u8 = undefined;
+        var padded_buf: [max_stack_decoded_length]u8 = undefined;
         const padded = padded_buf[0..ciphertext.len];
 
         cipher.decrypt(padded, ciphertext, &[_]u8{}) catch {
@@ -166,12 +171,12 @@ pub fn decryptFilename(
         return allocator.dupe(u8, padded[0..actual_len]);
     } else {
         // Fall back to heap allocation for long filenames
-        const decode_upper_bound = base91.filesystem.calcDecodedSizeUpperBound(encrypted_name.len);
+        const decode_upper_bound = base84.standard.calcDecodedSizeUpperBound(encrypted_name.len);
         const decode_buf = try allocator.alloc(u8, decode_upper_bound);
         defer allocator.free(decode_buf);
 
-        const ciphertext = base91.filesystem.decode(decode_buf, encrypted_name) catch {
-            // Not a valid base91 string - return as-is (was never encrypted)
+        const ciphertext = base84.standard.decode(decode_buf, encrypted_name) catch {
+            // Not a valid base84 string - return as-is (was never encrypted)
             return allocator.dupe(u8, encrypted_name);
         };
 
@@ -209,9 +214,9 @@ pub fn decryptFilenameStrict(
         return StrictError.InvalidEncryptedFilename;
     }
 
-    const decode_buf = try allocator.alloc(u8, base91.filesystem.calcDecodedSizeUpperBound(encrypted_name.len));
+    const decode_buf = try allocator.alloc(u8, base84.standard.calcDecodedSizeUpperBound(encrypted_name.len));
     defer allocator.free(decode_buf);
-    const ciphertext = base91.filesystem.decode(decode_buf, encrypted_name) catch {
+    const ciphertext = base84.standard.decode(decode_buf, encrypted_name) catch {
         return StrictError.InvalidEncryptedFilename;
     };
 
@@ -418,8 +423,8 @@ test "filename encryption length validation" {
     defer allocator.free(encrypted);
     try testing.expect(encrypted.len <= filesystem_filename_limit);
 
-    // Test that filenames up to ~205 bytes encrypt successfully
-    const safe_lengths = [_]usize{ 50, 100, 150, 200, 205 };
+    // Names of up to 191 bytes fit whatever the ciphertext looks like
+    const safe_lengths = [_]usize{ 50, 100, 150, 191 };
     for (safe_lengths) |len| {
         const test_name = try allocator.alloc(u8, len);
         defer allocator.free(test_name);
@@ -431,9 +436,9 @@ test "filename encryption length validation" {
         try testing.expect(enc.len <= filesystem_filename_limit);
     }
 
-    // Test that filenames over ~205 bytes return EncryptedFilenameTooLong error
+    // Names of 208 bytes or more never fit and return EncryptedFilenameTooLong
     // The last length takes the heap path
-    const unsafe_lengths = [_]usize{ 210, 215, 220, max_stack_filename_length + 1 };
+    const unsafe_lengths = [_]usize{ 208, 215, 220, max_stack_filename_length + 1 };
     for (unsafe_lengths) |len| {
         const test_name = try allocator.alloc(u8, len);
         defer allocator.free(test_name);
@@ -444,6 +449,29 @@ test "filename encryption length validation" {
     }
 }
 
+test "encrypted names are valid file names on Windows" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const key: [16]u8 = @splat(0x42);
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    const random = prng.random();
+
+    var name_buf: [64]u8 = undefined;
+    for (0..1000) |_| {
+        const name = name_buf[0 .. 1 + random.uintLessThan(usize, name_buf.len)];
+        random.bytes(name);
+
+        const encrypted = try encryptFilename(allocator, name, key);
+        defer allocator.free(encrypted);
+
+        // A reserved device name like CON has at most four characters, and a period is not in the alphabet.
+        try testing.expect(encrypted.len >= 20);
+        try testing.expect(std.mem.findAny(u8, encrypted, " .<>:\"/\\|?*") == null);
+        for (encrypted) |c| try testing.expect(c > 0x20 and c < 0x7f);
+    }
+}
+
 test "strict decrypt round trips and rejects garbage" {
     const testing = std.testing;
     const allocator = testing.allocator;
@@ -451,7 +479,7 @@ test "strict decrypt round trips and rejects garbage" {
     const key: [16]u8 = @splat(0x42);
     const other_key: [16]u8 = @splat(0x43);
 
-    const long_name: [200]u8 = @splat('a');
+    const long_name: [191]u8 = @splat('a');
     const names = [_][]const u8{ "AGENT.md", "r\u{e9}sum\u{e9}.txt", &long_name };
     for (names) |name| {
         const encrypted = try encryptFilename(allocator, name, key);
@@ -462,7 +490,7 @@ test "strict decrypt round trips and rejects garbage" {
         try testing.expectEqualStrings(name, decrypted);
     }
 
-    try testing.expectError(StrictError.InvalidEncryptedFilename, decryptFilenameStrict(allocator, "not base91 \x01", key));
+    try testing.expectError(StrictError.InvalidEncryptedFilename, decryptFilenameStrict(allocator, "not base84 \x01", key));
     try testing.expectError(StrictError.InvalidEncryptedFilename, decryptFilenameStrict(allocator, "", key));
     try testing.expectError(StrictError.InvalidEncryptedFilename, decryptFilenameStrict(allocator, "abc", key));
 
@@ -493,7 +521,7 @@ test "strict decrypt rejects names that leave the directory" {
     var ciphertext: [16]u8 = undefined;
     try cipher.encrypt(&ciphertext, &padded, &[_]u8{});
     var encode_buf: [64]u8 = undefined;
-    const encoded = try base91.filesystem.encode(&encode_buf, &ciphertext);
+    const encoded = try base84.standard.encode(&encode_buf, &ciphertext);
     try testing.expectError(StrictError.UnsafeDecryptedFilename, decryptFilenameStrict(allocator, encoded, key));
 }
 

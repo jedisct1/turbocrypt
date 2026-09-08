@@ -36,9 +36,9 @@
             .url = "git+https://github.com/jedisct1/zig-hctr2.git?ref=0.1.8#fcb2771f2be949eda296bbc1f2a2887b67005532",
             .hash = "hctr2-0.1.6-mu7McdIoAwB4BY7OgLazIChsNvSpyMLbTRgx2Et68FYd",
         },
-        .base91 = .{
-            .url = "git+https://github.com/jedisct1/zig-base91.git?ref=0.1.4#47305d987c124fb2059cd682281cc3493fbd7a6b",
-            .hash = "base91-0.1.3-OsJq7JgpAACnbv10SElh_1ITaCvyc8ifBfhnKfqLFtDy",
+        .base84 = .{
+            .url = "git+https://github.com/jedisct1/zig-base84.git?ref=0.1.0#f54020f3a3d1c1e376a96f8439da294453e95262",
+            .hash = "base84-0.1.0-Pe665iFKAAAgpfQfk_-HWSK6FFjBLFPjcHcl689LRtOj",
         },
     },
     .paths = .{

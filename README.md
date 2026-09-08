@@ -639,7 +639,7 @@ Encrypted files can be freely moved between directories and renamed. The encrypt
 When using `--encrypted-filenames`:
 
 - Each path component (directory or filename) is encrypted separately
-- Encoded with base91 to ensure filesystem compatibility
+- Encoded with base84, so the names are valid on Linux, macOS and Windows
 - Preserves directory structure (you still see folders, just with encrypted names)
 - Must be used for both encryption and decryption operations
 

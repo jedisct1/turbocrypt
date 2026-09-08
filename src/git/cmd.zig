@@ -115,7 +115,7 @@ pub fn run(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     }
 
     if (builtin.os.tag == .windows) {
-        std.debug.print("Error: turbocrypt git is not available on Windows. The encrypted names use characters that NTFS rejects.\n", .{});
+        std.debug.print("Error: turbocrypt git is not available on Windows yet.\n", .{});
         return error.Unsupported;
     }
 

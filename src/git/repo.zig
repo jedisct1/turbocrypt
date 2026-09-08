@@ -199,7 +199,7 @@ pub const Repo = struct {
     }
 
     /// Stage files, ignored ones included.
-    /// Base91 names can end in `.log` or `~` and match a user's ignore rule, so `-f` is always needed.
+    /// Base84 names can end in `~` and match a user's ignore rule, so `-f` is always needed.
     pub fn addForce(self: *const Repo, paths: []const []const u8) !void {
         try self.runWithPathspec(&.{ "add", "-f" }, paths);
     }
