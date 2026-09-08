@@ -121,6 +121,9 @@ const usage_text =
     \\  turbocrypt encrypt --context "project-x" documents/ encrypted-x/
     \\  turbocrypt decrypt --context "project-x" encrypted-x/ decrypted/
     \\  export TURBOCRYPT_KEY_FILE=secret.key && turbocrypt encrypt data/ encrypted/
+    \\  turbocrypt git init
+    \\  turbocrypt git add INTERNAL-DOC.md docs/internal.md
+    \\  turbocrypt git unlock --key team.key
     \\
 ;
 
@@ -306,64 +309,11 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
     };
 }
 
-/// Prompt for password if needed (based on key file protection status or --password flag)
-/// Returns owned password buffer that caller must zero and free
-fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options, io: std.Io, environ_map: *const std.process.Environ.Map) !?[]u8 {
-    // Determine if key is password-protected
-    const is_protected = blk: {
-        const key_path = try keyloader.resolveKeyPath(allocator, opts.key, environ_map);
-        if (key_path) |path| {
-            defer allocator.free(path);
-            break :blk prompt.isKeyPasswordProtected(path, io) catch |err| {
-                std.debug.print("Error: Cannot read key file '{s}': {}\n", .{ path, err });
-                return err;
-            };
-        } else {
-            // Check config-stored key
-            var cfg = config_mod.load(allocator, io, environ_map) catch break :blk false;
-            defer cfg.deinit(allocator);
-            if (cfg.key) |key_data| {
-                break :blk key_data.len == keygen.protected_key_file_size;
-            }
-            break :blk false;
-        }
-    };
-
-    // Prompt if protected or if --password flag is set
-    if (is_protected or opts.password) {
-        return try prompt.promptPassword(allocator, "Enter key password", false, io);
-    }
-    return null;
-}
-
 /// Get thread count from options or use default (min(CPU count, 16), capped at 64)
 fn getThreadCount(opts: Options) !u32 {
     if (opts.threads) |t| return @min(t, 64);
     const cpu_count = try std.Thread.getCpuCount();
     return @as(u32, @intCast(@min(cpu_count, 16)));
-}
-
-/// Handle key loading errors with consistent error messages
-/// command_name should be the command being executed (e.g., "encrypt", "decrypt", "verify", "list")
-fn handleKeyLoadError(err: anyerror, command_name: []const u8) !void {
-    if (err == error.KeyNotFound) {
-        std.debug.print("Error: No encryption key configured\n", .{});
-        std.debug.print("\nYou can specify a key in one of these ways:\n", .{});
-        std.debug.print("  1. Use --key flag:           turbocrypt {s} --key secret.key <source> <dest>\n", .{command_name});
-        std.debug.print("  2. Set environment variable: export {s}=secret.key\n", .{keyloader.env_var_name});
-        std.debug.print("  3. Set default key:          turbocrypt config set-key secret.key\n", .{});
-        return error.KeyNotFound;
-    }
-    if (err == error.PasswordRequired) {
-        std.debug.print("Error: This key file is password-protected. Use --password flag.\n", .{});
-        return error.PasswordRequired;
-    }
-    if (err == error.InvalidPassword) {
-        std.debug.print("Error: Invalid password for key file.\n", .{});
-        return error.InvalidPassword;
-    }
-    std.debug.print("Error: Cannot load the encryption key: {}\n", .{err});
-    return err;
 }
 
 /// Tell the user which config file failed and why
@@ -702,16 +652,8 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         return error.InvalidArguments;
     };
 
-    // Check if we need password (only for file-based keys)
-    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io, environ_map);
-    defer if (password_buf) |buf| {
-        std.crypto.secureZero(u8, buf);
-        allocator.free(buf);
-    };
-
-    // Load key (from file or config)
-    const key = keyloader.resolveKey(allocator, opts.key, password_buf, io, environ_map) catch |err| {
-        return handleKeyLoadError(err, op_name);
+    const key = keyloader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
+        return keyloader.explainLoadError(allocator, err, opts.key, environ_map);
     };
 
     // Derive keys from master key using TurboSHAKE128
@@ -898,16 +840,8 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 
     const source_path = parsed.positional[0];
 
-    // Check if we need password (only for file-based keys)
-    const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io, environ_map);
-    defer if (password_buf) |buf| {
-        std.crypto.secureZero(u8, buf);
-        allocator.free(buf);
-    };
-
-    // Load key (from file or config)
-    const key = keyloader.resolveKey(allocator, opts.key, password_buf, io, environ_map) catch |err| {
-        return handleKeyLoadError(err, "verify");
+    const key = keyloader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
+        return keyloader.explainLoadError(allocator, err, opts.key, environ_map);
     };
 
     // Derive keys from master key using TurboSHAKE128
@@ -1085,16 +1019,8 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     // If encrypted filenames are used, we need a key
     var filename_key: [16]u8 = undefined;
     if (opts.encrypt_filenames) {
-        // Check if we need password (only for file-based keys)
-        const password_buf: ?[]u8 = try promptForPasswordIfNeeded(allocator, opts, io, environ_map);
-        defer if (password_buf) |buf| {
-            std.crypto.secureZero(u8, buf);
-            allocator.free(buf);
-        };
-
-        // Load key (from file or config)
-        const key = keyloader.resolveKey(allocator, opts.key, password_buf, io, environ_map) catch |err| {
-            return handleKeyLoadError(err, "list");
+        const key = keyloader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
+            return keyloader.explainLoadError(allocator, err, opts.key, environ_map);
         };
 
         // Derive keys from master key and use the derived filename_key

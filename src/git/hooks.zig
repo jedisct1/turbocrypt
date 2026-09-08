@@ -122,7 +122,7 @@ pub fn run(name: []const u8, allocator: std.mem.Allocator, io: std.Io, environ_m
     const key = repo.loadKey() catch |err| switch (err) {
         repo_mod.Error.RepoLocked => {
             if (pre and plainManifestExists(&repo)) {
-                std.debug.print("turbocrypt: this repository is locked, run: turbocrypt git unlock <key-file>\n", .{});
+                std.debug.print("turbocrypt: this repository is locked, run: turbocrypt git unlock\n", .{});
                 return 1;
             }
             return 0;

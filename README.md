@@ -55,6 +55,7 @@ A fast, easy-to-use, and secure command-line tool for encrypting and decrypting 
     - ["nothing to commit" after editing a private file](#nothing-to-commit-after-editing-a-private-file)
     - ["commit refused, private files are tracked by git"](#commit-refused-private-files-are-tracked-by-git)
     - [A merge conflict on a private file](#a-merge-conflict-on-a-private-file)
+    - ["this repository already has a different key"](#this-repository-already-has-a-different-key)
     - [Hooks do not run from a GUI client](#hooks-do-not-run-from-a-gui-client)
   - [Environment Variables](#environment-variables)
 
@@ -366,9 +367,10 @@ turbocrypt encrypt source/ dest/
 ### Private Files in a Git Repository
 
 A public repository shows every tracked file to everyone. Sometimes a few
-files should stay readable by the maintainers only, such as an `AGENT.md`
-with internal instructions or deployment notes in `docs/`. TurboCrypt can
-keep those files encrypted in the repository while you edit them in clear.
+files should stay readable by the maintainers only, such as an
+`INTERNAL-DOC.md` with internal instructions or deployment notes in
+`docs/`. TurboCrypt can keep those files encrypted in the repository
+while you edit them in clear.
 
 The encrypted copies live in a committed `.enc/` directory. Their names and
 their contents look random. Git hooks refresh `.enc/` before every commit
@@ -376,18 +378,30 @@ and refresh the plain files after a checkout, a merge or a rebase. The
 plain files are kept out of commits by a local exclude rule. The list of
 private files is encrypted too.
 
-Set it up once, in the repository:
+Set it up once, in the repository. The key comes from `--key`, then
+`TURBOCRYPT_KEY_FILE`, then the default key in your config, exactly like
+`turbocrypt encrypt`. Nothing generates a key for you:
 
 ```bash
-turbocrypt git init                  # creates a key, .enc/, .gitprivate and the hooks
-turbocrypt git add AGENT.md          # one file
+turbocrypt keygen secret.key         # once, when you have no key yet
+turbocrypt config set-key secret.key
+turbocrypt git init                  # binds the key, creates .enc/, .gitprivate and the hooks
+turbocrypt git add INTERNAL-DOC.md   # one file
 turbocrypt git add docs/internal.md
 turbocrypt git add ops/              # a whole directory, including future files
 git commit -m "Add private notes"    # the hook encrypts and stages .enc/
 git push
 ```
 
-Share the key with the other maintainers, outside of git:
+The hooks run without a terminal, so `init` copies the key to
+`.git/turbocrypt/key` in clear. The file has mode 0600 and its directory
+has mode 0700. A password-protected key is asked for once, at that
+moment. From then on the repository uses that copy. A new default key or
+a new `TURBOCRYPT_KEY_FILE` does not change it, and the daily commands
+refuse `--key`.
+
+Share the key with the other maintainers, outside of git. When the key
+came from a file, a copy of that file does the same job:
 
 ```bash
 turbocrypt git export-key --password team.key
@@ -398,8 +412,12 @@ On another clone:
 ```bash
 git clone git@github.com:acme/my-project
 cd my-project
-turbocrypt git unlock team.key       # installs the hooks and decrypts .enc/
+turbocrypt git unlock --key team.key # binds the key, installs the hooks and decrypts .enc/
 ```
+
+`unlock` picks the key like `init` does. A maintainer whose default key
+is the team key runs `turbocrypt git unlock` alone. A key that does not
+open the store is refused, and the message says where it came from.
 
 From then on, daily work is plain git. Edit a private file and commit. Pull
 and switch branches. The hooks keep both sides in sync. A few things are
@@ -562,18 +580,18 @@ turbocrypt config set-encrypted-filenames true
 ### Git
 
 ```bash
-# Set up the repository you are in
+# Set up the repository you are in, with --key, TURBOCRYPT_KEY_FILE or the default key
 turbocrypt git init
 
 # Set up a clone with the shared key
-turbocrypt git unlock team.key
+turbocrypt git unlock --key team.key
 
 # Share the key
 turbocrypt git export-key --password team.key
 
 # Make files or directories private, or public again
-turbocrypt git add AGENT.md ops/
-turbocrypt git rm AGENT.md
+turbocrypt git add INTERNAL-DOC.md ops/
+turbocrypt git rm INTERNAL-DOC.md
 
 # See what is private and what is out of sync
 turbocrypt git status
@@ -726,6 +744,13 @@ different key. Commits stop until it is fixed. When the plain file is
 present and correct, `turbocrypt git encrypt --force <path>` writes a fresh
 entry from it. Otherwise `turbocrypt git rm <path>` drops the entry.
 
+### "this repository already has a different key"
+
+`init` and `unlock` keep the key bound to the repository, whatever the
+default key or `TURBOCRYPT_KEY_FILE` says. To replace it, run
+`turbocrypt git unlock --key <key-file> --force`. The new key must open
+the store, so this is not a way to rotate keys.
+
 ### Hooks do not run from a GUI client
 
 GUI clients run hooks with a minimal PATH. The installed hooks use the
@@ -734,7 +759,7 @@ binary moved, run `turbocrypt git init` again to refresh the hooks.
 
 ## Environment Variables
 
-- `TURBOCRYPT_KEY_FILE`: Path to your key file (overridden by `--key` flag)
+- `TURBOCRYPT_KEY_FILE`: Path to your key file (overridden by `--key` flag). `turbocrypt git init` and `unlock` read it once, when they bind a key to a repository.
 
 Example:
 

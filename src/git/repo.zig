@@ -277,10 +277,6 @@ pub const Repo = struct {
         self.allocator.free(out);
     }
 
-    pub fn hasKey(self: *const Repo) bool {
-        return utils.pathExists(self.key_path, self.io);
-    }
-
     pub fn loadKey(self: *const Repo) ![16]u8 {
         return keygen.readKeyFile(self.key_path, null, self.io) catch |err| switch (err) {
             error.FileNotFound => return Error.RepoLocked,
