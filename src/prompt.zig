@@ -5,6 +5,9 @@ const builtin = @import("builtin");
 /// Maximum password length
 const MAX_PASSWORD_LENGTH = 1024;
 
+/// Raw mode needs a Windows console or termios
+const supports_raw_mode = builtin.os.tag != .wasi;
+
 /// Platform-specific terminal state
 const TerminalState = if (builtin.os.tag == .windows)
     struct {
@@ -43,57 +46,49 @@ pub fn promptPassword(
     const should_close = builtin.os.tag != .windows and stdin_file.handle != std.Io.File.stdin().handle;
     defer if (should_close) stdin_file.close(io);
 
-    const has_termios = builtin.os.tag != .wasi and builtin.os.tag != .windows;
     const is_terminal = stdin_file.isTty(io) catch false;
 
+    // Raw mode leaves the editing keys to readLine
+    const raw_input = supports_raw_mode and is_terminal;
+
     var original: TerminalState = undefined;
-    if (has_termios and is_terminal) {
-        original = try std.posix.tcgetattr(stdin_file.handle);
-        var raw = original;
-
-        raw.lflag.ICANON = false;
-        raw.lflag.ECHO = false;
-        raw.lflag.ECHONL = false;
-        raw.lflag.ISIG = false;
-        raw.lflag.IEXTEN = false;
-
-        raw.iflag.BRKINT = false;
-        raw.iflag.ICRNL = false;
-        raw.iflag.INPCK = false;
-        raw.iflag.ISTRIP = false;
-        raw.iflag.IXON = false;
-
-        raw.cc[@backingInt(std.posix.V.MIN)] = 1;
-        raw.cc[@backingInt(std.posix.V.TIME)] = 0;
-
-        try std.posix.tcsetattr(stdin_file.handle, .FLUSH, raw);
-        try stdout.writeStreamingAll(io, prompt_text);
-        try stdout.writeStreamingAll(io, ": ");
-    } else if (builtin.os.tag == .windows and is_terminal) {
-        try setRawMode(stdin_file, &original, io);
-        try stdout.writeStreamingAll(io, prompt_text);
-        try stdout.writeStreamingAll(io, ": ");
-    } else {
-        try stdout.writeStreamingAll(io, prompt_text);
-        try stdout.writeStreamingAll(io, ": ");
-    }
+    if (raw_input) try setRawMode(stdin_file, &original);
     defer if (is_terminal) {
         stdout.writeStreamingAll(io, "\n") catch {};
-        if (has_termios) {
-            std.posix.tcsetattr(stdin_file.handle, .FLUSH, original) catch {};
-        } else if (builtin.os.tag == .windows) {
-            restoreMode(stdin_file, original) catch {};
-        }
+        if (raw_input) restoreMode(stdin_file, original) catch {};
     };
 
-    var buffer: [MAX_PASSWORD_LENGTH]u8 = undefined;
+    try stdout.writeStreamingAll(io, prompt_text);
+    try stdout.writeStreamingAll(io, ": ");
 
+    var buffer: [MAX_PASSWORD_LENGTH]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buffer);
+    const password1 = buffer[0..try readLine(stdin_file, &buffer, raw_input, io)];
+
+    if (confirm) {
+        try stdout.writeStreamingAll(io, "Confirm password: ");
+
+        var buffer2: [MAX_PASSWORD_LENGTH]u8 = undefined;
+        defer std.crypto.secureZero(u8, &buffer2);
+        const password2 = buffer2[0..try readLine(stdin_file, &buffer2, raw_input, io)];
+
+        if (!std.mem.eql(u8, password1, password2)) {
+            return error.PasswordMismatch;
+        }
+    }
+
+    return try allocator.dupe(u8, password1);
+}
+
+/// Read one line into buffer and return its length.
+/// In raw mode, backspace erases, Ctrl-C aborts and Ctrl-D ends the input.
+fn readLine(file: std.Io.File, buffer: []u8, raw: bool, io: std.Io) !usize {
     var pos: usize = 0;
     var read_any = false;
     var byte_buf: [1]u8 = undefined;
 
     while (pos < buffer.len) {
-        const bytes_read = try stdin_file.readStreaming(io, &.{&byte_buf});
+        const bytes_read = try file.readStreaming(io, &.{&byte_buf});
         if (bytes_read == 0) {
             if (!read_any) return error.EndOfStream;
             break;
@@ -105,52 +100,35 @@ pub fn promptPassword(
             break;
         }
 
+        if (raw) {
+            switch (byte) {
+                0x03 => return error.Interrupted,
+                0x04 => {
+                    if (pos == 0) return error.EndOfStream;
+                    break;
+                },
+                0x08, 0x7f => {
+                    // Step back over one whole UTF-8 sequence
+                    while (pos > 0) {
+                        pos -= 1;
+                        if ((buffer[pos] & 0xC0) != 0x80) break;
+                    }
+                    continue;
+                },
+                else => {},
+            }
+        }
+
         buffer[pos] = byte;
         pos += 1;
     }
 
-    const password1 = buffer[0..pos];
-
-    if (confirm) {
-        try stdout.writeStreamingAll(io, "Confirm password: ");
-
-        var buffer2: [MAX_PASSWORD_LENGTH]u8 = undefined;
-
-        var pos2: usize = 0;
-        var read_any2 = false;
-        var byte_buf2: [1]u8 = undefined;
-
-        while (pos2 < buffer2.len) {
-            const bytes_read = try stdin_file.readStreaming(io, &.{&byte_buf2});
-            if (bytes_read == 0) {
-                if (!read_any2) return error.EndOfStream;
-                break;
-            }
-            read_any2 = true;
-
-            const byte = byte_buf2[0];
-            if (byte == '\n' or byte == '\r') {
-                break;
-            }
-
-            buffer2[pos2] = byte;
-            pos2 += 1;
-        }
-
-        const password2 = buffer2[0..pos2];
-
-        if (!std.mem.eql(u8, password1, password2)) {
-            return error.PasswordMismatch;
-        }
-    }
-
-    return try allocator.dupe(u8, password1);
+    return pos;
 }
 
 /// Set raw mode for password input (disables echo, buffering, and line processing)
 /// This prevents buffered input from being echoed if the process is killed
-fn setRawMode(file: std.Io.File, state: *TerminalState, io: std.Io) !void {
-    _ = io;
+fn setRawMode(file: std.Io.File, state: *TerminalState) !void {
     if (builtin.os.tag == .windows) {
         const handle = file.handle;
         state.handle = handle;
@@ -159,9 +137,11 @@ fn setRawMode(file: std.Io.File, state: *TerminalState, io: std.Io) !void {
             return error.GetConsoleModeFailure;
         }
 
-        const ENABLE_ECHO_INPUT: std.os.windows.DWORD = 0x0004;
+        // Processed input would let Ctrl-C end the process before the console is restored
+        const ENABLE_PROCESSED_INPUT: std.os.windows.DWORD = 0x0001;
         const ENABLE_LINE_INPUT: std.os.windows.DWORD = 0x0002;
-        const new_mode = state.original_mode & ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT);
+        const ENABLE_ECHO_INPUT: std.os.windows.DWORD = 0x0004;
+        const new_mode = state.original_mode & ~(ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
 
         if (SetConsoleMode(handle, new_mode) == .FALSE) {
             return error.SetConsoleModeFailure;
