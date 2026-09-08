@@ -14,6 +14,10 @@ const TerminalState = if (builtin.os.tag == .windows)
 else
     std.posix.termios;
 
+/// Console mode functions that the standard library no longer declares
+extern "kernel32" fn GetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, lpMode: *std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn SetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, dwMode: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+
 /// Prompt the user for a password (with confirmation for new passwords)
 /// Allocates memory for the password - caller must free
 pub fn promptPassword(
@@ -151,7 +155,7 @@ fn setRawMode(file: std.Io.File, state: *TerminalState, io: std.Io) !void {
         const handle = file.handle;
         state.handle = handle;
 
-        if (std.os.windows.kernel32.GetConsoleMode(handle, &state.original_mode) == 0) {
+        if (GetConsoleMode(handle, &state.original_mode) == .FALSE) {
             return error.GetConsoleModeFailure;
         }
 
@@ -159,7 +163,7 @@ fn setRawMode(file: std.Io.File, state: *TerminalState, io: std.Io) !void {
         const ENABLE_LINE_INPUT: std.os.windows.DWORD = 0x0002;
         const new_mode = state.original_mode & ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT);
 
-        if (std.os.windows.kernel32.SetConsoleMode(handle, new_mode) == 0) {
+        if (SetConsoleMode(handle, new_mode) == .FALSE) {
             return error.SetConsoleModeFailure;
         }
     } else {
@@ -193,7 +197,7 @@ fn setRawMode(file: std.Io.File, state: *TerminalState, io: std.Io) !void {
 /// Restore terminal to original mode
 fn restoreMode(file: std.Io.File, state: TerminalState) !void {
     if (builtin.os.tag == .windows) {
-        if (std.os.windows.kernel32.SetConsoleMode(state.handle, state.original_mode) == 0) {
+        if (SetConsoleMode(state.handle, state.original_mode) == .FALSE) {
             return error.SetConsoleModeFailure;
         }
     } else {
