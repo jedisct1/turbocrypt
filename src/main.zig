@@ -499,6 +499,11 @@ const DirectoryScanContext = struct {
     ) !void {
         const self: *DirectoryScanContext = @ptrCast(@alignCast(context));
 
+        // Excluded directories must not appear in the destination
+        if (utils.matchesExcludePattern(relative_path, self.exclude_patterns)) {
+            return;
+        }
+
         // Shared logic for directory handling
         if (is_directory) {
             try handleDirectory(
@@ -511,11 +516,6 @@ const DirectoryScanContext = struct {
                 self.io,
             );
             return;
-        }
-
-        // Shared logic for exclude patterns
-        if (utils.matchesExcludePattern(relative_path, self.exclude_patterns)) {
-            return; // Skip excluded file
         }
 
         // Shared logic for enc_suffix filtering
