@@ -201,10 +201,12 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
             }
             i += 1;
             const value = args[i];
-            opts.threads = std.fmt.parseUnsigned(u32, value, 10) catch {
+            const threads = std.fmt.parseUnsigned(u32, value, 10) catch 0;
+            if (threads == 0) {
                 std.debug.print("Error: Invalid thread count '{s}'\n", .{value});
                 return error.InvalidArguments;
-            };
+            }
+            opts.threads = threads;
         } else if (std.mem.eql(u8, arg, "--buffer-size")) {
             if (i + 1 >= args.len) {
                 std.debug.print("Error: --buffer-size requires a value\n", .{});
