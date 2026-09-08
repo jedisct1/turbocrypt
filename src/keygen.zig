@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const password = @import("password.zig");
+const utils = @import("utils.zig");
 
 fn readAll(file: std.Io.File, io: std.Io, buffer: []u8) !usize {
     var file_reader = file.reader(io, &.{});
@@ -42,10 +43,7 @@ pub fn writeKeyFile(
     password_opt: ?[]const u8,
     io: std.Io,
 ) !void {
-    // Create/open file
-    const file = try std.Io.Dir.createFile(.cwd(), io, path, .{
-        .truncate = true,
-    });
+    const file = try utils.createPrivateFile(path, .{}, io);
     defer file.close(io);
 
     if (password_opt) |pwd| {
@@ -57,13 +55,6 @@ pub fn writeKeyFile(
     } else {
         // Plain format: just the key bytes
         try file.writeStreamingAll(io, &key);
-    }
-
-    // Set restrictive permissions (owner read/write only)
-    // chmod 600 (rw-------)
-    // Note: Windows doesn't support Unix-style permissions
-    if (builtin.os.tag != .windows) {
-        try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
     }
 }
 

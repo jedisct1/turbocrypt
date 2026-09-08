@@ -1,4 +1,25 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// Mode for files that hold secrets, such as keys and the config file
+const private_file_permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows)
+    .default_file
+else
+    .fromMode(0o600);
+
+/// Create a file that only its owner can read.
+/// An existing file keeps its old mode, so it is tightened before any write.
+/// Windows has no Unix modes, so the file keeps the default mode there.
+pub fn createPrivateFile(path: []const u8, options: std.Io.Dir.CreateFileOptions, io: std.Io) !std.Io.File {
+    var opts = options;
+    opts.permissions = private_file_permissions;
+    const file = try std.Io.Dir.createFile(.cwd(), io, path, opts);
+    errdefer file.close(io);
+    if (builtin.os.tag != .windows) {
+        try file.setPermissions(io, private_file_permissions);
+    }
+    return file;
+}
 
 /// Callback function type for directory walking
 /// Parameters: relative_path, full_path, is_directory

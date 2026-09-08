@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const utils = @import("utils.zig");
 
 /// Configuration filename within app data directory
 pub const config_filename = "config.json";
@@ -243,15 +244,8 @@ pub fn save(config: Config, allocator: std.mem.Allocator, io: std.Io, environ_ma
     const temp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{config_path});
     defer allocator.free(temp_path);
 
-    // Create temp file and immediately set restrictive permissions
-    const file = try std.Io.Dir.createFile(.cwd(), io, temp_path, .{});
+    const file = try utils.createPrivateFile(temp_path, .{}, io);
     defer file.close(io);
-
-    // Set restrictive permissions before writing (owner read/write only)
-    // Note: Windows doesn't support Unix-style permissions
-    if (builtin.os.tag != .windows) {
-        try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
-    }
 
     try file.writeStreamingAll(io, json_str);
     try file.sync(io); // Ensure data is written to disk
