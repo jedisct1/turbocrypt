@@ -126,53 +126,6 @@ fn printVersion() void {
     std.debug.print("turbocrypt {s}\n", .{build_options.version});
 }
 
-/// Handle directory creation with optional filename encryption
-fn handleDirectory(
-    relative_path: []const u8,
-    dest_base: []const u8,
-    encrypt_filenames: bool,
-    is_encrypt: bool,
-    key: [16]u8,
-    allocator: std.mem.Allocator,
-    io: std.Io,
-) !void {
-    var dest_relative_path = relative_path;
-    var encrypted_path: ?[]u8 = null;
-    defer if (encrypted_path) |p| allocator.free(p);
-
-    if (encrypt_filenames) {
-        encrypted_path = (if (is_encrypt)
-            filename_crypto.encryptPath(allocator, relative_path, key)
-        else
-            filename_crypto.decryptPath(allocator, relative_path, key)) catch |err| {
-            std.debug.print("\n[ERROR] Failed to {s} directory name: {s}\n", .{
-                if (is_encrypt) "encrypt" else "decrypt",
-                relative_path,
-            });
-            std.debug.print("        Reason: {}\n", .{err});
-            if (err == filename_crypto.FilenameError.EncryptedFilenameTooLong) {
-                std.debug.print("        Suggestion: Directory name is too long. Encrypted names must fit within 255 bytes.\n", .{});
-                std.debug.print("                   Consider shortening the directory name (max ~205 bytes for encryption).\n", .{});
-            } else if (!is_encrypt) {
-                std.debug.print("        Suggestion: Ensure the directory was encrypted with --encrypted-filenames using the same key\n", .{});
-            }
-            return err;
-        };
-        dest_relative_path = encrypted_path.?;
-    }
-
-    const dest_dir = try std.fs.path.join(allocator, &[_][]const u8{ dest_base, dest_relative_path });
-    defer allocator.free(dest_dir);
-    utils.ensureDirectory(dest_dir, io) catch |err| {
-        std.debug.print("\n[ERROR] Failed to create directory: {s}\n", .{dest_dir});
-        std.debug.print("        Reason: {}\n", .{err});
-        if (encrypt_filenames and !is_encrypt) {
-            std.debug.print("        Suggestion: Directory name may be corrupted or encrypted with a different key\n", .{});
-        }
-        return err;
-    };
-}
-
 /// Command-line options for encrypt/decrypt operations
 const Options = struct {
     key: ?[]const u8 = null,
@@ -199,26 +152,21 @@ fn hasEncSuffix(path: []const u8) bool {
     return std.mem.endsWith(u8, path, enc_suffix);
 }
 
-/// Apply .enc suffix transformation based on operation type
-/// For encryption: adds ".enc" suffix
-/// For decryption: removes ".enc" suffix (if present)
-/// Returns owned slice that caller must free, or null if no transformation needed
-fn applyEncSuffix(
-    allocator: std.mem.Allocator,
-    path: []const u8,
-    is_encrypt: bool,
-) !?[]u8 {
-    if (is_encrypt) {
-        // Encrypting: add ".enc" suffix
-        return try std.mem.concat(allocator, u8, &[_][]const u8{ path, enc_suffix });
-    } else {
-        // Decrypting: remove ".enc" suffix if present
-        if (hasEncSuffix(path)) {
-            return try allocator.dupe(u8, path[0 .. path.len - enc_suffix.len]);
-        }
-        // No suffix to remove, return null to indicate no transformation
-        return null;
-    }
+/// Add the .enc suffix to a path
+fn addEncSuffix(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return try std.mem.concat(allocator, u8, &[_][]const u8{ path, enc_suffix });
+}
+
+/// Remove the .enc suffix from a path, or return null when it has none
+fn stripEncSuffix(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    if (!hasEncSuffix(path)) return null;
+    return try allocator.dupe(u8, path[0 .. path.len - enc_suffix.len]);
+}
+
+/// Apply the suffix change of an operation to a path.
+/// Returns null when decryption finds no suffix to remove.
+fn applyEncSuffix(allocator: std.mem.Allocator, path: []const u8, is_encrypt: bool) !?[]u8 {
+    return if (is_encrypt) try addEncSuffix(allocator, path) else try stripEncSuffix(allocator, path);
 }
 
 /// Parse command-line options from arguments
@@ -459,14 +407,31 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     std.debug.print("  turbocrypt config set-key {s}\n", .{output_path});
 }
 
+/// A file found by the scan, kept for the processing phase
+const ScannedFile = struct {
+    source_path: []const u8,
+    dest_path: []const u8,
+    size: u64,
+};
+
+/// Files found by a scan
+const ScanResult = struct {
+    files: std.ArrayList(ScannedFile) = .empty,
+    total_bytes: u64 = 0,
+
+    fn deinit(self: *ScanResult, allocator: std.mem.Allocator) void {
+        for (self.files.items) |file| {
+            allocator.free(file.source_path);
+            allocator.free(file.dest_path);
+        }
+        self.files.deinit(allocator);
+    }
+};
+
 /// Processing mode for directory scanning
 const ProcessingMode = union(enum) {
-    /// Scan only - collect file paths for later processing
-    scan_only: struct {
-        file_paths: std.ArrayList([]const u8),
-        file_sizes: std.ArrayList(u64),
-        total_bytes: u64,
-    },
+    /// Scan only - collect files for later processing
+    scan_only: ScanResult,
     /// Scan and process - submit files to worker pool immediately
     scan_and_process: struct {
         worker_pool: *worker.WorkerPool,
@@ -504,50 +469,107 @@ const DirectoryScanContext = struct {
             return;
         }
 
-        // Shared logic for directory handling
         if (is_directory) {
-            try handleDirectory(
-                relative_path,
-                self.dest_base,
-                self.encrypt_filenames,
-                self.is_encrypt,
-                self.key,
-                self.allocator,
-                self.io,
-            );
+            try self.handleDirectory(relative_path);
             return;
         }
 
-        // Shared logic for enc_suffix filtering
-        if (self.enc_suffix and !self.is_encrypt) {
-            if (!hasEncSuffix(full_path)) {
-                return; // Skip this file
-            }
-        }
+        const dest_relative_path = (try self.destRelativePath(relative_path)) orelse return;
+        defer self.allocator.free(dest_relative_path);
 
-        // Shared logic for file size retrieval
         const file = try std.Io.Dir.openFile(.cwd(), self.io, full_path, .{});
         defer file.close(self.io);
         const file_size = (try file.stat(self.io)).size;
 
-        // Mode-specific processing
         switch (self.mode) {
             .scan_only => |*scan| {
-                const stored_path = try self.allocator.dupe(u8, full_path);
-                try scan.file_paths.append(self.allocator, stored_path);
-                try scan.file_sizes.append(self.allocator, file_size);
+                const source_path = try self.allocator.dupe(u8, full_path);
+                errdefer self.allocator.free(source_path);
+                const dest_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.dest_base, dest_relative_path });
+                errdefer self.allocator.free(dest_path);
+                try scan.files.append(self.allocator, .{
+                    .source_path = source_path,
+                    .dest_path = dest_path,
+                    .size = file_size,
+                });
                 scan.total_bytes += file_size;
             },
             .scan_and_process => |proc| {
-                try self.processScanAndProcessFile(relative_path, full_path, file_size, proc.worker_pool, proc.progress_tracker);
+                try self.submitFile(full_path, dest_relative_path, file_size, proc.worker_pool, proc.progress_tracker);
             },
         }
     }
 
-    fn processScanAndProcessFile(
+    /// Create the matching directory under the destination root
+    fn handleDirectory(self: *DirectoryScanContext, relative_path: []const u8) !void {
+        var transformed: ?[]u8 = null;
+        defer if (transformed) |name| self.allocator.free(name);
+        if (self.encrypt_filenames) {
+            transformed = try self.transformPath(relative_path, "directory name");
+        }
+
+        const dest_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ self.dest_base, transformed orelse relative_path });
+        defer self.allocator.free(dest_dir);
+        utils.ensureDirectory(dest_dir, self.io) catch |err| {
+            std.debug.print("\n[ERROR] Failed to create directory: {s}\n", .{dest_dir});
+            std.debug.print("        Reason: {}\n", .{err});
+            if (self.encrypt_filenames and !self.is_encrypt) {
+                std.debug.print("        Suggestion: Directory name may be corrupted or encrypted with a different key\n", .{});
+            }
+            return err;
+        };
+    }
+
+    /// Compute where a file goes, relative to the destination root.
+    /// Returns null when the file must be skipped.
+    /// The .enc suffix belongs to the encrypted name, so it is added before
+    /// encryption and removed after decryption.
+    fn destRelativePath(self: *DirectoryScanContext, relative_path: []const u8) !?[]u8 {
+        if (self.is_encrypt) {
+            const named = if (self.enc_suffix)
+                try addEncSuffix(self.allocator, relative_path)
+            else
+                try self.allocator.dupe(u8, relative_path);
+            if (!self.encrypt_filenames) return named;
+            defer self.allocator.free(named);
+            return try self.transformPath(named, "filename");
+        }
+
+        const named = if (self.encrypt_filenames)
+            try self.transformPath(relative_path, "filename")
+        else
+            try self.allocator.dupe(u8, relative_path);
+        if (!self.enc_suffix) return named;
+        defer self.allocator.free(named);
+        return try stripEncSuffix(self.allocator, named);
+    }
+
+    /// Encrypt or decrypt every component of a path, and explain failures to the user
+    fn transformPath(self: *DirectoryScanContext, path: []const u8, what: []const u8) ![]u8 {
+        return (if (self.is_encrypt)
+            filename_crypto.encryptPath(self.allocator, path, self.key)
+        else
+            filename_crypto.decryptPath(self.allocator, path, self.key)) catch |err| {
+            std.debug.print("\n[ERROR] Failed to {s} {s}: {s}\n", .{
+                if (self.is_encrypt) "encrypt" else "decrypt",
+                what,
+                path,
+            });
+            std.debug.print("        Reason: {}\n", .{err});
+            if (err == filename_crypto.FilenameError.EncryptedFilenameTooLong) {
+                std.debug.print("        Suggestion: The {s} is too long. Encrypted names must fit within 255 bytes.\n", .{what});
+                std.debug.print("                   Consider shortening it (max ~205 bytes for encryption).\n", .{});
+            } else if (!self.is_encrypt) {
+                std.debug.print("        Suggestion: Ensure the {s} was encrypted with --encrypted-filenames using the same key\n", .{what});
+            }
+            return err;
+        };
+    }
+
+    fn submitFile(
         self: *DirectoryScanContext,
-        relative_path: []const u8,
         full_path: []const u8,
+        dest_relative_path: []const u8,
         file_size: u64,
         worker_pool: *worker.WorkerPool,
         progress_tracker: *progress.ProgressTracker,
@@ -556,66 +578,17 @@ const DirectoryScanContext = struct {
         progress_tracker.addTotalFile();
         progress_tracker.addTotalBytes(file_size);
 
-        // Compute the destination relative path with suffix handling
-        var dest_relative_path: []const u8 = undefined;
-        var needs_free = false;
-
-        if (self.enc_suffix) {
-            const transformed = try applyEncSuffix(self.allocator, relative_path, self.is_encrypt);
-            if (transformed) |t| {
-                dest_relative_path = t;
-                needs_free = true;
-            } else {
-                dest_relative_path = relative_path;
-            }
-        } else {
-            dest_relative_path = relative_path;
-        }
-
-        // Apply filename encryption if enabled
-        var encrypted_relative_path: ?[]u8 = null;
-        defer if (encrypted_relative_path) |p| self.allocator.free(p);
-
-        if (self.encrypt_filenames) {
-            encrypted_relative_path = (if (self.is_encrypt)
-                filename_crypto.encryptPath(self.allocator, dest_relative_path, self.key)
-            else
-                filename_crypto.decryptPath(self.allocator, dest_relative_path, self.key)) catch |err| {
-                if (needs_free) self.allocator.free(dest_relative_path);
-                std.debug.print("\n[ERROR] Failed to {s} filename: {s}\n", .{
-                    if (self.is_encrypt) "encrypt" else "decrypt",
-                    relative_path,
-                });
-                std.debug.print("        Reason: {}\n", .{err});
-                if (err == filename_crypto.FilenameError.EncryptedFilenameTooLong) {
-                    std.debug.print("        Suggestion: Filename is too long. Encrypted names must fit within 255 bytes.\n", .{});
-                    std.debug.print("                   Consider shortening the filename (max ~205 bytes for encryption).\n", .{});
-                } else if (!self.is_encrypt) {
-                    std.debug.print("        Suggestion: Ensure the file was encrypted with --encrypted-filenames using the same key\n", .{});
-                }
-                return err;
-            };
-
-            if (needs_free) self.allocator.free(dest_relative_path);
-            dest_relative_path = encrypted_relative_path.?;
-            needs_free = false; // encrypted_relative_path will be freed by defer
-        }
-
-        // Defer freeing dest_relative_path after we've used it
-        defer if (needs_free) self.allocator.free(dest_relative_path);
-
-        // Prepare source and destination paths
-        // These will be freed by the worker pool after processing
+        // The worker pool frees both paths after processing
         const source_path = try self.allocator.dupe(u8, full_path);
+        errdefer self.allocator.free(source_path);
         const dest_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.dest_base, dest_relative_path });
+        errdefer self.allocator.free(dest_path);
 
         // Ensure destination directory exists
         if (std.fs.path.dirname(dest_path)) |dest_dir| {
             utils.ensureDirectory(dest_dir, self.io) catch |err| {
-                self.allocator.free(source_path);
-                self.allocator.free(dest_path);
                 std.debug.print("\n[ERROR] Failed to create destination directory: {s}\n", .{dest_dir});
-                std.debug.print("        For file: {s}\n", .{relative_path});
+                std.debug.print("        For file: {s}\n", .{full_path});
                 std.debug.print("        Reason: {}\n", .{err});
                 if (self.encrypt_filenames and !self.is_encrypt) {
                     std.debug.print("        Suggestion: Filename may be corrupted or encrypted with a different key\n", .{});
@@ -624,15 +597,12 @@ const DirectoryScanContext = struct {
             };
         }
 
-        // Submit job to worker pool immediately (concurrent processing)
-        const job = worker.FileJob{
+        try worker_pool.submitJob(.{
             .source_path = source_path,
             .dest_path = dest_path,
             .operation = if (self.is_encrypt) .encrypt else .decrypt,
             .file_size = file_size,
-        };
-
-        try worker_pool.submitJob(job);
+        });
     }
 };
 
@@ -736,59 +706,43 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
                 .io = io,
-                .mode = .{ .scan_only = .{
-                    .file_paths = .empty,
-                    .file_sizes = .empty,
-                    .total_bytes = 0,
-                } },
+                .mode = .{ .scan_only = .{} },
             };
-            defer {
-                for (scan_ctx.mode.scan_only.file_paths.items) |path| allocator.free(path);
-                scan_ctx.mode.scan_only.file_paths.deinit(allocator);
-                scan_ctx.mode.scan_only.file_sizes.deinit(allocator);
-            }
+            defer scan_ctx.mode.scan_only.deinit(allocator);
 
             utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
                 std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
                 return err;
             };
 
+            const scanned = &scan_ctx.mode.scan_only;
             if (opts.dry_run) {
-                std.debug.print("[DRY RUN] Would process {d} files...\n", .{scan_ctx.mode.scan_only.file_paths.items.len});
+                std.debug.print("[DRY RUN] Would process {d} files...\n", .{scanned.files.items.len});
             } else {
-                std.debug.print("{s} {d} files...\n", .{ op_name_cap, scan_ctx.mode.scan_only.file_paths.items.len });
+                std.debug.print("{s} {d} files...\n", .{ op_name_cap, scanned.files.items.len });
             }
 
             // Phase 2: Process all collected files
-            var tracker = progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes, io);
+            var tracker = progress.ProgressTracker.init(scanned.files.items.len, scanned.total_bytes, io);
             var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
             defer pool.deinit();
 
             try tracker.startDisplay();
             defer tracker.stopDisplay();
 
-            for (scan_ctx.mode.scan_only.file_paths.items, scan_ctx.mode.scan_only.file_sizes.items) |file_path, file_size| {
-                const source_path_dup = try allocator.dupe(u8, file_path);
+            for (scanned.files.items) |file| {
+                const source_path_dup = try allocator.dupe(u8, file.source_path);
+                errdefer allocator.free(source_path_dup);
+                const dest_path_dup = try allocator.dupe(u8, file.dest_path);
+                errdefer allocator.free(dest_path_dup);
 
-                // For in-place with enc_suffix, modify destination path
-                const dest_path_dup = if (opts.enc_suffix) blk2: {
-                    const transformed = try applyEncSuffix(allocator, file_path, is_encrypt);
-                    if (transformed) |t| {
-                        break :blk2 t;
-                    } else {
-                        break :blk2 try allocator.dupe(u8, file_path);
-                    }
-                } else try allocator.dupe(u8, file_path);
-
-                const job = worker.FileJob{
+                try pool.submitJob(.{
                     .source_path = source_path_dup,
                     .dest_path = dest_path_dup,
                     .operation = if (is_encrypt) .encrypt else .decrypt,
-                    .file_size = file_size,
+                    .file_size = file.size,
                     .delete_source = opts.enc_suffix,
-                };
-
-                try pool.submitJob(job);
+                });
             }
 
             pool.waitAll();
@@ -950,45 +904,38 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             .exclude_patterns = opts.exclude_patterns,
             .ignore_symlinks = opts.ignore_symlinks,
             .io = io,
-            .mode = .{ .scan_only = .{
-                .file_paths = .empty,
-                .file_sizes = .empty,
-                .total_bytes = 0,
-            } },
+            .mode = .{ .scan_only = .{} },
         };
-        defer {
-            for (scan_ctx.mode.scan_only.file_paths.items) |path| allocator.free(path);
-            scan_ctx.mode.scan_only.file_paths.deinit(allocator);
-            scan_ctx.mode.scan_only.file_sizes.deinit(allocator);
-        }
+        defer scan_ctx.mode.scan_only.deinit(allocator);
 
         utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
             std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
             return err;
         };
 
+        const scanned = &scan_ctx.mode.scan_only;
         if (opts.dry_run) {
-            std.debug.print("[DRY RUN] Would verify {d} files...\n", .{scan_ctx.mode.scan_only.file_paths.items.len});
+            std.debug.print("[DRY RUN] Would verify {d} files...\n", .{scanned.files.items.len});
         } else {
-            std.debug.print("Verifying {d} files...\n", .{scan_ctx.mode.scan_only.file_paths.items.len});
+            std.debug.print("Verifying {d} files...\n", .{scanned.files.items.len});
         }
 
         // Verify all collected files
-        var tracker = progress.ProgressTracker.init(scan_ctx.mode.scan_only.file_paths.items.len, scan_ctx.mode.scan_only.total_bytes, io);
+        var tracker = progress.ProgressTracker.init(scanned.files.items.len, scanned.total_bytes, io);
         var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick, opts.dry_run, io);
         defer pool.deinit();
 
         try tracker.startDisplay();
         defer tracker.stopDisplay();
 
-        for (scan_ctx.mode.scan_only.file_paths.items, scan_ctx.mode.scan_only.file_sizes.items) |file_path, file_size| {
-            const source_path_dup = try allocator.dupe(u8, file_path);
+        for (scanned.files.items) |file| {
+            const source_path_dup = try allocator.dupe(u8, file.source_path);
 
             const job = worker.FileJob{
                 .source_path = source_path_dup,
                 .dest_path = null, // No destination for verify
                 .operation = .verify,
-                .file_size = file_size,
+                .file_size = file.size,
             };
 
             try pool.submitJob(job);
