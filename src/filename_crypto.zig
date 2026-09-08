@@ -105,7 +105,6 @@ pub fn encryptFilename(
 
         // Validate that encrypted filename fits within filesystem limit
         if (encoded.len > filesystem_filename_limit) {
-            allocator.free(encode_buf);
             return FilenameError.EncryptedFilenameTooLong;
         }
 
@@ -343,7 +342,8 @@ test "filename encryption length validation" {
     }
 
     // Test that filenames over ~205 bytes return EncryptedFilenameTooLong error
-    const unsafe_lengths = [_]usize{ 210, 215, 220 };
+    // The last length takes the heap path
+    const unsafe_lengths = [_]usize{ 210, 215, 220, max_stack_filename_length + 1 };
     for (unsafe_lengths) |len| {
         const test_name = try allocator.alloc(u8, len);
         defer allocator.free(test_name);
