@@ -11,6 +11,7 @@ const filename_crypto = @import("filename_crypto.zig");
 const prompt = @import("prompt.zig");
 const password = @import("password.zig");
 const bench = @import("bench.zig");
+const git_cmd = @import("git/cmd.zig");
 const build_options = @import("build_options");
 
 const usage_text =
@@ -63,6 +64,11 @@ const usage_text =
     \\
     \\  turbocrypt config show
     \\      Show the current configuration
+    \\
+    \\  turbocrypt git <subcommand> [options]
+    \\      Keep private files in a public git repository
+    \\      Subcommands: init, unlock, export-key, add, rm, status, encrypt, decrypt
+    \\      Run "turbocrypt git help" for details
     \\
     \\  turbocrypt bench
     \\      Run performance benchmarks
@@ -1721,6 +1727,10 @@ pub fn main(init: std.process.Init) !void {
         cmdConfig(command_args, allocator, io, init.environ_map) catch {
             std.process.exit(1);
         };
+    } else if (std.mem.eql(u8, command, "git")) {
+        git_cmd.run(command_args, allocator, io, init.environ_map) catch {
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, command, "bench")) {
         bench.run(allocator, io) catch {
             std.process.exit(1);
@@ -1743,4 +1753,10 @@ test {
     _ = @import("worker.zig");
     _ = @import("progress.zig");
     _ = @import("filename_crypto.zig");
+    _ = @import("git/manifest.zig");
+    _ = @import("git/repo.zig");
+    _ = @import("git/sync.zig");
+    _ = @import("git/hooks.zig");
+    _ = @import("git/cmd.zig");
+    _ = @import("git/integration_test.zig");
 }

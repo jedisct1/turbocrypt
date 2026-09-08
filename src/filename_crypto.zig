@@ -23,6 +23,12 @@ pub const FilenameError = error{
     EncryptedFilenameTooLong,
 };
 
+/// Errors of the strict decryption used for names that come from a git store
+pub const StrictError = error{
+    InvalidEncryptedFilename,
+    UnsafeDecryptedFilename,
+};
+
 /// Encrypt a single filename component using HCTR2 and base91 encoding
 ///
 /// The filename is padded to a minimum of 16 bytes (HCTR2 minimum block size) with null bytes (0x00),
@@ -185,6 +191,90 @@ pub fn decryptFilename(
         // Return unpadded plaintext
         return allocator.dupe(u8, padded[0..actual_len]);
     }
+}
+
+/// Decrypt a name that comes from an untrusted place, such as a git store.
+///
+/// decryptFilename returns its input when decoding fails, which hides a wrong key or a planted name.
+/// This variant fails instead.
+/// The result must be usable as one path component, and only the canonical encoding of that component is accepted.
+///
+/// Returns: Owned slice that caller must free
+pub fn decryptFilenameStrict(
+    allocator: std.mem.Allocator,
+    encrypted_name: []const u8,
+    filename_key: [16]u8,
+) ![]u8 {
+    if (encrypted_name.len == 0 or encrypted_name.len > filesystem_filename_limit) {
+        return StrictError.InvalidEncryptedFilename;
+    }
+
+    const decode_buf = try allocator.alloc(u8, base91.filesystem.calcDecodedSizeUpperBound(encrypted_name.len));
+    defer allocator.free(decode_buf);
+    const ciphertext = base91.filesystem.decode(decode_buf, encrypted_name) catch {
+        return StrictError.InvalidEncryptedFilename;
+    };
+
+    const padded = try allocator.alloc(u8, ciphertext.len);
+    defer allocator.free(padded);
+    var cipher = hctr2.Hctr2_128.init(filename_key);
+    cipher.decrypt(padded, ciphertext, &[_]u8{}) catch {
+        return StrictError.InvalidEncryptedFilename;
+    };
+
+    const name = padded[0 .. std.mem.indexOfScalar(u8, padded, 0) orelse padded.len];
+    if (!isSafeComponent(name)) {
+        return StrictError.UnsafeDecryptedFilename;
+    }
+
+    const canonical = try encryptFilename(allocator, name, filename_key);
+    defer allocator.free(canonical);
+    if (!std.mem.eql(u8, canonical, encrypted_name)) {
+        return StrictError.InvalidEncryptedFilename;
+    }
+
+    return allocator.dupe(u8, name);
+}
+
+/// A decrypted name is safe when it cannot leave its directory and cannot confuse a terminal or a shell script that prints it.
+pub fn isSafeComponent(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+    for (name) |c| {
+        if (c == '/' or c == '\\' or c < 0x20 or c == 0x7f) return false;
+    }
+    return true;
+}
+
+/// Decrypt a relative path from a git store, one component at a time.
+///
+/// Empty components are rejected, so an absolute path or a doubled separator is an error rather than being silently dropped.
+///
+/// Returns: Owned slice that caller must free
+pub fn decryptPathStrict(
+    allocator: std.mem.Allocator,
+    encrypted_path: []const u8,
+    filename_key: [16]u8,
+) ![]u8 {
+    var components: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (components.items) |component| {
+            allocator.free(component);
+        }
+        components.deinit(allocator);
+    }
+
+    var it = std.mem.splitScalar(u8, encrypted_path, path_sep);
+    while (it.next()) |component| {
+        if (component.len == 0) return StrictError.InvalidEncryptedFilename;
+
+        const decrypted = try decryptFilenameStrict(allocator, component, filename_key);
+        errdefer allocator.free(decrypted);
+        try components.append(allocator, decrypted);
+    }
+    if (components.items.len == 0) return StrictError.InvalidEncryptedFilename;
+
+    return std.mem.join(allocator, path_sep_str, components.items);
 }
 
 /// Encrypt a full path by encrypting each component separately
@@ -352,4 +442,75 @@ test "filename encryption length validation" {
         const result = encryptFilename(allocator, test_name, key);
         try testing.expectError(FilenameError.EncryptedFilenameTooLong, result);
     }
+}
+
+test "strict decrypt round trips and rejects garbage" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const key: [16]u8 = @splat(0x42);
+    const other_key: [16]u8 = @splat(0x43);
+
+    const long_name: [200]u8 = @splat('a');
+    const names = [_][]const u8{ "AGENT.md", "r\u{e9}sum\u{e9}.txt", &long_name };
+    for (names) |name| {
+        const encrypted = try encryptFilename(allocator, name, key);
+        defer allocator.free(encrypted);
+
+        const decrypted = try decryptFilenameStrict(allocator, encrypted, key);
+        defer allocator.free(decrypted);
+        try testing.expectEqualStrings(name, decrypted);
+    }
+
+    try testing.expectError(StrictError.InvalidEncryptedFilename, decryptFilenameStrict(allocator, "not base91 \x01", key));
+    try testing.expectError(StrictError.InvalidEncryptedFilename, decryptFilenameStrict(allocator, "", key));
+    try testing.expectError(StrictError.InvalidEncryptedFilename, decryptFilenameStrict(allocator, "abc", key));
+
+    const encrypted = try encryptFilename(allocator, "AGENT.md", key);
+    defer allocator.free(encrypted);
+    const wrong = decryptFilenameStrict(allocator, encrypted, other_key);
+    if (wrong) |name| allocator.free(name) else |err| {
+        try testing.expect(err == StrictError.InvalidEncryptedFilename or err == StrictError.UnsafeDecryptedFilename);
+    }
+}
+
+test "strict decrypt rejects names that leave the directory" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const key: [16]u8 = @splat(0x42);
+
+    const planted = [_][]const u8{ "a/b", "tab\there" };
+    for (planted) |name| {
+        const encrypted = try encryptFilename(allocator, name, key);
+        defer allocator.free(encrypted);
+        try testing.expectError(StrictError.UnsafeDecryptedFilename, decryptFilenameStrict(allocator, encrypted, key));
+    }
+
+    var padded: [16]u8 = @splat(0);
+    @memcpy(padded[0..2], "..");
+    var cipher = hctr2.Hctr2_128.init(key);
+    var ciphertext: [16]u8 = undefined;
+    try cipher.encrypt(&ciphertext, &padded, &[_]u8{});
+    var encode_buf: [64]u8 = undefined;
+    const encoded = try base91.filesystem.encode(&encode_buf, &ciphertext);
+    try testing.expectError(StrictError.UnsafeDecryptedFilename, decryptFilenameStrict(allocator, encoded, key));
+}
+
+test "strict path decrypt" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const key: [16]u8 = @splat(0x42);
+    const encrypted_path = try encryptPath(allocator, "docs/internal.md", key);
+    defer allocator.free(encrypted_path);
+
+    const decrypted = try decryptPathStrict(allocator, encrypted_path, key);
+    defer allocator.free(decrypted);
+    try testing.expectEqualStrings("docs/internal.md", decrypted);
+
+    const with_leading_sep = try std.fmt.allocPrint(allocator, "/{s}", .{encrypted_path});
+    defer allocator.free(with_leading_sep);
+    try testing.expectError(StrictError.InvalidEncryptedFilename, decryptPathStrict(allocator, with_leading_sep, key));
+    try testing.expectError(StrictError.InvalidEncryptedFilename, decryptPathStrict(allocator, "", key));
 }

@@ -82,6 +82,13 @@ pub fn build(b: *std.Build) void {
         exe.root_module.link_libc = true;
     }
 
+    // macOS git turns decomposed file names into their composed form.
+    // The git integration does the same through iconv, like git itself.
+    if (target.result.os.tag == .macos) {
+        exe.root_module.link_libc = true;
+        exe.root_module.linkSystemLibrary("iconv", .{});
+    }
+
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
     // step). By default the install prefix is `zig-out/` but can be overridden
@@ -124,6 +131,13 @@ pub fn build(b: *std.Build) void {
     // A top level step for running all tests.
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
+
+    // The git integration scenario drives the installed binary through real hooks in throwaway repositories, which unit tests cannot do.
+    const git_e2e = b.addSystemCommand(&.{ "sh", "tests/git_e2e.sh" });
+    git_e2e.addArtifactArg(exe);
+    git_e2e.has_side_effects = true;
+    const git_e2e_step = b.step("test-git", "Run the git integration scenario with real hooks");
+    git_e2e_step.dependOn(&git_e2e.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

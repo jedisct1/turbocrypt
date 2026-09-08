@@ -91,6 +91,27 @@ pub fn ensureDirectory(path: []const u8, io: std.Io) !void {
     };
 }
 
+/// Write a whole private file in one go.
+pub fn writePrivateFile(path: []const u8, data: []const u8, io: std.Io) !void {
+    const file = try createPrivateFile(path, .{}, io);
+    defer file.close(io);
+    try file.writeStreamingAll(io, data);
+}
+
+/// True when one of the strings equals the needle.
+pub fn containsString(list: []const []const u8, needle: []const u8) bool {
+    for (list) |item| {
+        if (std.mem.eql(u8, item, needle)) return true;
+    }
+    return false;
+}
+
+/// Free a list of owned strings and the list itself.
+pub fn freeList(allocator: std.mem.Allocator, list: []const []u8) void {
+    for (list) |item| allocator.free(item);
+    allocator.free(list);
+}
+
 /// Get the directory part of a path
 pub fn dirname(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
     const dir = std.fs.path.dirname(path) orelse "";

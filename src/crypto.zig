@@ -1,11 +1,14 @@
 const std = @import("std");
 const Aegis128X2 = std.crypto.aead.aegis.Aegis128X2;
-const Aegis128LMac_128 = std.crypto.auth.aegis.Aegis128LMac_128;
+const Aegis128X2Mac_128 = std.crypto.auth.aegis.Aegis128X2Mac_128;
+const TurboShake128 = std.crypto.hash.sha3.TurboShake128(null);
 
 pub const key_length = 16;
 pub const nonce_length = 16;
 pub const tag_length = 16;
 pub const mac_length = 16;
+pub const fingerprint_length = mac_length;
+pub const cipher_id_length = mac_length;
 pub const header_size = nonce_length + mac_length; // 32 bytes
 pub const overhead_size = header_size + tag_length; // 48 bytes
 
@@ -17,20 +20,22 @@ pub const DerivedKeys = struct {
     header_mac_key: [16]u8,
     encryption_key: [16]u8,
     filename_key: [16]u8,
+    fingerprint_key: [16]u8,
+    cipher_id_key: [16]u8,
 };
 
-/// Derive three separate keys from the master key using TurboSHAKE128
+/// Derive five separate keys from the master key using TurboSHAKE128
 /// Input: master_key || "turbocrypt" || ("-" || context if provided)
-/// Output: 48 bytes split into three 16-byte keys
+/// Output: 80 bytes split into five 16-byte keys
+///
+/// The last two keys came later than the first three.
+/// TurboSHAKE is an XOF, so squeezing more bytes leaves the first 48 unchanged and every file encrypted before that addition still decrypts.
 ///
 /// The optional context parameter allows deriving different keys from the same master key.
 /// This enables encrypting different directories with cryptographically independent keys
 /// while using a single master key. The same context must be used for both encryption and decryption.
 pub fn deriveKeys(master_key: [key_length]u8, context: ?[]const u8) DerivedKeys {
-    // Import TurboShake128 from std.crypto.hash.sha3
-    const sha3 = @import("std").crypto.hash.sha3;
-    const TurboShake = sha3.TurboShake128(null);
-    var shake = TurboShake.init(.{});
+    var shake = TurboShake128.init(.{});
 
     // Feed input: master_key || "turbocrypt" || ("-" || context if provided)
     shake.update(&master_key);
@@ -44,31 +49,51 @@ pub fn deriveKeys(master_key: [key_length]u8, context: ?[]const u8) DerivedKeys 
         }
     }
 
-    // Extract 48 bytes
-    var output: [48]u8 = undefined;
+    var output: [80]u8 = undefined;
     shake.squeeze(&output);
 
-    // Split into three 16-byte keys
     return DerivedKeys{
         .header_mac_key = output[0..16].*,
         .encryption_key = output[16..32].*,
         .filename_key = output[32..48].*,
+        .fingerprint_key = output[48..64].*,
+        .cipher_id_key = output[64..80].*,
     };
 }
 
+/// Keyed fingerprint of a plaintext.
+///
+/// The git integration stores it locally to tell whether a plain file changed since the last sync.
+/// A keyed value keeps a leaked state file from confirming guesses about file contents.
+pub fn fingerprint(plaintext: []const u8, fingerprint_key: [key_length]u8) [fingerprint_length]u8 {
+    return keyedMac(plaintext, fingerprint_key);
+}
+
+/// Identity of a complete ciphertext, a MAC under its own derived key.
+///
+/// The nonce and the tag alone do not identify the bytes: a flipped body byte keeps both and only fails at decryption.
+/// A MAC over everything does.
+/// Only a key holder could craft a second preimage, and a key holder can already write any valid ciphertext, so a MAC is enough.
+pub fn ciphertextId(encrypted: []const u8, cipher_id_key: [key_length]u8) [cipher_id_length]u8 {
+    return keyedMac(encrypted, cipher_id_key);
+}
+
+/// MAC of any data under one of the derived keys.
+pub fn keyedMac(data: []const u8, key: [key_length]u8) [mac_length]u8 {
+    var mac: [mac_length]u8 = undefined;
+    Aegis128X2Mac_128.create(&mac, data, &key);
+    return mac;
+}
+
 /// Generate a header MAC for the given nonce and header_mac_key
-/// MAC = Aegis128LMac_128(header_mac_key, "TC01" || nonce)
+/// MAC = Aegis128X2Mac_128(header_mac_key, "TC01" || nonce)
 fn computeHeaderMac(nonce: [nonce_length]u8, header_mac_key: [key_length]u8) [mac_length]u8 {
     // Construct message: "TC01" || nonce (4 + 16 = 20 bytes)
     var msg: [domain_separator.len + nonce_length]u8 = undefined;
     @memcpy(msg[0..domain_separator.len], domain_separator);
     @memcpy(msg[domain_separator.len..], &nonce);
 
-    // Compute MAC
-    var mac: [mac_length]u8 = undefined;
-    Aegis128LMac_128.create(&mac, &msg, &header_mac_key);
-
-    return mac;
+    return keyedMac(&msg, header_mac_key);
 }
 
 /// Parsed encrypted data structure
@@ -113,6 +138,20 @@ pub fn encrypt(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) ![]u8 {
+    return encryptBound(plaintext, "", derived_keys, allocator, io);
+}
+
+/// Encrypt a file that belongs to a fixed relative path.
+///
+/// The path is authenticated as associated data, so the ciphertext only decrypts at that path.
+/// Moving or swapping entries is detected.
+pub fn encryptBound(
+    plaintext: []const u8,
+    path: []const u8,
+    derived_keys: DerivedKeys,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+) ![]u8 {
     // Generate random nonce
     var nonce: [nonce_length]u8 = undefined;
     io.random(&nonce);
@@ -138,7 +177,7 @@ pub fn encrypt(
         ciphertext,
         &tag,
         plaintext,
-        &[_]u8{}, // empty associated data
+        path,
         nonce,
         derived_keys.encryption_key,
     );
@@ -197,6 +236,16 @@ pub fn decrypt(
     derived_keys: DerivedKeys,
     allocator: std.mem.Allocator,
 ) ![]u8 {
+    return decryptBound(encrypted, "", derived_keys, allocator);
+}
+
+/// Decrypt a file that was encrypted with encryptBound for the same path.
+pub fn decryptBound(
+    encrypted: []const u8,
+    path: []const u8,
+    derived_keys: DerivedKeys,
+    allocator: std.mem.Allocator,
+) ![]u8 {
     // Parse encrypted data
     const parsed = try parseEncrypted(encrypted);
 
@@ -215,7 +264,7 @@ pub fn decrypt(
         plaintext,
         parsed.ciphertext,
         parsed.tag.*,
-        &[_]u8{}, // empty associated data
+        path,
         parsed.nonce.*,
         derived_keys.encryption_key,
     );
@@ -494,4 +543,75 @@ test "verify corrupted ciphertext fails" {
     // Verify should fail with AuthenticationFailed
     const result = verify(encrypted, derived, allocator);
     try testing.expectError(error.AuthenticationFailed, result);
+}
+
+test "derived keys keep their first 48 bytes" {
+    const testing = std.testing;
+
+    const key: [key_length]u8 = @splat(7);
+    const derived = deriveKeys(key, "ctx");
+
+    var shake = TurboShake128.init(.{});
+    shake.update(&key);
+    shake.update("turbocrypt");
+    shake.update("-");
+    shake.update("ctx");
+    var expected: [48]u8 = undefined;
+    shake.squeeze(&expected);
+
+    try testing.expectEqualSlices(u8, expected[0..16], &derived.header_mac_key);
+    try testing.expectEqualSlices(u8, expected[16..32], &derived.encryption_key);
+    try testing.expectEqualSlices(u8, expected[32..48], &derived.filename_key);
+}
+
+test "fingerprint is stable and key dependent" {
+    const testing = std.testing;
+
+    const a = deriveKeys(@splat(1), null);
+    const b = deriveKeys(@splat(2), null);
+
+    const fp1 = fingerprint("private notes", a.fingerprint_key);
+    const fp2 = fingerprint("private notes", a.fingerprint_key);
+    const fp3 = fingerprint("private notes!", a.fingerprint_key);
+    const fp4 = fingerprint("private notes", b.fingerprint_key);
+
+    try testing.expectEqualSlices(u8, &fp1, &fp2);
+    try testing.expect(!std.mem.eql(u8, &fp1, &fp3));
+    try testing.expect(!std.mem.eql(u8, &fp1, &fp4));
+}
+
+test "ciphertext id sees a flipped body byte" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    const derived = deriveKeys(@splat(3), null);
+    const encrypted = try encrypt("some content that is long enough", derived, allocator, io);
+    defer allocator.free(encrypted);
+
+    const before = ciphertextId(encrypted, derived.cipher_id_key);
+    encrypted[header_size + 4] ^= 0x01;
+    const after = ciphertextId(encrypted, derived.cipher_id_key);
+
+    try testing.expect(!std.mem.eql(u8, &before, &after));
+    try verifyHeaderOnly(encrypted, derived);
+    try testing.expectError(error.AuthenticationFailed, decrypt(encrypted, derived, allocator));
+}
+
+test "bound ciphertext only decrypts at its path" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    const derived = deriveKeys(@splat(4), null);
+    const encrypted = try encryptBound("deploy notes", "docs/internal.md", derived, allocator, io);
+    defer allocator.free(encrypted);
+
+    const plain = try decryptBound(encrypted, "docs/internal.md", derived, allocator);
+    defer allocator.free(plain);
+    try testing.expectEqualStrings("deploy notes", plain);
+
+    try verifyHeaderOnly(encrypted, derived);
+    try testing.expectError(error.AuthenticationFailed, decryptBound(encrypted, "docs/other.md", derived, allocator));
+    try testing.expectError(error.AuthenticationFailed, decrypt(encrypted, derived, allocator));
 }

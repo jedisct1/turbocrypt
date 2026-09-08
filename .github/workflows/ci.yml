@@ -28,5 +28,8 @@ jobs:
       - name: Run tests
         run: zig build test
 
+      - name: Git integration scenario
+        run: zig build test-git
+
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast

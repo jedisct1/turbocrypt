@@ -28,12 +28,14 @@ A fast, easy-to-use, and secure command-line tool for encrypting and decrypting 
     - [Verifying File Integrity](#verifying-file-integrity)
     - [Listing Encrypted Directory Contents](#listing-encrypted-directory-contents)
     - [Setting Up Defaults](#setting-up-defaults)
+    - [Private Files in a Git Repository](#private-files-in-a-git-repository)
   - [All Commands](#all-commands)
     - [Key Management](#key-management)
     - [Encryption](#encryption)
     - [Decryption](#decryption)
     - [Verification](#verification)
     - [Configuration](#configuration)
+    - [Git](#git)
     - [Performance Testing](#performance-testing)
   - [Command-Line Options](#command-line-options)
   - [File Portability](#file-portability)
@@ -50,6 +52,10 @@ A fast, easy-to-use, and secure command-line tool for encrypting and decrypting 
     - ["Access denied" errors with large files](#access-denied-errors-with-large-files)
     - [Performance is slow](#performance-is-slow)
     - [Out of memory errors](#out-of-memory-errors)
+    - ["nothing to commit" after editing a private file](#nothing-to-commit-after-editing-a-private-file)
+    - ["commit refused, private files are tracked by git"](#commit-refused-private-files-are-tracked-by-git)
+    - [A merge conflict on a private file](#a-merge-conflict-on-a-private-file)
+    - [Hooks do not run from a GUI client](#hooks-do-not-run-from-a-gui-client)
   - [Environment Variables](#environment-variables)
 
 ## What Makes TurboCrypt Different
@@ -357,6 +363,80 @@ Now you can run commands without repeating options:
 turbocrypt encrypt source/ dest/
 ```
 
+### Private Files in a Git Repository
+
+A public repository shows every tracked file to everyone. Sometimes a few
+files should stay readable by the maintainers only, such as an `AGENT.md`
+with internal instructions or deployment notes in `docs/`. TurboCrypt can
+keep those files encrypted in the repository while you edit them in clear.
+
+The encrypted copies live in a committed `.enc/` directory. Their names and
+their contents look random. Git hooks refresh `.enc/` before every commit
+and refresh the plain files after a checkout, a merge or a rebase. The
+plain files are kept out of commits by a local exclude rule. The list of
+private files is encrypted too.
+
+Set it up once, in the repository:
+
+```bash
+turbocrypt git init                  # creates a key, .enc/, .gitprivate and the hooks
+turbocrypt git add AGENT.md          # one file
+turbocrypt git add docs/internal.md
+turbocrypt git add ops/              # a whole directory, including future files
+git commit -m "Add private notes"    # the hook encrypts and stages .enc/
+git push
+```
+
+Share the key with the other maintainers, outside of git:
+
+```bash
+turbocrypt git export-key --password team.key
+```
+
+On another clone:
+
+```bash
+git clone git@github.com:acme/my-project
+cd my-project
+turbocrypt git unlock team.key       # installs the hooks and decrypts .enc/
+```
+
+From then on, daily work is plain git. Edit a private file and commit. Pull
+and switch branches. The hooks keep both sides in sync. A few things are
+worth knowing:
+
+- `git commit -a` decides "nothing to commit" before the hook runs. When only
+  private files changed, run `turbocrypt git encrypt` first, or run
+  `git commit` again. `turbocrypt git status` shows what is pending.
+- A new file inside a private directory is encrypted at the next commit. Run
+  `turbocrypt git encrypt` when you use `git commit -a`, because it cannot
+  stage a new store entry on its own.
+- `turbocrypt git rm docs/internal.md` makes a file public again. The plain
+  file stays on disk as an ordinary untracked file.
+- A private file that you edited is never overwritten by a pull. You get a
+  `conflict` line instead. `turbocrypt git decrypt --force <path>` takes the
+  upstream version, `turbocrypt git encrypt --force <path>` keeps yours.
+- `git clean -x` deletes the plain files, including edits made since the
+  last commit. `turbocrypt git decrypt` brings back the committed version.
+- `git stash --all` writes the plain files into local git objects. Avoid
+  it in a repository with private files.
+- Do not keep a private file on one branch and a tracked public file at
+  the same path on another. Switching to the branch that tracks it
+  overwrites the plain file, and no hook can bring an edit back.
+- The `.gitprivate` list accepts one path per line, `/path/to/file` for a
+  file and `/path/to/dir/` for a directory. No wildcards, no negation.
+
+What the public can see: how many private files exist, the shape of the
+directory tree, the size of each file, which ones are executable, and when
+they change. Two files with the same name in different directories get the
+same encrypted name. An entry cannot be moved or swapped without detection,
+but a whole commit can be reverted to an older one, which is why signed
+commits still matter.
+
+The feature works on macOS and Linux. Linked worktrees are not supported.
+The hooks are a convenience: `git commit --no-verify` skips them, and
+`git add -f` can stage a plain file on purpose.
+
 ## All Commands
 
 ### Key Management
@@ -479,6 +559,34 @@ turbocrypt config set-ignore-symlinks true
 turbocrypt config set-encrypted-filenames true
 ```
 
+### Git
+
+```bash
+# Set up the repository you are in
+turbocrypt git init
+
+# Set up a clone with the shared key
+turbocrypt git unlock team.key
+
+# Share the key
+turbocrypt git export-key --password team.key
+
+# Make files or directories private, or public again
+turbocrypt git add AGENT.md ops/
+turbocrypt git rm AGENT.md
+
+# See what is private and what is out of sync
+turbocrypt git status
+
+# Refresh the store from the plain files, or the plain files from the store
+turbocrypt git encrypt
+turbocrypt git decrypt
+
+# Resolve a file that changed on both sides
+turbocrypt git decrypt --force docs/internal.md   # take the upstream version
+turbocrypt git encrypt --force docs/internal.md   # keep yours
+```
+
 ### Performance Testing
 
 ```bash
@@ -589,6 +697,40 @@ On some systems, memory-mapped I/O (used for files >1MB) requires specific permi
 ### Out of memory errors
 
 Reduce the buffer size: `--buffer-size 1048576` (1MB instead of default 4MB)
+
+### "nothing to commit" after editing a private file
+
+Git decides whether there is something to commit before it runs the
+pre-commit hook, and the hook is what stages the encrypted file. Run
+`git commit` again. With `git commit -a`, run `turbocrypt git encrypt`
+first.
+
+### "commit refused, private files are tracked by git"
+
+A file listed in `.gitprivate` is also tracked in clear. Committing it
+would publish it. Run `git rm --cached -- <path>` and commit. Earlier
+commits still contain the file in clear.
+
+### A merge conflict on a private file
+
+Git cannot merge two encrypted versions. It leaves the entry unmerged and
+keeps your version in the working tree. Edit the plain file until it holds
+what you want, then run `turbocrypt git encrypt --force <path>` and commit.
+To look at the other side first, run `git checkout --theirs -- .enc/<name>`
+followed by `turbocrypt git decrypt --force <path>`.
+
+### "entry cannot be committed as it is"
+
+A file in `.enc/` does not decrypt: it was altered, or it came from a
+different key. Commits stop until it is fixed. When the plain file is
+present and correct, `turbocrypt git encrypt --force <path>` writes a fresh
+entry from it. Otherwise `turbocrypt git rm <path>` drops the entry.
+
+### Hooks do not run from a GUI client
+
+GUI clients run hooks with a minimal PATH. The installed hooks use the
+absolute path of the `turbocrypt` binary recorded at `init` time. When the
+binary moved, run `turbocrypt git init` again to refresh the hooks.
 
 ## Environment Variables
 

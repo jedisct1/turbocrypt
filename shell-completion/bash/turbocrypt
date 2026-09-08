@@ -10,8 +10,9 @@ _turbocrypt() {
         cword=$COMP_CWORD
     fi
 
-    local subcommands=(keygen change-password encrypt decrypt verify list config bench version)
+    local subcommands=(keygen change-password encrypt decrypt verify list config git bench version)
     local config_subs=(show set-key set-threads set-buffer-size add-exclude remove-exclude set-ignore-symlinks set-encrypted-filenames)
+    local git_subs=(init unlock export-key add rm status encrypt decrypt help)
 
     # find first non-option token (subcommand)
     local i token subcmd=""
@@ -94,6 +95,56 @@ _turbocrypt() {
             COMPREPLY=( $(compgen -d -- "$cur") )  # directories only
             return 0
             ;;
+        git)
+            local gitsub=""
+            for (( i = 2; i < COMP_CWORD; i++ )); do
+                token="${COMP_WORDS[i]}"
+                if [[ "${token}" != -* ]]; then
+                    gitsub="${token}"
+                    break
+                fi
+            done
+            if [[ -z "$gitsub" ]]; then
+                COMPREPLY=( $(compgen -W "${git_subs[*]}" -- "$cur") )
+                return 0
+            fi
+            case "$gitsub" in
+                init)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--key" -- "$cur") )
+                    elif [[ "$prev" == "--key" ]]; then
+                        COMPREPLY=( $(compgen -f -- "$cur") )
+                    fi
+                    return 0 ;;
+                unlock)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--force" -- "$cur") )
+                    else
+                        COMPREPLY=( $(compgen -f -- "$cur") )
+                    fi
+                    return 0 ;;
+                export-key)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--password" -- "$cur") )
+                    else
+                        COMPREPLY=( $(compgen -f -- "$cur") )
+                    fi
+                    return 0 ;;
+                encrypt|decrypt)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--force" -- "$cur") )
+                    else
+                        COMPREPLY=( $(compgen -f -- "$cur") )
+                    fi
+                    return 0 ;;
+                add|rm)
+                    COMPREPLY=( $(compgen -f -- "$cur") )
+                    return 0 ;;
+                *)
+                    return 0 ;;
+            esac
+            ;;
+
         config)
             # If just 'config' so far, show config subcommands and -h/--help
             if [[ ${COMP_CWORD} -le 2 || "${COMP_WORDS[COMP_CWORD-1]}" == "config" ]]; then

@@ -3,7 +3,7 @@
 # turbocrypt zsh completion — shows files for encrypt/decrypt/verify when current token is NOT an option
 
 local -a subs
-subs=( keygen change-password encrypt decrypt verify list config bench version )
+subs=( keygen change-password encrypt decrypt verify list config git bench version )
 
 # If completing the subcommand itself (pos 2), show subcommands + top-level help
 if (( CURRENT == 2 )); then
@@ -108,6 +108,22 @@ case $subcmd in
       set-buffer-size) compadd 4096 65536 1048576 8388608; return 0 ;;
       add-exclude|remove-exclude) _files; return 0 ;;
       set-ignore-symlinks|set-encrypted-filenames) compadd true false; return 0 ;;
+      *) return 0 ;;
+    esac
+    ;;
+  git)
+    local -a gsubs
+    gsubs=( init unlock export-key add rm status encrypt decrypt help )
+    if (( CURRENT == 3 )); then
+      compadd -a gsubs
+      return 0
+    fi
+    case ${words[3]} in
+      init) compadd -- --key; _files; return 0 ;;
+      unlock) compadd -- --force; _files; return 0 ;;
+      export-key) compadd -- --password; _files; return 0 ;;
+      encrypt|decrypt) compadd -- --force; _files; return 0 ;;
+      add|rm) _files; return 0 ;;
       *) return 0 ;;
     esac
     ;;
