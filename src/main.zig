@@ -308,7 +308,10 @@ fn promptForPasswordIfNeeded(allocator: std.mem.Allocator, opts: Options, io: st
         const key_path = try keyloader.resolveKeyPath(allocator, opts.key, environ_map);
         if (key_path) |path| {
             defer allocator.free(path);
-            break :blk try prompt.isKeyPasswordProtected(path, io);
+            break :blk prompt.isKeyPasswordProtected(path, io) catch |err| {
+                std.debug.print("Error: Cannot read key file '{s}': {}\n", .{ path, err });
+                return err;
+            };
         } else {
             // Check config-stored key
             var cfg = config_mod.load(allocator, io, environ_map) catch break :blk false;
@@ -353,7 +356,34 @@ fn handleKeyLoadError(err: anyerror, command_name: []const u8) !void {
         std.debug.print("Error: Invalid password for key file.\n", .{});
         return error.InvalidPassword;
     }
+    std.debug.print("Error: Cannot load the encryption key: {}\n", .{err});
     return err;
+}
+
+/// Tell the user which config file failed and why
+fn explainConfigError(action: []const u8, err: anyerror, allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) void {
+    const config_path = config_mod.getConfigFilePath(allocator, environ_map) catch {
+        std.debug.print("Error: Cannot {s} the config file: {}\n", .{ action, err });
+        return;
+    };
+    defer allocator.free(config_path);
+    std.debug.print("Error: Cannot {s} config file '{s}': {}\n", .{ action, config_path, err });
+}
+
+/// Load the config file, and explain a failure to the user
+fn loadConfig(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !config_mod.Config {
+    return config_mod.load(allocator, io, environ_map) catch |err| {
+        explainConfigError("read", err, allocator, environ_map);
+        return err;
+    };
+}
+
+/// Save the config file, and explain a failure to the user
+fn saveConfig(cfg: config_mod.Config, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
+    config_mod.save(cfg, allocator, io, environ_map) catch |err| {
+        explainConfigError("write", err, allocator, environ_map);
+        return err;
+    };
 }
 
 fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
@@ -1398,8 +1428,17 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             std.debug.print("Password verified successfully.\n", .{});
         }
 
-        // Save key data to config (in same format as file: 16 or 21 bytes)
-        try keyloader.setDefaultKey(allocator, key_data, io, environ_map);
+        // The config stores the key in the same format as the file: 16 or 21 bytes
+        var cfg = try loadConfig(allocator, io, environ_map);
+        defer cfg.deinit(allocator);
+
+        const new_key = try allocator.dupe(u8, key_data);
+        if (cfg.key) |old_key| {
+            std.crypto.secureZero(u8, @constCast(old_key));
+            allocator.free(old_key);
+        }
+        cfg.key = new_key;
+        try saveConfig(cfg, allocator, io, environ_map);
 
         // Get and display config file path
         const config_path = try keyloader.getConfigFilePath(allocator, environ_map);
@@ -1438,11 +1477,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         }
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator, io, environ_map);
+        var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         cfg.threads = threads;
-        try config_mod.save(cfg, allocator, io, environ_map);
+        try saveConfig(cfg, allocator, io, environ_map);
 
         std.debug.print("Default thread count set to: {d}\n", .{threads});
     } else if (std.mem.eql(u8, subcommand, "set-buffer-size")) {
@@ -1463,11 +1502,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         }
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator, io, environ_map);
+        var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         cfg.buffer_size = buffer_size;
-        try config_mod.save(cfg, allocator, io, environ_map);
+        try saveConfig(cfg, allocator, io, environ_map);
 
         std.debug.print("Default buffer size set to: {d} bytes\n", .{buffer_size});
     } else if (std.mem.eql(u8, subcommand, "add-exclude")) {
@@ -1477,11 +1516,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             return error.InvalidArguments;
         }
 
-        var cfg = try config_mod.load(allocator, io, environ_map);
+        var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         try modifyExcludePattern(&cfg, args[1], .add, allocator);
-        try config_mod.save(cfg, allocator, io, environ_map);
+        try saveConfig(cfg, allocator, io, environ_map);
     } else if (std.mem.eql(u8, subcommand, "remove-exclude")) {
         if (args.len < 2) {
             std.debug.print("Error: Missing exclude pattern\n", .{});
@@ -1489,11 +1528,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             return error.InvalidArguments;
         }
 
-        var cfg = try config_mod.load(allocator, io, environ_map);
+        var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         try modifyExcludePattern(&cfg, args[1], .remove, allocator);
-        try config_mod.save(cfg, allocator, io, environ_map);
+        try saveConfig(cfg, allocator, io, environ_map);
     } else if (std.mem.eql(u8, subcommand, "set-ignore-symlinks")) {
         if (args.len < 2) {
             std.debug.print("Error: Missing value\n", .{});
@@ -1512,11 +1551,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         };
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator, io, environ_map);
+        var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         cfg.ignore_symlinks = value;
-        try config_mod.save(cfg, allocator, io, environ_map);
+        try saveConfig(cfg, allocator, io, environ_map);
 
         std.debug.print("Ignore symlinks set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "set-encrypted-filenames")) {
@@ -1537,16 +1576,16 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         };
 
         // Load config, update, and save
-        var cfg = try config_mod.load(allocator, io, environ_map);
+        var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         cfg.encrypted_filenames = value;
-        try config_mod.save(cfg, allocator, io, environ_map);
+        try saveConfig(cfg, allocator, io, environ_map);
 
         std.debug.print("Encrypt filenames set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "show")) {
         // Load config
-        var cfg = try config_mod.load(allocator, io, environ_map);
+        var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         const config_path = try config_mod.getConfigFilePath(allocator, environ_map);

@@ -87,27 +87,6 @@ pub fn getConfigFilePath(allocator: std.mem.Allocator, environ_map: *const std.p
     return try config.getConfigFilePath(allocator, environ_map);
 }
 
-/// Set the default key in the config file
-/// key_data should be in the same format as key files:
-/// - 16 bytes: plain key
-/// - 21 bytes: password-protected (1 flag byte + 16 XOR'd bytes + 4 checksum bytes)
-pub fn setDefaultKey(allocator: std.mem.Allocator, key_data: []const u8, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
-    // Load existing config
-    var cfg = try config.load(allocator, io, environ_map);
-    defer cfg.deinit(allocator);
-
-    // Free old key if exists
-    if (cfg.key) |old_key| {
-        allocator.free(old_key);
-    }
-
-    // Store new key (duplicate to own the memory)
-    cfg.key = try allocator.dupe(u8, key_data);
-
-    // Save config
-    try config.save(cfg, allocator, io, environ_map);
-}
-
 /// Get information about where the key would be loaded from (for user feedback)
 pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, io: std.Io, environ_map: *const std.process.Environ.Map) ![]const u8 {
     // Check CLI argument
