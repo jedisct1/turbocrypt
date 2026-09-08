@@ -59,8 +59,8 @@ pub fn promptPassword(
         raw.iflag.ISTRIP = false;
         raw.iflag.IXON = false;
 
-        raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-        raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+        raw.cc[@backingInt(std.posix.V.MIN)] = 1;
+        raw.cc[@backingInt(std.posix.V.TIME)] = 0;
 
         try std.posix.tcsetattr(stdin_file.handle, .FLUSH, raw);
         try stdout.writeStreamingAll(io, prompt_text);
@@ -183,8 +183,8 @@ fn setRawMode(file: std.Io.File, state: *TerminalState, io: std.Io) !void {
         new_termios.iflag.INLCR = false;
         new_termios.iflag.IGNCR = false;
 
-        new_termios.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-        new_termios.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+        new_termios.cc[@backingInt(std.posix.V.MIN)] = 1;
+        new_termios.cc[@backingInt(std.posix.V.TIME)] = 0;
 
         try std.posix.tcsetattr(file.handle, .FLUSH, new_termios);
     }
