@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const version = @import("build.zig.zon").version;
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -32,6 +34,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -67,6 +72,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "hctr2", .module = hctr2.module("hctr2") },
                 .{ .name = "base91", .module = base91.module("base91") },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });

@@ -51,7 +51,7 @@ pub fn writeKeyFile(
     if (password_opt) |pwd| {
         // Password-protected format: flag byte + XOR'd key
         const protected = try password.protectKey(key, pwd);
-        const flag = [1]u8{@intFromEnum(KeyFormat.password_protected)};
+        const flag = [1]u8{@backingInt(KeyFormat.password_protected)};
         try file.writeStreamingAll(io, &flag);
         try file.writeStreamingAll(io, &protected);
     } else {
@@ -115,7 +115,7 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8, io: std.Io) ![ke
             return error.InvalidKeyFile;
         }
 
-        if (full_data[0] != @intFromEnum(KeyFormat.password_protected)) {
+        if (full_data[0] != @backingInt(KeyFormat.password_protected)) {
             return error.InvalidKeyFile;
         }
 

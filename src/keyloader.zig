@@ -60,7 +60,7 @@ pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, 
             } else if (key_data.len == keygen.protected_key_file_size) {
                 // Password-protected key: flag byte + 16 XOR'd bytes + 4 checksum bytes
                 const format_flag = key_data[0];
-                if (format_flag != @intFromEnum(keygen.KeyFormat.password_protected)) {
+                if (format_flag != @backingInt(keygen.KeyFormat.password_protected)) {
                     return error.InvalidKeyFile;
                 }
 

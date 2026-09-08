@@ -10,7 +10,7 @@ _turbocrypt() {
         cword=$COMP_CWORD
     fi
 
-    local subcommands=(keygen change-password encrypt decrypt verify list config bench)
+    local subcommands=(keygen change-password encrypt decrypt verify list config bench version)
     local config_subs=(show set-key set-threads set-buffer-size add-exclude remove-exclude set-ignore-symlinks set-encrypted-filenames)
 
     # find first non-option token (subcommand)
@@ -26,7 +26,7 @@ _turbocrypt() {
     # If no subcommand yet -> list top-level subcommands and top-level help flag
     if [[ -z "$subcmd" ]]; then
         # show subcommands; Bash doesn't show descriptions inline, but we list the names.
-        COMPREPLY=( $(compgen -W "${subcommands[*]} -h --help" -- "$cur") )
+        COMPREPLY=( $(compgen -W "${subcommands[*]} -h --help -V --version" -- "$cur") )
         return 0
     fi
 
@@ -119,7 +119,7 @@ _turbocrypt() {
                 *) COMPREPLY=(); return 0 ;;
             esac
             ;;
-        bench)
+        bench|version)
             COMPREPLY=()
             return 0
             ;;

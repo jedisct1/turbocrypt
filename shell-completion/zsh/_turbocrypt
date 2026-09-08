@@ -3,12 +3,12 @@
 # turbocrypt zsh completion — shows files for encrypt/decrypt/verify when current token is NOT an option
 
 local -a subs
-subs=( keygen change-password encrypt decrypt verify list config bench )
+subs=( keygen change-password encrypt decrypt verify list config bench version )
 
 # If completing the subcommand itself (pos 2), show subcommands + top-level help
 if (( CURRENT == 2 )); then
   compadd -a subs
-  compadd -- -h --help
+  compadd -- -h --help -V --version
   return 0
 fi
 
@@ -23,7 +23,7 @@ done
 # fallback: show top-level if none found
 if [[ -z $subcmd ]]; then
   compadd -a subs
-  compadd -- -h --help
+  compadd -- -h --help -V --version
   return 0
 fi
 
@@ -111,7 +111,7 @@ case $subcmd in
       *) return 0 ;;
     esac
     ;;
-  bench)
+  bench|version)
     return 0
     ;;
   *)

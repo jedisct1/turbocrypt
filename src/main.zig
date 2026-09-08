@@ -11,6 +11,7 @@ const filename_crypto = @import("filename_crypto.zig");
 const prompt = @import("prompt.zig");
 const password = @import("password.zig");
 const bench = @import("bench.zig");
+const build_options = @import("build_options");
 
 const usage_text =
     \\TurboCrypt - High-performance file encryption
@@ -66,6 +67,9 @@ const usage_text =
     \\  turbocrypt bench
     \\      Run performance benchmarks
     \\
+    \\  turbocrypt version
+    \\      Show the program version
+    \\
     \\Key Resolution (in priority order):
     \\  1. --key flag (if provided)
     \\  2. TURBOCRYPT_KEY_FILE environment variable
@@ -116,6 +120,10 @@ const usage_text =
 
 fn printUsage() void {
     std.debug.print("{s}\n", .{usage_text});
+}
+
+fn printVersion() void {
+    std.debug.print("turbocrypt {s}\n", .{build_options.version});
 }
 
 /// Handle directory creation with optional filename encryption
@@ -1412,7 +1420,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         // If password-protected, verify we can decrypt it
         if (is_protected) {
             // Check format flag
-            if (key_data[0] != @intFromEnum(keygen.KeyFormat.password_protected)) {
+            if (key_data[0] != @backingInt(keygen.KeyFormat.password_protected)) {
                 std.debug.print("Error: Invalid password-protected key format\n", .{});
                 return error.InvalidKeyFile;
             }
@@ -1655,26 +1663,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 }
 
 pub fn main(init: std.process.Init) !void {
-    const builtin = @import("builtin");
-
-    // Print build mode if Debug
-    if (builtin.mode == .debug) {
-        std.debug.print("Debug build\n", .{});
-    }
-
     const allocator = init.gpa;
     const io = init.io;
-
-    // Verify secure randomness is available by collecting a dummy byte.
-    // This fails fast if the environment cannot generate proper entropy.
-    {
-        var dummy: [1]u8 = undefined;
-        io.randomSecure(&dummy) catch |err| {
-            std.debug.print("FATAL: Secure randomness unavailable: {}\n", .{err});
-            std.debug.print("Cannot safely perform cryptographic operations.\n", .{});
-            std.process.exit(1);
-        };
-    }
 
     // Get command-line arguments
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -1687,6 +1677,26 @@ pub fn main(init: std.process.Init) !void {
 
     const command = args[1];
     const command_args = args[2..];
+
+    if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
+        printUsage();
+        return;
+    }
+    if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-V")) {
+        printVersion();
+        return;
+    }
+
+    // Verify secure randomness is available by collecting a dummy byte.
+    // This fails fast if the environment cannot generate proper entropy.
+    {
+        var dummy: [1]u8 = undefined;
+        io.randomSecure(&dummy) catch |err| {
+            std.debug.print("FATAL: Secure randomness unavailable: {}\n", .{err});
+            std.debug.print("Cannot safely perform cryptographic operations.\n", .{});
+            std.process.exit(1);
+        };
+    }
 
     if (std.mem.eql(u8, command, "keygen")) {
         cmdKeygen(command_args, allocator, io, init.environ_map) catch {
@@ -1720,8 +1730,6 @@ pub fn main(init: std.process.Init) !void {
         bench.run(allocator, io) catch {
             std.process.exit(1);
         };
-    } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
-        printUsage();
     } else {
         std.debug.print("Error: Unknown command '{s}'\n\n", .{command});
         printUsage();
