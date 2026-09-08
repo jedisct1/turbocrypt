@@ -1658,7 +1658,7 @@ pub fn main(init: std.process.Init) !void {
     const builtin = @import("builtin");
 
     // Print build mode if Debug
-    if (builtin.mode == .Debug) {
+    if (builtin.mode == .debug) {
         std.debug.print("Debug build\n", .{});
     }
 
