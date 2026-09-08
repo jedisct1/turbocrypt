@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const keygen = @import("keygen.zig");
 const utils = @import("utils.zig");
 
 /// Configuration filename within app data directory
@@ -8,11 +9,21 @@ pub const config_filename = "config.json";
 /// Key size (16 bytes for AEGIS-128)
 pub const key_length = 16;
 
+/// The JSON layout of the config file, with the key as a hex string
+const JsonConfig = struct {
+    key: ?[]const u8 = null,
+    threads: ?u32 = null,
+    buffer_size: ?usize = null,
+    exclude_patterns: []const []const u8 = &.{},
+    ignore_symlinks: ?bool = null,
+    encrypted_filenames: ?bool = null,
+};
+
 /// TurboCrypt configuration
 pub const Config = struct {
     /// Default encryption key (raw bytes in the same format as key file)
     /// - 16 bytes: plain key
-    /// - 17 bytes: password-protected (1 byte flag + 16 byte XOR'd key)
+    /// - 21 bytes: password-protected (1 byte flag + 16 byte XOR'd key + 4 byte checksum)
     /// Stored as hex in JSON
     key: ?[]const u8 = null,
 
@@ -35,79 +46,47 @@ pub const Config = struct {
 
     /// Load config from JSON with proper memory management
     pub fn fromJson(allocator: std.mem.Allocator, json_str: []const u8) !Config {
-        const parsed = try std.json.parseFromSlice(
-            std.json.Value,
-            allocator,
-            json_str,
-            .{},
-        );
+        const parsed = try std.json.parseFromSlice(JsonConfig, allocator, json_str, .{
+            .ignore_unknown_fields = true,
+        });
         defer parsed.deinit();
+        const json = parsed.value;
 
-        const root = parsed.value.object;
+        var config = Config{
+            .threads = json.threads,
+            .buffer_size = json.buffer_size,
+            .ignore_symlinks = json.ignore_symlinks,
+            .encrypted_filenames = json.encrypted_filenames,
+        };
+        errdefer config.deinit(allocator);
 
-        var config = Config{};
+        if (config.threads == 0) return error.InvalidConfig;
 
-        // Parse key (hex encoded, variable length: 16 or 17 bytes)
-        if (root.get("key")) |value| {
-            if (value != .null) {
-                const hex_key = value.string;
-
-                // Hex string should be 2 chars per byte (32 or 34 chars)
-                if (hex_key.len % 2 != 0) {
-                    return error.InvalidKeyFormat;
-                }
-
-                const decoded_size = hex_key.len / 2;
-
-                // Allocate buffer for decoded key
-                const key = try allocator.alloc(u8, decoded_size);
-                errdefer allocator.free(key);
-
-                // Decode from hex
-                _ = try std.fmt.hexToBytes(key, hex_key);
-
-                config.key = key;
+        if (json.key) |hex_key| {
+            const size = hex_key.len / 2;
+            const valid_size = size == keygen.plain_key_file_size or size == keygen.protected_key_file_size;
+            if (hex_key.len % 2 != 0 or !valid_size) {
+                return error.InvalidKeyFormat;
             }
+
+            const key = try allocator.alloc(u8, size);
+            errdefer allocator.free(key);
+            _ = try std.fmt.hexToBytes(key, hex_key);
+            config.key = key;
         }
 
-        // Parse threads
-        if (root.get("threads")) |value| {
-            if (value != .null) {
-                config.threads = @intCast(value.integer);
+        if (json.exclude_patterns.len > 0) {
+            const patterns = try allocator.alloc([]const u8, json.exclude_patterns.len);
+            var copied: usize = 0;
+            errdefer {
+                for (patterns[0..copied]) |pattern| allocator.free(pattern);
+                allocator.free(patterns);
             }
-        }
-
-        // Parse buffer_size
-        if (root.get("buffer_size")) |value| {
-            if (value != .null) {
-                config.buffer_size = @intCast(value.integer);
+            for (json.exclude_patterns) |pattern| {
+                patterns[copied] = try allocator.dupe(u8, pattern);
+                copied += 1;
             }
-        }
-
-        // Parse exclude_patterns
-        if (root.get("exclude_patterns")) |value| {
-            if (value == .array) {
-                const array = value.array;
-                var patterns = try allocator.alloc([]const u8, array.items.len);
-                for (array.items, 0..) |item, i| {
-                    patterns[i] = try allocator.dupe(u8, item.string);
-                }
-                config.exclude_patterns = patterns;
-            }
-        }
-
-        // Parse ignore_symlinks
-        if (root.get("ignore_symlinks")) |value| {
-            if (value != .null) {
-                config.ignore_symlinks = value.bool;
-            }
-        }
-
-        // Parse encrypted_filenames
-        if (root.get("encrypted_filenames")) |value| {
-            if (value != .null) {
-                config.encrypted_filenames = value.bool;
-            }
+            config.exclude_patterns = patterns;
         }
 
         return config;
@@ -115,21 +94,11 @@ pub const Config = struct {
 
     /// Serialize config to JSON string
     pub fn toJson(self: Config, allocator: std.mem.Allocator) ![]const u8 {
-        // Create a serialization-friendly struct with key as hex string
-        const JsonConfig = struct {
-            key: ?[]const u8,
-            threads: ?u32,
-            buffer_size: ?usize,
-            exclude_patterns: []const []const u8,
-            ignore_symlinks: ?bool,
-            encrypted_filenames: ?bool,
-        };
-
-        // Convert key to hex string if present
-        var hex_key_buf: [42]u8 = undefined; // Max 21 bytes = 42 hex chars
-        const hex_key: ?[]const u8 = if (self.key) |key| blk: {
-            break :blk std.fmt.bufPrint(&hex_key_buf, "{x}", .{key}) catch unreachable;
-        } else null;
+        const hex_key: ?[]const u8 = if (self.key) |key|
+            try std.fmt.allocPrint(allocator, "{x}", .{key})
+        else
+            null;
+        defer if (hex_key) |hex| allocator.free(hex);
 
         const json_config = JsonConfig{
             .key = hex_key,
@@ -252,6 +221,37 @@ pub fn save(config: Config, allocator: std.mem.Allocator, io: std.Io, environ_ma
 
     // Atomically rename temp to final path
     try std.Io.Dir.rename(.cwd(), temp_path, .cwd(), config_path, io);
+}
+
+test "Config - rejects wrong value types" {
+    const allocator = std.testing.allocator;
+
+    const bad_inputs = [_][]const u8{
+        "[]",
+        "{\"key\": 42}",
+        "{\"key\": \"abc\"}",
+        "{\"key\": \"0102\"}",
+        "{\"threads\": 0}",
+        "{\"threads\": -1}",
+        "{\"buffer_size\": 1.5}",
+        "{\"exclude_patterns\": [1]}",
+        "{\"ignore_symlinks\": \"yes\"}",
+        "{\"key\": \"0102030405060708090a0b0c0d0e0f10\", \"encrypted_filenames\": 1}",
+    };
+
+    for (bad_inputs) |input| {
+        const result = Config.fromJson(allocator, input);
+        try std.testing.expect(std.meta.isError(result));
+    }
+}
+
+test "Config - empty exclude list" {
+    const allocator = std.testing.allocator;
+
+    var config = try Config.fromJson(allocator, "{\"exclude_patterns\": []}");
+    defer config.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), config.exclude_patterns.len);
 }
 
 test "Config - default config" {
