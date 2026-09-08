@@ -785,6 +785,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                     .dest_path = dest_path_dup,
                     .operation = if (is_encrypt) .encrypt else .decrypt,
                     .file_size = file_size,
+                    .delete_source = opts.enc_suffix,
                 };
 
                 try pool.submitJob(job);
@@ -867,6 +868,11 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 worker.printErrorDetails(err, false);
                 return err;
             };
+        }
+
+        // A destination derived by the suffix change replaces the source
+        if (dest_path_buf != null) {
+            try std.Io.Dir.deleteFile(.cwd(), io, source_path);
         }
         std.debug.print("{s} complete!\n", .{op_complete});
     }

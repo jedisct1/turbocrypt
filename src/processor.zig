@@ -99,11 +99,6 @@ pub fn encryptFile(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
-    const in_place_with_suffix = !std.mem.eql(u8, input_path, output_path) and
-        output_path.len == input_path.len + 4 and
-        std.mem.startsWith(u8, output_path, input_path) and
-        std.mem.endsWith(u8, output_path, ".enc");
-
     const input_file = try std.Io.Dir.openFile(.cwd(), io, input_path, .{});
     defer input_file.close(io);
 
@@ -114,10 +109,6 @@ pub fn encryptFile(
         try encryptFileZeroCopy(input_file, file_size, output_path, derived_keys, allocator, input_stat.permissions, io);
     } else {
         try encryptFileBuffered(input_file, file_size, output_path, derived_keys, allocator, input_stat.permissions, io);
-    }
-
-    if (in_place_with_suffix) {
-        try std.Io.Dir.deleteFile(.cwd(), io, input_path);
     }
 }
 
@@ -215,11 +206,6 @@ pub fn decryptFile(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
-    const in_place_with_suffix = !std.mem.eql(u8, input_path, output_path) and
-        input_path.len == output_path.len + 4 and
-        std.mem.startsWith(u8, input_path, output_path) and
-        std.mem.endsWith(u8, input_path, ".enc");
-
     const input_file = try std.Io.Dir.openFile(.cwd(), io, input_path, .{});
     defer input_file.close(io);
 
@@ -230,10 +216,6 @@ pub fn decryptFile(
         try decryptFileZeroCopy(input_file, file_size, output_path, derived_keys, allocator, input_stat.permissions, io);
     } else {
         try decryptFileBuffered(input_file, file_size, output_path, derived_keys, allocator, input_stat.permissions, io);
-    }
-
-    if (in_place_with_suffix) {
-        try std.Io.Dir.deleteFile(.cwd(), io, input_path);
     }
 }
 
@@ -557,6 +539,37 @@ test "in-place encrypt/decrypt works with absolute path" {
         try testing.expectEqual(@as(usize, plaintext.len), read);
         try testing.expectEqualStrings(plaintext, buf);
     }
+}
+
+test "destination with .enc suffix keeps the source file" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    const input_path = "tmp/keep_source.txt";
+    const encrypted_path = "tmp/keep_source.txt.enc";
+    const plaintext = "the source must survive";
+
+    {
+        const file = try std.Io.Dir.createFile(.cwd(), io, input_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, plaintext);
+    }
+    defer std.Io.Dir.deleteFile(.cwd(), io, input_path) catch {};
+
+    const key: [crypto.key_length]u8 = @splat(3);
+    const derived = crypto.deriveKeys(key, null);
+
+    try encryptFile(input_path, encrypted_path, derived, allocator, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
+    _ = try std.Io.Dir.statFile(.cwd(), io, input_path, .{});
+
+    try decryptFile(encrypted_path, input_path, derived, allocator, io);
+    _ = try std.Io.Dir.statFile(.cwd(), io, encrypted_path, .{});
 }
 
 test "symlink at output path does not hijack writes" {

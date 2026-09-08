@@ -87,6 +87,8 @@ pub const FileJob = struct {
     dest_path: ?[]const u8, // null for verify operations
     operation: Operation,
     file_size: u64,
+    /// Remove the source file once the output is complete
+    delete_source: bool = false,
 };
 
 /// Thread-safe work queue with batch popping capability
@@ -293,6 +295,13 @@ pub const WorkerPool = struct {
                                 continue; // Continue with remaining files in batch
                             };
                         },
+                    }
+
+                    if (job.delete_source) {
+                        std.Io.Dir.deleteFile(.cwd(), worker.io, job.source_path) catch |err| {
+                            handleJobError(worker, job, err, "[ERROR] Failed to remove source file:", job.operation == .encrypt);
+                            continue;
+                        };
                     }
                 }
 
