@@ -1556,8 +1556,9 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         std.debug.print("Config file: {s}\n\n", .{config_path});
 
         // Show key
-        if (cfg.key) |_| {
-            std.debug.print("Key: stored in config (16 bytes)\n", .{});
+        if (cfg.key) |key| {
+            const kind = if (key.len == keygen.protected_key_file_size) "password-protected" else "plain";
+            std.debug.print("Key: stored in config ({s})\n", .{kind});
         } else {
             std.debug.print("Key: (not set)\n", .{});
         }
