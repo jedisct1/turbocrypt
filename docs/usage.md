@@ -18,8 +18,9 @@ turbocrypt encrypt --key protected.key source/ dest/
 You can still pass `--password` to force the prompt.
 
 You can also add protection to a plain key, change an existing password, or
-remove the password later. In each case, the underlying encryption key stays
-the same.
+remove the password later.
+
+In each case, the underlying encryption key stays the same.
 
 ```bash
 # Add protection to a plain key
@@ -34,9 +35,11 @@ turbocrypt change-password --remove-password protected.key
 
 ## Contexts
 
-A context changes the key used for encryption. As a result, decryption
-requires both the same key file and the exact same context. Omitting the
-context or supplying another string fails authentication.
+A context changes the key used for encryption.
+
+As a result, decryption requires both the same key file and the exact same
+context. Omitting the context or supplying another string fails
+authentication.
 
 ```bash
 # Encrypt in the "my-secret-phrase" context
@@ -55,8 +58,10 @@ context is meant to remain secret, do not put it in shell history or scripts.
 turbocrypt encrypt --key my-secret.key --in-place my-documents/
 ```
 
-This replaces every source file. TurboCrypt first writes a temporary file and
-then renames it over the original, but that does not substitute for a backup.
+This replaces every source file.
+
+TurboCrypt first writes a temporary file and then renames it over the original,
+but that does not substitute for a backup.
 
 ## Encrypted filenames
 
@@ -70,8 +75,10 @@ turbocrypt encrypt --key my-secret.key --encrypted-filenames source/ dest/
 turbocrypt decrypt --key my-secret.key --encrypted-filenames dest/ restored/
 ```
 
-Each component of a path gets an opaque name. However, the directory
-structure, file sizes and number of entries remain visible.
+Each component of a path gets an opaque name.
+
+However, the directory structure, file sizes and number of entries remain
+visible.
 
 ## Excluding files
 
@@ -101,10 +108,12 @@ The same flag also works with `decrypt` and `verify`.
 
 ## Verification
 
-By default, verification authenticates the header and contents without
-writing the plaintext. In contrast, quick verification authenticates only the
-header. That is enough to check the key and context, but it says nothing about
-the integrity of the file contents.
+By default, verification authenticates the header and contents without writing
+the plaintext.
+
+In contrast, quick verification authenticates only the header. That is enough
+to check the key and context, but it says nothing about the integrity of the
+file contents.
 
 ```bash
 # Check one file
@@ -160,6 +169,7 @@ turbocrypt config add-exclude ".git/"
 turbocrypt config show
 ```
 
-Command-line options still take precedence over saved values. See
-[Configuration](configuration.md) for storage locations and the full
+Command-line options still take precedence over saved values.
+
+See [Configuration](configuration.md) for storage locations and the full
 precedence rules.
