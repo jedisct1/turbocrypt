@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Thread-safe progress tracker for file processing operations
+/// Thread-safe progress counters with a background display.
 pub const ProgressTracker = struct {
     files_processed: std.atomic.Value(u64),
     files_failed: std.atomic.Value(u64),
@@ -15,7 +15,6 @@ pub const ProgressTracker = struct {
 
     const Self = @This();
 
-    /// Initialize a new progress tracker
     pub fn init(total_files: u64, total_bytes: u64, io: std.Io) Self {
         return Self{
             .files_processed = std.atomic.Value(u64).init(0),
@@ -31,62 +30,51 @@ pub const ProgressTracker = struct {
         };
     }
 
-    /// Increment files processed counter
     pub fn addFileProcessed(self: *Self) void {
         _ = self.files_processed.fetchAdd(1, .monotonic);
     }
 
-    /// Add multiple files to processed counter (batch update)
     pub fn addFilesProcessed(self: *Self, count: u64) void {
         _ = self.files_processed.fetchAdd(count, .monotonic);
     }
 
-    /// Increment files failed counter
     pub fn addFileFailed(self: *Self) void {
         _ = self.files_failed.fetchAdd(1, .monotonic);
     }
 
-    /// Add bytes processed
     pub fn addBytesProcessed(self: *Self, bytes: u64) void {
         _ = self.bytes_processed.fetchAdd(bytes, .monotonic);
     }
 
-    /// Add to total files (for dynamic discovery during scanning)
     pub fn addTotalFile(self: *Self) void {
         _ = self.total_files.fetchAdd(1, .monotonic);
     }
 
-    /// Add to total bytes (for dynamic discovery during scanning)
     pub fn addTotalBytes(self: *Self, bytes: u64) void {
         _ = self.total_bytes.fetchAdd(bytes, .monotonic);
     }
 
-    /// Get total files count
     pub fn getTotalFiles(self: *Self) u64 {
         return self.total_files.load(.monotonic);
     }
 
-    /// Get total bytes count
     pub fn getTotalBytes(self: *Self) u64 {
         return self.total_bytes.load(.monotonic);
     }
 
-    /// Get current files processed count
     pub fn getFilesProcessed(self: *Self) u64 {
         return self.files_processed.load(.monotonic);
     }
 
-    /// Get current files failed count
     pub fn getFilesFailed(self: *Self) u64 {
         return self.files_failed.load(.monotonic);
     }
 
-    /// Get current bytes processed count
     pub fn getBytesProcessed(self: *Self) u64 {
         return self.bytes_processed.load(.monotonic);
     }
 
-    /// Calculate current throughput in Mb/s (megabits per second)
+    /// Throughput since the start, in megabits per second.
     pub fn getThroughput(self: *Self) f64 {
         const elapsed = self.start_time.untilNow(self.io);
         const elapsed_ns = elapsed.raw.nanoseconds;
@@ -99,7 +87,6 @@ pub const ProgressTracker = struct {
         return megabits / elapsed_s;
     }
 
-    /// Format bytes to human-readable string (KB, MB, GB)
     fn formatBytes(bytes: u64, buf: []u8) []const u8 {
         const fb = @as(f64, @floatFromInt(bytes));
 
@@ -114,9 +101,7 @@ pub const ProgressTracker = struct {
         }
     }
 
-    /// Display current progress (thread-safe)
     pub fn display(self: *Self) void {
-        // Read all atomic values without locking (reads are lock-free)
         const files_done = self.getFilesProcessed();
         const files_failed = self.getFilesFailed();
         const bytes_done = self.getBytesProcessed();
@@ -135,12 +120,10 @@ pub const ProgressTracker = struct {
         const bytes_done_str = formatBytes(bytes_done, &bytes_done_buf);
         const total_bytes_str = formatBytes(total_bytes, &total_bytes_buf);
 
-        // Lock only for the printf to avoid interleaved output
-        // This is much faster than locking for the entire computation
+        // The lock only keeps the output of the two display functions from interleaving.
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        // Use \r to overwrite the same line
         std.debug.print("\rProcessing: {d}/{d} files ({d:.1}%) | {s} / {s} | {d:.1} Mb/s", .{
             files_done,
             total_files,
@@ -155,9 +138,7 @@ pub const ProgressTracker = struct {
         }
     }
 
-    /// Display final summary
     pub fn displayFinal(self: *Self) void {
-        // Read all values without locking first
         const files_done = self.getFilesProcessed();
         const files_failed = self.getFilesFailed();
         const bytes_done = self.getBytesProcessed();
@@ -170,7 +151,6 @@ pub const ProgressTracker = struct {
         var bytes_buf: [32]u8 = undefined;
         const bytes_str = formatBytes(bytes_done, &bytes_buf);
 
-        // Compute throughput
         var avg_throughput: f64 = 0.0;
         if (elapsed_s > 0) {
             const bits = @as(f64, @floatFromInt(bytes_done)) * 8.0;
@@ -178,7 +158,6 @@ pub const ProgressTracker = struct {
             avg_throughput = megabits / elapsed_s;
         }
 
-        // Lock only for output
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
@@ -194,21 +173,18 @@ pub const ProgressTracker = struct {
         }
     }
 
-    /// Display update thread function
     fn displayUpdateThread(self: *Self) void {
         while (!self.should_stop.load(.acquire)) {
             self.display();
-            self.io.sleep(std.Io.Duration.fromMilliseconds(100), .awake) catch {}; // Update every 100ms
+            self.io.sleep(std.Io.Duration.fromMilliseconds(100), .awake) catch {};
         }
     }
 
-    /// Start background display updates
     pub fn startDisplay(self: *Self) !void {
         self.should_stop.store(false, .release);
         self.display_thread = try std.Thread.spawn(.{}, displayUpdateThread, .{self});
     }
 
-    /// Stop background display updates
     pub fn stopDisplay(self: *Self) void {
         self.should_stop.store(true, .release);
         if (self.display_thread) |thread| {
@@ -224,18 +200,15 @@ test "progress tracker basic operations" {
 
     var tracker = ProgressTracker.init(100, 1024 * 1024 * 100, io);
 
-    // Test initial state
     try testing.expectEqual(@as(u64, 0), tracker.getFilesProcessed());
     try testing.expectEqual(@as(u64, 0), tracker.getFilesFailed());
     try testing.expectEqual(@as(u64, 0), tracker.getBytesProcessed());
 
-    // Test incrementing
     tracker.addFileProcessed();
     tracker.addBytesProcessed(1024 * 1024);
     try testing.expectEqual(@as(u64, 1), tracker.getFilesProcessed());
     try testing.expectEqual(@as(u64, 1024 * 1024), tracker.getBytesProcessed());
 
-    // Test failed counter
     tracker.addFileFailed();
     try testing.expectEqual(@as(u64, 1), tracker.getFilesFailed());
 }

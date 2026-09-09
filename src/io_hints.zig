@@ -1,18 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Platform-specific I/O optimization hints
-/// Provides unified interface for fadvise, madvise, and related optimizations
-/// Advice for file access patterns
 pub const FileAdvice = enum {
-    sequential, // Sequential access pattern
-    random, // Random access pattern
-    willneed, // Will need this data soon (prefetch)
-    dontneed, // Won't need this data anymore (drop cache)
-    noreuse, // Data will be accessed only once
+    sequential,
+    random,
+    willneed,
+    dontneed,
+    noreuse,
 };
 
-/// Advise kernel about file access pattern (Linux: fadvise, macOS: fcntl F_RDADVISE)
 pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) void {
     switch (builtin.os.tag) {
         .linux => {
@@ -26,40 +22,27 @@ pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) 
             _ = std.os.linux.fadvise(file.handle, offset, len, linux_advice);
         },
         .macos, .ios, .tvos, .watchos => {
-            // macOS uses fcntl with F_RDADVISE for prefetching
-            // and F_RDAHEAD for sequential hints
-            // For simplicity, we'll use F_RDAHEAD for sequential access
-            // Note: macOS has limited support compared to Linux fadvise
+            // macOS has no fadvise. Read-ahead covers the sequential hints.
+            // F_NOCACHE is the closest thing to DONTNEED, but it also hurts later reads.
             switch (advice) {
                 .sequential, .willneed => {
-                    // Enable read-ahead (enabled by default, but we can be explicit)
                     _ = std.c.fcntl(file.handle, std.c.F.RDAHEAD, @as(c_int, 1));
-                },
-                .dontneed => {
-                    // macOS doesn't have a direct equivalent to DONTNEED
-                    // We could use F_NOCACHE (48) but it's more aggressive
-                    // Skip for now to avoid breaking cache for future reads
                 },
                 else => {},
             }
         },
-        else => {
-            // No support on other platforms (Windows, etc.)
-        },
+        else => {},
     }
 }
 
-/// Enhanced memory advice with additional hints
 pub const MemoryAdvice = enum {
-    sequential, // Sequential access pattern
-    random, // Random access pattern
-    willneed, // Will need this data soon
-    dontneed, // Won't need this data anymore
+    sequential,
+    random,
+    willneed,
+    dontneed,
 };
 
-/// Advise kernel about memory-mapped region access pattern
 pub fn adviseMemory(ptr: [*]align(std.heap.page_size_min) u8, len: usize, advice: MemoryAdvice) void {
-    // madvise is supported on both Linux and macOS
     if (builtin.os.tag == .windows) return;
 
     const posix_advice: u32 = switch (advice) {
@@ -72,28 +55,24 @@ pub fn adviseMemory(ptr: [*]align(std.heap.page_size_min) u8, len: usize, advice
     std.posix.madvise(ptr, len, posix_advice) catch {};
 }
 
-/// Flush memory-mapped data asynchronously (non-blocking)
 pub fn flushAsync(mapped: []align(std.heap.page_size_min) u8) void {
     if (builtin.os.tag == .windows) return;
     std.posix.msync(mapped, std.posix.MSF.ASYNC) catch {};
 }
 
-/// Flush memory-mapped data synchronously (blocking until written)
 pub fn flushSync(mapped: []align(std.heap.page_size_min) u8) void {
     if (builtin.os.tag == .windows) return;
     std.posix.msync(mapped, std.posix.MSF.SYNC) catch {};
 }
 
-/// Sync file data to disk (metadata may not be synced)
+/// Push the file data to the disk. The metadata can stay behind.
 pub fn syncFileData(file: std.Io.File) void {
     switch (builtin.os.tag) {
         .macos, .ios, .tvos, .watchos => {
-            // macOS requires F_FULLFSYNC for true durability (forces drive cache flush)
-            // Regular fdatasync/fsync on macOS doesn't guarantee data reaches physical medium
+            // On macOS, only F_FULLFSYNC makes the drive flush its cache.
             _ = std.c.fcntl(file.handle, std.c.F.FULLFSYNC, @as(c_int, 0));
         },
         else => {
-            // Use stdlib fdatasync for other platforms (Linux, Windows, etc.)
             std.posix.fdatasync(file.handle) catch {};
         },
     }

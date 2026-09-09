@@ -30,9 +30,8 @@ expect_no_file() { [ ! -e "$1" ] || fail "unexpected file $1"; }
 expect_content() { expect_file "$1"; expect_eq "$(cat "$1")" "$2"; }
 expect_clean() { [ -z "$(git status --short)" ] || fail "working tree not clean: $(git status --short)"; }
 mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
-# git commit -a decides "nothing to commit" before the hook stages private
-# changes, and cannot stage a new store entry on a retry. The documented
-# way is to refresh the store first.
+# git commit -a decides "nothing to commit" before the hook stages private changes.
+# It cannot stage a new store entry on a retry either, so the store is refreshed first.
 commit_all() { quiet turbocrypt git encrypt && git commit -qam "$1"; }
 quiet() { "$@" >/dev/null 2>&1; }
 

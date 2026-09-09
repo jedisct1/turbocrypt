@@ -16,7 +16,6 @@ pub fn isPreHook(name: []const u8) bool {
     return std.mem.startsWith(u8, name, "pre-");
 }
 
-/// The hook script.
 /// The binary path is embedded because GUI clients run hooks with a minimal PATH.
 /// A post hook must never fail a git command, so a missing binary only stops pre hooks.
 pub fn scriptFor(allocator: std.mem.Allocator, name: []const u8, exe_path: []const u8) ![]u8 {
@@ -37,7 +36,6 @@ pub fn scriptFor(allocator: std.mem.Allocator, name: []const u8, exe_path: []con
     , .{ first_line, second_line, quoted, @intFromBool(isPreHook(name)), name });
 }
 
-/// Single-quote a string for sh.
 fn shellQuote(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);

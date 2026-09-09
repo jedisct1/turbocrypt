@@ -7,8 +7,6 @@ pub const private_file_permissions: std.Io.File.Permissions = if (builtin.os.tag
 else
     .fromMode(0o600);
 
-/// Callback function type for directory walking
-/// Parameters: relative_path, full_path, is_directory
 pub const WalkCallback = *const fn (
     relative_path: []const u8,
     full_path: []const u8,
@@ -16,8 +14,7 @@ pub const WalkCallback = *const fn (
     context: *anyopaque,
 ) anyerror!void;
 
-/// Walk a directory recursively and call callback for each file/directory
-/// Uses std.fs.Dir.walk() for efficient iteration
+/// Links to files count as files, unless ignore_symlinks is set. Links to directories are always skipped.
 pub fn walkDirectory(
     base_path: []const u8,
     callback: WalkCallback,
@@ -26,51 +23,41 @@ pub fn walkDirectory(
     ignore_symlinks: bool,
     io: std.Io,
 ) !void {
-    // Open the base directory for walking
     var dir = try std.Io.Dir.openDir(.cwd(), io, base_path, .{ .iterate = true });
     defer dir.close(io);
 
-    // Create walker
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
-    // Iterate over all entries
     while (try walker.next(io)) |entry| {
-        // Construct full path by joining base_path with relative path
         const full_path = try std.fs.path.join(allocator, &[_][]const u8{ base_path, entry.path });
         defer allocator.free(full_path);
 
-        // Handle based on entry kind
         if (entry.kind == .directory) {
             try callback(entry.path, full_path, true, context);
         } else if (entry.kind == .file) {
             try callback(entry.path, full_path, false, context);
         } else if (entry.kind == .sym_link) {
             if (ignore_symlinks) {
-                // Skip all symlinks when ignore_symlinks is true
                 continue;
             }
 
-            // Follow symlinks to determine their actual type
             const stat = std.Io.Dir.statFile(.cwd(), io, full_path, .{}) catch |err| {
-                // Skip broken or inaccessible symlinks
                 std.debug.print("Warning: skipping symlink '{s}' ({})\n", .{ full_path, err });
                 continue;
             };
 
             if (stat.kind == .directory) {
-                // Skip symlinked directories to avoid circular references
+                // A link to a directory could loop.
                 std.debug.print("Warning: skipping symlinked directory '{s}'\n", .{full_path});
                 continue;
             } else if (stat.kind == .file) {
-                // Treat symlinked files as regular files
                 try callback(entry.path, full_path, false, context);
             }
         }
     }
 }
 
-/// Create directory and all parent directories if they don't exist
 pub fn ensureDirectory(path: []const u8, io: std.Io) !void {
     std.Io.Dir.createDirPath(.cwd(), io, path) catch |err| {
         if (err != error.PathAlreadyExists) return err;
@@ -113,7 +100,6 @@ pub fn pathRelation(parent: []const u8, candidate: []const u8, allocator: std.me
     return if (std.mem.eql(u8, first, "..")) .other else .descendant;
 }
 
-/// True when one of the strings equals the needle.
 pub fn containsString(list: []const []const u8, needle: []const u8) bool {
     for (list) |item| {
         if (std.mem.eql(u8, item, needle)) return true;
@@ -127,34 +113,27 @@ pub fn freeList(allocator: std.mem.Allocator, list: []const []u8) void {
     allocator.free(list);
 }
 
-/// Get the directory part of a path
+/// Like std.fs.path.dirname, but owned and never null.
 pub fn dirname(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
     const dir = std.fs.path.dirname(path) orelse "";
     return try allocator.dupe(u8, dir);
 }
 
-/// Check if a path exists
 pub fn pathExists(path: []const u8, io: std.Io) bool {
     std.Io.Dir.access(.cwd(), io, path, .{}) catch return false;
     return true;
 }
 
-/// Check if a path is a directory
 pub fn isDirectory(path: []const u8, io: std.Io) !bool {
     const stat = std.Io.Dir.statFile(.cwd(), io, path, .{}) catch |err| {
-        // On Windows, statFile() returns error.IsDir for directories
+        // On Windows, statFile returns error.IsDir for a directory.
         if (err == error.IsDir) return true;
         return err;
     };
     return stat.kind == .directory;
 }
 
-/// Check if a path matches any exclude pattern (glob style)
-/// Patterns can be:
-///   - Exact: "config.env"
-///   - Extension: "*.log", "*.tmp"
-///   - Directory: "node_modules/", ".git/"
-///   - Path component: "temp/" matches "src/temp/file.txt"
+/// A pattern is an exact path, a "*suffix", a "prefix*", or a "dir/" component at any depth.
 pub fn matchesExcludePattern(
     relative_path: []const u8,
     patterns: std.ArrayList([]const u8),
@@ -167,10 +146,8 @@ pub fn matchesExcludePattern(
     return false;
 }
 
-/// Simple glob pattern matching
 fn matchesPattern(path: []const u8, pattern: []const u8) bool {
-    // Directory patterns match a whole path component at any depth,
-    // so ".git/" does not match ".gitignore"
+    // Directory patterns match a whole path component at any depth, so ".git/" does not match ".gitignore".
     if (std.mem.endsWith(u8, pattern, "/")) {
         const dir_name = pattern[0 .. pattern.len - 1];
         var components = std.fs.path.componentIterator(path);
@@ -180,25 +157,21 @@ fn matchesPattern(path: []const u8, pattern: []const u8) bool {
         return false;
     }
 
-    // Handle extension patterns: "*.log"
     if (std.mem.startsWith(u8, pattern, "*.")) {
         const ext = pattern[1..];
         return std.mem.endsWith(u8, path, ext);
     }
 
-    // Handle wildcard patterns: "*something"
     if (std.mem.startsWith(u8, pattern, "*")) {
         const suffix = pattern[1..];
         return std.mem.endsWith(u8, path, suffix);
     }
 
-    // Handle wildcard patterns: "something*"
     if (std.mem.endsWith(u8, pattern, "*")) {
         const prefix = pattern[0 .. pattern.len - 1];
         return std.mem.startsWith(u8, path, prefix);
     }
 
-    // Exact match
     return std.mem.eql(u8, path, pattern);
 }
 
@@ -207,17 +180,9 @@ test "directory walking" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    // Create test directory structure
-    // tmp/walk_test/
-    //   file1.txt
-    //   subdir/
-    //     file2.txt
-    //     file3.txt
-
     try ensureDirectory("tmp/walk_test/subdir", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/walk_test") catch {};
 
-    // Create test files
     {
         const f1 = try std.Io.Dir.createFile(.cwd(), io, "tmp/walk_test/file1.txt", .{});
         defer f1.close(io);
@@ -234,7 +199,6 @@ test "directory walking" {
         try f3.writeStreamingAll(io, "test3");
     }
 
-    // Walk and collect files
     const Context = struct {
         files: std.ArrayList([]const u8),
         dirs: std.ArrayList([]const u8),
@@ -270,10 +234,7 @@ test "directory walking" {
 
     try walkDirectory("tmp/walk_test", Context.callback, &ctx, allocator, false, io);
 
-    // Should find 3 files
     try testing.expectEqual(@as(usize, 3), ctx.files.items.len);
-
-    // Should find 1 directory (subdir)
     try testing.expectEqual(@as(usize, 1), ctx.dirs.items.len);
 }
 
@@ -284,7 +245,6 @@ test "ensureDirectory creates nested directories" {
     try ensureDirectory("tmp/nested/deeply/nested/path", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/nested") catch {};
 
-    // Verify it exists and is a directory
     try testing.expect(try isDirectory("tmp/nested/deeply/nested/path", io));
 }
 
@@ -320,27 +280,23 @@ test "symlinks to files are followed" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    // Create test directory with a file and a symlink to it
     try ensureDirectory("tmp/symlink_test", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/symlink_test") catch {};
 
-    // Create target file
     {
         const f = try std.Io.Dir.createFile(.cwd(), io, "tmp/symlink_test/target.txt", .{});
         defer f.close(io);
         try f.writeStreamingAll(io, "target content");
     }
 
-    // Create symlink to the file
     var target_dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/symlink_test", .{});
     defer target_dir.close(io);
     target_dir.symLink(io, "target.txt", "link.txt", .{}) catch |err| {
-        // Skip test if symlinks are not supported on this platform
+        // Some platforms cannot create symbolic links.
         if (err == error.Unexpected) return error.SkipZigTest;
         return err;
     };
 
-    // Walk and collect files
     const Context = struct {
         files: std.ArrayList([]const u8),
         alloc: std.mem.Allocator,
@@ -370,7 +326,6 @@ test "symlinks to files are followed" {
 
     try walkDirectory("tmp/symlink_test", Context.callback, &ctx, allocator, false, io);
 
-    // Should find 2 files: target.txt and link.txt (the symlink treated as a file)
     try testing.expectEqual(@as(usize, 2), ctx.files.items.len);
 }
 
@@ -381,27 +336,23 @@ test "exclude pattern matching" {
     var patterns: std.ArrayList([]const u8) = .empty;
     defer patterns.deinit(allocator);
 
-    // Add test patterns
     try patterns.append(allocator, "*.log");
     try patterns.append(allocator, "*.tmp");
     try patterns.append(allocator, ".git/");
     try patterns.append(allocator, "node_modules/");
 
-    // Test extension matching
     try testing.expect(matchesExcludePattern("debug.log", patterns));
     try testing.expect(matchesExcludePattern("temp.tmp", patterns));
     try testing.expect(!matchesExcludePattern("data.txt", patterns));
 
-    // Test directory matching
     try testing.expect(matchesExcludePattern(".git/config", patterns));
     try testing.expect(matchesExcludePattern(".git/objects/abc", patterns));
     try testing.expect(matchesExcludePattern("node_modules/package/index.js", patterns));
 
-    // Test non-matches
     try testing.expect(!matchesExcludePattern("src/main.zig", patterns));
     try testing.expect(!matchesExcludePattern("README.md", patterns));
 
-    // Directory patterns only match whole path components
+    // Directory patterns only match whole path components.
     try testing.expect(!matchesExcludePattern(".gitignore", patterns));
     try testing.expect(!matchesExcludePattern(".github/workflows/ci.yml", patterns));
     try testing.expect(matchesExcludePattern("src/.git", patterns));
@@ -415,27 +366,23 @@ test "ignore symlinks flag" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    // Create test directory with a file and a symlink to it
     try ensureDirectory("tmp/ignore_symlinks_test", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/ignore_symlinks_test") catch {};
 
-    // Create target file
     {
         const f = try std.Io.Dir.createFile(.cwd(), io, "tmp/ignore_symlinks_test/target.txt", .{});
         defer f.close(io);
         try f.writeStreamingAll(io, "target content");
     }
 
-    // Create symlink to the file
     var target_dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/ignore_symlinks_test", .{});
     defer target_dir.close(io);
     target_dir.symLink(io, "target.txt", "link.txt", .{}) catch |err| {
-        // Skip test if symlinks are not supported on this platform
+        // Some platforms cannot create symbolic links.
         if (err == error.Unexpected) return error.SkipZigTest;
         return err;
     };
 
-    // Test with ignore_symlinks = false (should find both files)
     {
         const Context = struct {
             files: std.ArrayList([]const u8),
@@ -466,11 +413,9 @@ test "ignore symlinks flag" {
 
         try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, false, io);
 
-        // Should find 2 files: target.txt and link.txt (symlink)
         try testing.expectEqual(@as(usize, 2), ctx.files.items.len);
     }
 
-    // Test with ignore_symlinks = true (should find only target.txt)
     {
         const Context = struct {
             files: std.ArrayList([]const u8),
@@ -501,7 +446,6 @@ test "ignore symlinks flag" {
 
         try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, true, io);
 
-        // Should find 1 file: only target.txt (symlink ignored)
         try testing.expectEqual(@as(usize, 1), ctx.files.items.len);
         try testing.expectEqualStrings("target.txt", ctx.files.items[0]);
     }

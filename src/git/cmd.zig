@@ -203,7 +203,6 @@ fn printReport(report: *const sync.Report) void {
     }
 }
 
-/// Report a failed sync and hand the error back.
 fn failSync(report: *const sync.Report, err: anyerror) anyerror {
     printReport(report);
     explainSyncError(err);
@@ -259,7 +258,7 @@ pub fn setupStore(repo: *const Repo) !void {
 fn installIntegration(repo: *const Repo) !void {
     const exe = try std.process.executablePathAlloc(repo.io, repo.allocator);
     defer repo.allocator.free(exe);
-    // sh reads a Windows path more easily with forward slashes
+    // sh reads a Windows path more easily with forward slashes.
     if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, exe, std.fs.path.sep_windows, std.fs.path.sep_posix);
     try repo.configSetLocal("turbocrypt.path", exe);
     try hooks.install(repo, exe);
@@ -527,7 +526,8 @@ fn cmdAdd(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, en
     std.debug.print("{d} entr{s} added, {d} file(s) encrypted and staged\n", .{ added, if (added == 1) "y" else "ies", report.count(.encrypted) });
 }
 
-/// A file that the sync would only report as bad is refused up front, so the manifest never gains a line that cannot be honored.
+/// A file that the sync would only report as bad is refused up front.
+/// The manifest then never gains a line that cannot be honored.
 fn checkAddable(repo: *const Repo, keys: crypto.DerivedKeys, plain: []const u8) !void {
     const allocator = repo.allocator;
     const abs = try repo.absolutePath(plain);

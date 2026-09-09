@@ -4,75 +4,55 @@ const keygen = @import("keygen.zig");
 const password = @import("password.zig");
 const prompt = @import("prompt.zig");
 
-/// Environment variable name for key file path
 pub const env_var_name = "TURBOCRYPT_KEY_FILE";
 
-/// Resolve the key file path using the following priority:
-/// 1. CLI argument (if provided and not empty)
-/// 2. TURBOCRYPT_KEY_FILE environment variable
-/// 3. Config file (returns null - key loaded directly from config)
-///
-/// Returns an owned slice that the caller must free.
-/// Returns null if key should be loaded from config.
+/// The key file path from the --key argument, else from TURBOCRYPT_KEY_FILE.
+/// Null means the key comes from the config file. The caller frees the result.
 pub fn resolveKeyPath(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, environ_map: *const std.process.Environ.Map) !?[]const u8 {
-    // Priority 1: CLI argument
     if (optional_cli_path) |cli_path| {
         if (cli_path.len > 0) {
             return try allocator.dupe(u8, cli_path);
         }
     }
 
-    // Priority 2: Environment variable
     if (environ_map.get(env_var_name)) |env_path| {
         if (env_path.len > 0) {
             return try allocator.dupe(u8, env_path);
         }
     }
 
-    // Priority 3: Config file - return null to signal key should be loaded from config
     return null;
 }
 
-/// Resolve the encryption key using the following priority:
-/// 1. CLI argument (load from file path)
-/// 2. TURBOCRYPT_KEY_FILE environment variable (load from file path)
-/// 3. Config file (use stored key)
-///
-/// Returns error.KeyNotFound if no key is configured.
+/// The key from the file that resolveKeyPath names, else from the config file.
+/// Returns error.KeyNotFound when nothing is configured.
 pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, password_opt: ?[]const u8, io: std.Io, environ_map: *const std.process.Environ.Map) ![16]u8 {
     const key_path = try resolveKeyPath(allocator, optional_cli_path, environ_map);
 
     if (key_path) |path| {
-        // Load from file
         defer allocator.free(path);
         return try keygen.readKeyFile(path, password_opt, io);
     } else {
-        // Load from config
         var cfg = try config.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
         if (cfg.key) |key_data| {
-            // Detect password protection by length (same as file format)
+            // The config stores the key in the key file layout, so the length tells the format.
             if (key_data.len == keygen.plain_key_file_size) {
-                // Plain key: return as-is
                 var key: [16]u8 = undefined;
                 @memcpy(&key, key_data);
                 return key;
             } else if (key_data.len == keygen.protected_key_file_size) {
-                // Password-protected key: flag byte + 16 XOR'd bytes + 4 checksum bytes
                 const format_flag = key_data[0];
                 if (format_flag != @backingInt(keygen.KeyFormat.password_protected)) {
                     return error.InvalidKeyFile;
                 }
 
-                // Password is required to decrypt the key
                 const pwd = password_opt orelse return error.PasswordRequired;
 
-                // Extract the protected key bytes (skip flag byte)
                 var protected_data: [20]u8 = undefined;
                 @memcpy(&protected_data, key_data[1..keygen.protected_key_file_size]);
 
-                // Decrypt the key (XOR with Argon2id output and verify checksum)
                 return try password.unprotectKey(protected_data, pwd);
             } else {
                 return error.InvalidKeyFile;
@@ -146,7 +126,6 @@ pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]con
     return std.fmt.allocPrint(allocator, "the default key in {s}", .{config_path});
 }
 
-/// Get the full path to the config file
 pub fn getConfigFilePath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
     return try config.getConfigFilePath(allocator, environ_map);
 }

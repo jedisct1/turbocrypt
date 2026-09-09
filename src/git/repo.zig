@@ -164,7 +164,6 @@ pub const Repo = struct {
         return !std.mem.eql(u8, self.git_dir, self.common_dir);
     }
 
-    /// Absolute path of a working tree file.
     pub fn absolutePath(self: *const Repo, relative: []const u8) ![]u8 {
         return std.fs.path.join(self.allocator, &.{ self.toplevel, relative });
     }

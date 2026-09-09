@@ -3,7 +3,6 @@ const crypto = @import("crypto.zig");
 const builtin = @import("builtin");
 const io_hints = @import("io_hints.zig");
 
-// Threshold for using mmap vs buffered I/O (1MB)
 const MMAP_THRESHOLD: u64 = 1024 * 1024;
 
 fn readAll(file: std.Io.File, io: std.Io, buffer: []u8) !usize {
@@ -129,9 +128,7 @@ pub fn writeFileAtomicIn(
     try atomic.finalizeInto(dest_dir, dest_name, io);
 }
 
-/// Read file using buffered I/O with I/O hints
 fn readBuffered(file: std.Io.File, file_size: u64, allocator: std.mem.Allocator, io: std.Io) ![]u8 {
-    // Advise kernel about sequential file access for better read-ahead
     io_hints.adviseFile(file, 0, @intCast(file_size), .sequential);
 
     const buffer = try allocator.alloc(u8, file_size);
@@ -145,7 +142,6 @@ fn readBuffered(file: std.Io.File, file_size: u64, allocator: std.mem.Allocator,
     return buffer;
 }
 
-/// Process a single file for encryption using zero-copy mmap for large files
 pub fn encryptFile(
     input_path: []const u8,
     output_path: []const u8,
@@ -166,7 +162,6 @@ pub fn encryptFile(
     }
 }
 
-/// Zero-copy encryption using dual mmap
 fn encryptFileZeroCopy(
     input_file: std.Io.File,
     input_size: u64,
@@ -176,21 +171,17 @@ fn encryptFileZeroCopy(
     permissions: std.Io.File.Permissions,
     io: std.Io,
 ) !void {
-    // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
 
-    // Memory-map input file (read-only)
     var input_mm = std.Io.File.MemoryMap.create(io, input_file, .{
         .len = input_size,
         .protection = .{ .read = true, .write = false },
         .populate = true,
     }) catch {
-        // Fall back to buffered I/O if mmap fails
         return encryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, permissions, io);
     };
     defer input_mm.destroy(io);
 
-    // Advise kernel about memory access pattern
     io_hints.adviseMemory(input_mm.memory.ptr, input_size, .sequential);
     io_hints.adviseMemory(input_mm.memory.ptr, input_size, .willneed);
 
@@ -225,7 +216,6 @@ fn encryptFileZeroCopy(
     try atomic.finalize(io);
 }
 
-/// Buffered encryption for small files
 fn encryptFileBuffered(
     input_file: std.Io.File,
     file_size: u64,
@@ -235,11 +225,9 @@ fn encryptFileBuffered(
     permissions: std.Io.File.Permissions,
     io: std.Io,
 ) !void {
-    // Read input file
     const plaintext = try readBuffered(input_file, file_size, allocator, io);
     defer allocator.free(plaintext);
 
-    // Encrypt
     const encrypted = try crypto.encrypt(plaintext, derived_keys, allocator, io);
     defer allocator.free(encrypted);
 
@@ -252,7 +240,6 @@ fn encryptFileBuffered(
     try atomic.finalize(io);
 }
 
-/// Process a single file for decryption using zero-copy mmap for large files
 pub fn decryptFile(
     input_path: []const u8,
     output_path: []const u8,
@@ -273,7 +260,6 @@ pub fn decryptFile(
     }
 }
 
-/// Zero-copy decryption using dual mmap
 fn decryptFileZeroCopy(
     input_file: std.Io.File,
     input_size: u64,
@@ -283,21 +269,17 @@ fn decryptFileZeroCopy(
     permissions: std.Io.File.Permissions,
     io: std.Io,
 ) !void {
-    // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
 
-    // Memory-map input file (read-only)
     var input_mm = std.Io.File.MemoryMap.create(io, input_file, .{
         .len = input_size,
         .protection = .{ .read = true, .write = false },
         .populate = true,
     }) catch {
-        // Fall back to buffered I/O if mmap fails
         return decryptFileBuffered(input_file, input_size, output_path, derived_keys, allocator, permissions, io);
     };
     defer input_mm.destroy(io);
 
-    // Advise kernel about memory access pattern
     io_hints.adviseMemory(input_mm.memory.ptr, input_size, .sequential);
     io_hints.adviseMemory(input_mm.memory.ptr, input_size, .willneed);
 
@@ -333,7 +315,6 @@ fn decryptFileZeroCopy(
     try atomic.finalize(io);
 }
 
-/// Buffered decryption for small files
 fn decryptFileBuffered(
     input_file: std.Io.File,
     file_size: u64,
@@ -343,11 +324,9 @@ fn decryptFileBuffered(
     permissions: std.Io.File.Permissions,
     io: std.Io,
 ) !void {
-    // Read input file
     const encrypted = try readBuffered(input_file, file_size, allocator, io);
     defer allocator.free(encrypted);
 
-    // Decrypt
     const plaintext = try crypto.decrypt(encrypted, derived_keys, allocator);
     defer allocator.free(plaintext);
 
@@ -360,9 +339,8 @@ fn decryptFileBuffered(
     try atomic.finalize(io);
 }
 
-/// Verify a single encrypted file without decrypting it
-/// Checks header MAC and AEGIS authentication tag
-/// If quick is true, only verifies header MAC (faster but doesn't check data integrity)
+/// Check an encrypted file without writing anything.
+/// With quick, only the header MAC is checked, so corrupt data still passes.
 pub fn verifyFile(
     input_path: []const u8,
     derived_keys: crypto.DerivedKeys,
@@ -370,14 +348,12 @@ pub fn verifyFile(
     quick: bool,
     io: std.Io,
 ) !void {
-    // Open input file
     const input_file = try std.Io.Dir.openFile(.cwd(), io, input_path, .{});
     defer input_file.close(io);
 
     const input_stat = try input_file.stat(io);
     const file_size = input_stat.size;
 
-    // Use mmap for large files on non-Windows platforms, otherwise buffered I/O
     if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
         try verifyFileZeroCopy(input_file, file_size, derived_keys, allocator, quick, io);
     } else {
@@ -385,7 +361,6 @@ pub fn verifyFile(
     }
 }
 
-/// Verify using mmap for large files
 fn verifyFileZeroCopy(
     input_file: std.Io.File,
     input_size: u64,
@@ -394,29 +369,23 @@ fn verifyFileZeroCopy(
     quick: bool,
     io: std.Io,
 ) !void {
-    // Advise kernel about sequential file access (before mmap for better prefetch)
     io_hints.adviseFile(input_file, 0, @intCast(input_size), .sequential);
 
-    // Memory-map input file (read-only)
     var input_mm = std.Io.File.MemoryMap.create(io, input_file, .{
         .len = input_size,
         .protection = .{ .read = true, .write = false },
         .populate = true,
     }) catch {
-        // Fall back to buffered I/O if mmap fails
         return verifyFileBuffered(input_file, input_size, derived_keys, allocator, quick, io);
     };
     defer {
-        // Drop pages from cache after processing
         io_hints.adviseMemory(input_mm.memory.ptr, input_size, .dontneed);
         input_mm.destroy(io);
     }
 
-    // Advise kernel about memory access pattern
     io_hints.adviseMemory(input_mm.memory.ptr, input_size, .sequential);
     io_hints.adviseMemory(input_mm.memory.ptr, input_size, .willneed);
 
-    // Verify the encrypted data
     if (quick) {
         try crypto.verifyHeaderOnly(input_mm.memory, derived_keys);
     } else {
@@ -424,7 +393,6 @@ fn verifyFileZeroCopy(
     }
 }
 
-/// Verify using buffered I/O for small files
 fn verifyFileBuffered(
     input_file: std.Io.File,
     file_size: u64,
@@ -433,11 +401,9 @@ fn verifyFileBuffered(
     quick: bool,
     io: std.Io,
 ) !void {
-    // Read encrypted file
     const encrypted = try readBuffered(input_file, file_size, allocator, io);
     defer allocator.free(encrypted);
 
-    // Verify
     if (quick) {
         try crypto.verifyHeaderOnly(encrypted, derived_keys);
     } else {
@@ -450,18 +416,15 @@ test "encrypt and decrypt file" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    // Ensure tmp directory exists
     std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    // Create test file
     const test_data = "Hello, World! This is test data for file encryption.";
     const input_path = "tmp/test_input.txt";
     const encrypted_path = "tmp/test_encrypted.bin";
     const decrypted_path = "tmp/test_decrypted.txt";
 
-    // Write test file
     {
         const file = try std.Io.Dir.createFile(.cwd(), io, input_path, .{});
         defer file.close(io);
@@ -469,15 +432,12 @@ test "encrypt and decrypt file" {
     }
     defer std.Io.Dir.deleteFile(.cwd(), io, input_path) catch {};
 
-    // Generate key and derive keys
     const key: [crypto.key_length]u8 = @splat(42);
     const derived = crypto.deriveKeys(key, null);
 
-    // Encrypt file
     try encryptFile(input_path, encrypted_path, derived, allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
 
-    // Verify encrypted file exists and is larger than plaintext
     {
         const file = try std.Io.Dir.openFile(.cwd(), io, encrypted_path, .{});
         defer file.close(io);
@@ -485,11 +445,9 @@ test "encrypt and decrypt file" {
         try testing.expect(size == test_data.len + crypto.overhead_size);
     }
 
-    // Decrypt file
     try decryptFile(encrypted_path, decrypted_path, derived, allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, decrypted_path) catch {};
 
-    // Verify decrypted content matches original
     {
         const file = try std.Io.Dir.openFile(.cwd(), io, decrypted_path, .{});
         defer file.close(io);
@@ -506,7 +464,6 @@ test "decrypt with wrong key fails" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    // Ensure tmp directory exists
     std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
@@ -516,7 +473,6 @@ test "decrypt with wrong key fails" {
     const encrypted_path = "tmp/test_wrong_key_encrypted.bin";
     const decrypted_path = "tmp/test_wrong_key_decrypted.txt";
 
-    // Write test file
     {
         const file = try std.Io.Dir.createFile(.cwd(), io, input_path, .{});
         defer file.close(io);
@@ -529,15 +485,12 @@ test "decrypt with wrong key fails" {
     const derived1 = crypto.deriveKeys(key1, null);
     const derived2 = crypto.deriveKeys(key2, null);
 
-    // Encrypt with key1
     try encryptFile(input_path, encrypted_path, derived1, allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
 
-    // Try to decrypt with key2 - should fail
     const result = decryptFile(encrypted_path, decrypted_path, derived2, allocator, io);
     try testing.expectError(error.InvalidHeaderMAC, result);
 
-    // Verify decrypted file was not created
     const file_result = std.Io.Dir.openFile(.cwd(), io, decrypted_path, .{});
     try testing.expectError(error.FileNotFound, file_result);
 }
@@ -554,7 +507,6 @@ test "in-place encrypt/decrypt works with absolute path" {
     const relative_path = "tmp/in_place_absolute.txt";
     const plaintext = "absolute path data";
 
-    // Write initial plaintext file
     {
         const file = try std.Io.Dir.createFile(.cwd(), io, relative_path, .{});
         defer file.close(io);
@@ -562,17 +514,14 @@ test "in-place encrypt/decrypt works with absolute path" {
     }
     defer std.Io.Dir.deleteFile(.cwd(), io, relative_path) catch {};
 
-    // Resolve absolute path for in-place operations
     const abs_path = try std.Io.Dir.realPathFileAlloc(.cwd(), io, relative_path, allocator);
     defer allocator.free(abs_path);
 
     const key: [crypto.key_length]u8 = @splat(9);
     const derived = crypto.deriveKeys(key, null);
 
-    // Encrypt in place using absolute path
     try encryptFile(abs_path, abs_path, derived, allocator, io);
 
-    // Verify encrypted file size increased by overhead
     {
         const file = try std.Io.Dir.openFile(.cwd(), io, relative_path, .{});
         defer file.close(io);
@@ -580,10 +529,8 @@ test "in-place encrypt/decrypt works with absolute path" {
         try testing.expectEqual(@as(u64, plaintext.len + crypto.overhead_size), stat.size);
     }
 
-    // Decrypt in place back to plaintext
     try decryptFile(abs_path, abs_path, derived, allocator, io);
 
-    // Confirm content restored
     {
         const file = try std.Io.Dir.openFile(.cwd(), io, relative_path, .{});
         defer file.close(io);

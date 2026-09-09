@@ -1,4 +1,3 @@
-# turbocrypt bash completion
 _turbocrypt() {
     local cur prev words cword
     if type _get_comp_words_by_ref &>/dev/null; then
@@ -14,7 +13,6 @@ _turbocrypt() {
     local config_subs=(show set-key set-threads set-buffer-size add-exclude remove-exclude set-ignore-symlinks set-encrypted-filenames)
     local git_subs=(init unlock export-key add rm status encrypt decrypt help)
 
-    # find first non-option token (subcommand)
     local i token subcmd=""
     for (( i = 1; i < COMP_CWORD; i++ )); do
         token="${COMP_WORDS[i]}"
@@ -24,9 +22,7 @@ _turbocrypt() {
         fi
     done
 
-    # If no subcommand yet -> list top-level subcommands and top-level help flag
     if [[ -z "$subcmd" ]]; then
-        # show subcommands; Bash doesn't show descriptions inline, but we list the names.
         COMPREPLY=( $(compgen -W "${subcommands[*]} -h --help -V --version" -- "$cur") )
         return 0
     fi
@@ -139,12 +135,10 @@ _turbocrypt() {
             ;;
 
         config)
-            # If just 'config' so far, show config subcommands and -h/--help
             if [[ ${COMP_CWORD} -le 2 || "${COMP_WORDS[COMP_CWORD-1]}" == "config" ]]; then
                 COMPREPLY=( $(compgen -W "${config_subs[*]} -h --help" -- "$cur") )
                 return 0
             fi
-            # determine which config subcommand is present
             local cfg=""
             for (( i = 2; i < COMP_CWORD; i++ )); do
                 token="${COMP_WORDS[i]}"

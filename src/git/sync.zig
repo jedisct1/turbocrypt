@@ -244,7 +244,8 @@ pub fn keyDirName(keys: crypto.DerivedKeys) [2 * crypto.mac_length]u8 {
 pub const key_dir_len = enc_dir.len + 1 + 2 * crypto.mac_length;
 
 /// The directory of one key inside the store, relative to the top level.
-/// A key keeps its entries and its manifest there and never looks into the other directories, which lets people with different keys share a repository.
+/// A key keeps its entries and its manifest there and never looks into the other directories.
+/// This lets people with different keys share a repository.
 pub fn keyDirRel(keys: crypto.DerivedKeys) [key_dir_len]u8 {
     var out: [key_dir_len]u8 = undefined;
     @memcpy(out[0 .. enc_dir.len + 1], enc_dir ++ "/");
@@ -523,7 +524,8 @@ pub const Context = struct {
     }
 
     /// The plain manifest when it exists, else the one in the store.
-    /// Reading the store copy is also the key check: a wrong key cannot name the entry, and a corrupted one fails to decrypt.
+    /// Reading the store copy is also the key check.
+    /// A wrong key cannot name the entry, and a corrupted one fails to decrypt.
     fn loadManifest(self: *Context) !void {
         const store_text = try manifestFromDir(self.repo, self.store_abs, self.keys);
         defer if (store_text) |text| self.allocator.free(text);
@@ -536,7 +538,6 @@ pub const Context = struct {
         }
     }
 
-    /// Both manifests, for the exclude block.
     fn manifestsForExclude(self: *const Context, buf: *[2]*const Manifest) []const *const Manifest {
         var n: usize = 0;
         if (self.manifest) |*m| {
@@ -555,7 +556,6 @@ pub const Context = struct {
     }
 };
 
-/// The manifest of the working tree, or null when there is none.
 pub fn readPlainManifest(repo: *const Repo) !?Manifest {
     const allocator = repo.allocator;
     const path = try repo.absolutePath(manifest_mod.manifest_name);
@@ -640,7 +640,8 @@ pub fn otherKeyCount(repo: *const Repo, keys: crypto.DerivedKeys) !usize {
 }
 
 /// Plain files in the working tree that the manifest makes private.
-/// Files that a .gitignore rule ignores are left out and returned apart, so a private directory does not drag build output into the store.
+/// Files that a .gitignore rule ignores are left out and returned apart.
+/// This keeps the build output of a private directory out of the store.
 pub const Candidates = struct {
     files: [][]u8,
     ignored: [][]u8,
@@ -820,7 +821,6 @@ fn readNew(ctx: *const Context, cipher_rel: []const u8) !?New {
     return .{ .id = snap.mac, .exec = snap.exec, .header_ok = header_ok };
 }
 
-/// The bytes of a store entry, or null when it is absent.
 fn readEntry(ctx: *const Context, cipher_rel: []const u8) !?[]u8 {
     const abs = try entryPath(ctx, cipher_rel);
     defer ctx.allocator.free(abs);
@@ -1018,7 +1018,8 @@ fn decide(ctx: *const Context, info: *PathInfo, direction: Direction, force: boo
     info.decision = decision;
 }
 
-/// Open the directory that holds `rel` under `root`, one component at a time and without following symbolic links, so a link planted in the tree cannot redirect a write or a delete.
+/// Open the directory that holds `rel` under `root`, one component at a time.
+/// Symbolic links are not followed, so a link planted in the tree cannot redirect a write or a delete.
 /// Missing directories are created when asked, the root included, otherwise null is returned.
 /// The caller closes the handle.
 fn openParent(io: std.Io, root: []const u8, rel: []const u8, create: bool) !?std.Io.Dir {
@@ -1134,7 +1135,8 @@ fn asidePath(ctx: *const Context, prefix: []const u8, name: []const u8) ![]u8 {
     return std.fmt.allocPrint(ctx.allocator, "{s}/{s}.{s}.{x}", .{ ctx.repo.tmp_dir, prefix, name, rand });
 }
 
-/// A file that held a save made during the sync is moved aside rather than deleted, and the user is told where it is.
+/// A file that held a save made during the sync is moved aside rather than deleted.
+/// The user is told where it is.
 fn keepSavedCopy(ctx: *const Context, path: []const u8, plain: []const u8) void {
     const saved = asidePath(ctx, "saved", std.fs.path.basename(plain)) catch return;
     defer ctx.allocator.free(saved);
@@ -1264,7 +1266,8 @@ fn putBack(ctx: *const Context, atomic: *const processor.AtomicOutput, dir: std.
 }
 
 /// Delete a plain file that the analysis found unmodified.
-/// The file is moved aside first and inspected, so a save that landed in between is put back instead of being lost.
+/// The file is moved aside first and inspected.
+/// A save that landed in between is put back instead of being lost.
 fn deletePlain(ctx: *const Context, info: *const PathInfo) !void {
     const allocator = ctx.allocator;
     const io = ctx.io;
@@ -1323,7 +1326,9 @@ fn recordBaseline(ctx: *Context, info: *const PathInfo) !void {
     try ctx.state.put(ctx.allocator, info.plain, .{ .plain = cur.plain, .exec = cur.exec, .id = new.id });
 }
 
-/// Exclude block: the lines of every given manifest, the extra plain paths, plus whatever the block held before, minus `remove`.
+/// The exclude block holds the lines of every given manifest and the extra plain paths.
+/// Lines the block held before stay, except those in `remove`.
+///
 /// The extra paths are store entries that no manifest covers, for example after a replayed manifest.
 /// They must be ignored all the same.
 pub fn updateExcludeFile(repo: *const Repo, manifests: []const *const Manifest, extra: []const []const u8, remove: []const []const u8) !void {

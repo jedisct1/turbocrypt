@@ -3,7 +3,6 @@ const processor = @import("processor.zig");
 const crypto = @import("crypto.zig");
 const progress = @import("progress.zig");
 
-/// Print user-friendly error details with context and suggestions
 pub fn printErrorDetails(err: anyerror, is_encrypt: bool) void {
     std.debug.print("        Reason: ", .{});
 
@@ -55,7 +54,6 @@ pub fn printErrorDetails(err: anyerror, is_encrypt: bool) void {
     }
 }
 
-/// Handle job processing error with consistent error reporting
 fn handleJobError(
     worker: *WorkerPool,
     job: FileJob,
@@ -63,7 +61,7 @@ fn handleJobError(
     error_prefix: []const u8,
     is_encrypt: bool,
 ) void {
-    // Do I/O outside the mutex to avoid deadlock
+    // Print outside the error mutex.
     std.debug.print("\n{s} {s}\n", .{ error_prefix, job.source_path });
     printErrorDetails(err, is_encrypt);
 
@@ -71,14 +69,12 @@ fn handleJobError(
     worker.progress_tracker.addFileFailed();
 }
 
-/// Operation type for file processing
 pub const Operation = enum {
     encrypt,
     decrypt,
     verify,
 };
 
-/// File processing job
 pub const FileJob = struct {
     source_path: []const u8,
     dest_path: ?[]const u8, // null for verify operations
@@ -88,7 +84,6 @@ pub const FileJob = struct {
     delete_source: bool = false,
 };
 
-/// Thread-safe work queue with batch popping capability
 const WorkQueue = struct {
     mutex: std.Io.Mutex,
     items: std.ArrayList(FileJob),
@@ -116,33 +111,28 @@ const WorkQueue = struct {
         self.items.deinit(self.allocator);
     }
 
-    /// Add a job to the queue
     pub fn push(self: *Self, job: FileJob) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         try self.items.append(self.allocator, job);
     }
 
-    /// Pop a batch of up to max_count items from the queue
-    /// Returns an owned slice that caller must free, or null if done
-    /// Returns empty slice if queue is empty but not done yet
+    /// Null means the queue is done. An empty slice means more jobs can still come.
+    /// The caller frees the result.
     pub fn popBatch(self: *Self, max_count: usize) !?[]FileJob {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
         if (self.items.items.len == 0) {
             if (self.done) return null;
-            // Return empty slice, but not done yet
             return try self.allocator.alloc(FileJob, 0);
         }
 
         const batch_size = @min(max_count, self.items.items.len);
 
-        // Allocate and copy batch items so caller owns them
         const batch = try self.allocator.alloc(FileJob, batch_size);
         @memcpy(batch, self.items.items[0..batch_size]);
 
-        // Move remaining items forward
         const remaining = self.items.items.len - batch_size;
         if (remaining > 0 and batch_size > 0) {
             @memmove(self.items.items[0..remaining], self.items.items[batch_size..]);
@@ -152,14 +142,12 @@ const WorkQueue = struct {
         return batch;
     }
 
-    /// Mark queue as done (no more items will be added)
     pub fn markDone(self: *Self) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.done = true;
     }
 
-    /// Check if queue is empty and done
     pub fn isEmpty(self: *Self) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -167,11 +155,9 @@ const WorkQueue = struct {
     }
 };
 
-/// Batch size for work queue processing
 const BATCH_SIZE: usize = 16;
-const PROGRESS_UPDATE_INTERVAL: usize = 10; // Update progress every N files
+const PROGRESS_UPDATE_INTERVAL: usize = 10;
 
-/// Context for parallel file processing
 pub const WorkerPool = struct {
     allocator: std.mem.Allocator,
     work_queue: WorkQueue,
@@ -188,7 +174,6 @@ pub const WorkerPool = struct {
 
     const Self = @This();
 
-    /// Initialize worker pool with batch processing
     pub fn init(
         allocator: std.mem.Allocator,
         thread_count: u32,
@@ -217,7 +202,6 @@ pub const WorkerPool = struct {
         };
     }
 
-    /// Clean up worker pool.
     /// Threads still running would touch the queue after it is gone, so they are joined first.
     pub fn deinit(self: *Self) void {
         self.finish();
@@ -225,19 +209,17 @@ pub const WorkerPool = struct {
         self.allocator.free(self.threads);
     }
 
-    /// Worker thread entry point - processes batches of files
     fn workerThread(worker: *WorkerPool) void {
-        // Create thread-local arena allocator to avoid contention
+        // A thread-local arena keeps the workers from contending on the allocator.
         var thread_arena = std.heap.ArenaAllocator.init(worker.allocator);
         defer thread_arena.deinit();
         const thread_allocator = thread_arena.allocator();
 
-        // Local progress counters to minimize lock contention
+        // Local counters keep the atomic traffic low.
         var local_files_processed: u64 = 0;
         var local_bytes_processed: u64 = 0;
 
         while (true) {
-            // Try to get a batch of jobs
             const maybe_batch = worker.work_queue.popBatch(BATCH_SIZE) catch |err| {
                 std.debug.print("[ERROR] Failed to pop batch: {}\n", .{err});
                 worker.markError();
@@ -248,19 +230,15 @@ pub const WorkerPool = struct {
             defer worker.allocator.free(batch);
 
             if (batch.len == 0) {
-                // Queue is empty but not done yet, sleep briefly and retry
-                worker.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {}; // 1ms
+                worker.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {};
                 continue;
             }
 
-            // Process entire batch
             for (batch, 0..) |job, idx| {
-                // Free paths allocated by main thread
+                // The job owns its paths.
                 defer worker.allocator.free(job.source_path);
                 defer if (job.dest_path) |dp| worker.allocator.free(dp);
 
-                // Process the file using thread-local allocator
-                // Skip actual processing in dry-run mode
                 if (!worker.dry_run) {
                     switch (job.operation) {
                         .encrypt => {
@@ -272,7 +250,7 @@ pub const WorkerPool = struct {
                                 worker.io,
                             ) catch |err| {
                                 handleJobError(worker, job, err, "[ERROR] Failed to encrypt:", true);
-                                continue; // Continue with remaining files in batch
+                                continue;
                             };
                         },
                         .decrypt => {
@@ -284,7 +262,7 @@ pub const WorkerPool = struct {
                                 worker.io,
                             ) catch |err| {
                                 handleJobError(worker, job, err, "[ERROR] Failed to decrypt:", false);
-                                continue; // Continue with remaining files in batch
+                                continue;
                             };
                         },
                         .verify => {
@@ -296,7 +274,7 @@ pub const WorkerPool = struct {
                                 worker.io,
                             ) catch |err| {
                                 handleJobError(worker, job, err, "[VERIFY FAILED]", false);
-                                continue; // Continue with remaining files in batch
+                                continue;
                             };
                         },
                     }
@@ -309,11 +287,9 @@ pub const WorkerPool = struct {
                     }
                 }
 
-                // Update local counters
                 local_files_processed += 1;
                 local_bytes_processed += job.file_size;
 
-                // Periodically flush progress to global tracker
                 if ((idx + 1) % PROGRESS_UPDATE_INTERVAL == 0 or idx == batch.len - 1) {
                     if (local_files_processed > 0) {
                         worker.progress_tracker.addFilesProcessed(local_files_processed);
@@ -324,23 +300,19 @@ pub const WorkerPool = struct {
                 }
             }
 
-            // Clear the arena after processing batch to reuse memory
             _ = thread_arena.reset(.retain_capacity);
         }
 
-        // Flush any remaining local progress
         if (local_files_processed > 0) {
             worker.progress_tracker.addFilesProcessed(local_files_processed);
             worker.progress_tracker.addBytesProcessed(local_bytes_processed);
         }
     }
 
-    /// Submit a file processing job to the queue
     pub fn submitJob(self: *Self, job: FileJob) !void {
         try self.work_queue.push(job);
     }
 
-    /// Start worker threads (call this before submitting jobs for concurrent processing).
     /// Fewer threads than asked for is a warning. None at all is an error, since the jobs would never run.
     pub fn start(self: *Self) !void {
         for (self.threads[0..self.thread_count]) |*thread| {
@@ -355,16 +327,13 @@ pub const WorkerPool = struct {
             self.spawned_count += 1;
         }
 
-        // Small delay to ensure workers are started and waiting
-        self.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {}; // 1ms
+        // Give the workers time to start.
+        self.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {};
     }
 
-    /// Mark queue as done and wait for all worker threads to complete
     pub fn finish(self: *Self) void {
-        // Mark queue as done (no more jobs will be added)
         self.work_queue.markDone();
 
-        // Wait for all successfully spawned threads to complete
         for (self.threads[0..self.spawned_count]) |thread| {
             thread.join();
         }
@@ -383,7 +352,6 @@ pub const WorkerPool = struct {
         self.error_mutex.unlock(self.io);
     }
 
-    /// Check if any errors occurred
     pub fn hadErrors(self: *Self) bool {
         self.error_mutex.lockUncancelable(self.io);
         defer self.error_mutex.unlock(self.io);

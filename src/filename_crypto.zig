@@ -2,25 +2,19 @@ const std = @import("std");
 const hctr2 = @import("hctr2");
 const base84 = @import("base84");
 
-/// Minimum filename length before encryption (padded with null bytes)
-/// HCTR2 requires minimum 16 bytes (one AES block).
-/// This prevents path length explosion for deeply nested directories.
-/// It also keeps every encrypted name longer than any reserved Windows device name, such as CON.
+/// HCTR2 needs at least one AES block.
+/// The padding also keeps every encrypted name longer than a reserved Windows device name, such as CON.
 const min_padded_length = 16;
 
-/// Maximum filename length to use stack buffers (typical filesystem limit is 255)
 const max_stack_filename_length = 256;
 
-/// Longest encoded name that fits the stack buffers
 const max_stack_encoded_length = base84.standard.calcSizeUpperBound(max_stack_filename_length);
 
-/// Decoded size of any name that fits a file name
 const max_decoded_length = base84.standard.calcDecodedSizeUpperBound(filesystem_filename_limit);
 
-/// Filesystem filename length limit (ext4, APFS, NTFS all support 255 bytes)
+/// ext4, APFS and NTFS all stop at 255 bytes.
 const filesystem_filename_limit = 255;
 
-/// Error for when encrypted filename exceeds filesystem limits
 pub const FilenameError = error{
     EncryptedFilenameTooLong,
 };
@@ -31,44 +25,30 @@ pub const StrictError = error{
     UnsafeDecryptedFilename,
 };
 
-/// Encrypt a single filename component using HCTR2 and base84 encoding
+/// Names are padded with zero bytes to 16 bytes at least, encrypted with HCTR2 and an empty tweak, then base84 encoded.
+/// The base84 alphabet is valid in file names on Linux, macOS and Windows.
 ///
-/// The filename is padded to a minimum of 16 bytes (HCTR2 minimum block size) with null bytes (0x00),
-/// encrypted with HCTR2 using an empty tweak, then encoded with base84,
-/// whose alphabet is valid in file names on Linux, macOS and Windows.
-///
-/// Special filenames "." and ".." are not encrypted.
-///
-/// Uses stack buffers for typical filenames (<=256 bytes), falls back to heap for longer names.
-///
-/// Note: The key parameter should be the derived filename_key from DerivedKeys.
-///
-/// Returns: Owned slice that caller must free
+/// "." and ".." stay as they are. The caller frees the result.
 pub fn encryptFilename(
     allocator: std.mem.Allocator,
     plaintext_name: []const u8,
     filename_key: [16]u8,
 ) ![]u8 {
-    // Don't encrypt special directory entries
     if (std.mem.eql(u8, plaintext_name, ".") or std.mem.eql(u8, plaintext_name, "..")) {
         return allocator.dupe(u8, plaintext_name);
     }
 
-    // Pad to minimum 16 bytes with null bytes
     const padded_len = @max(plaintext_name.len, min_padded_length);
 
-    // Use stack buffers for typical filenames
     if (padded_len <= max_stack_filename_length) {
         var padded_buf: [max_stack_filename_length]u8 = undefined;
         const padded = padded_buf[0..padded_len];
 
-        // Copy plaintext and fill rest with null bytes
         @memcpy(padded[0..plaintext_name.len], plaintext_name);
         if (padded_len > plaintext_name.len) {
             @memset(padded[plaintext_name.len..], 0);
         }
 
-        // Encrypt with HCTR2 using empty tweak
         var cipher = hctr2.Hctr2_128.init(filename_key);
         var ciphertext_buf: [max_stack_filename_length]u8 = undefined;
         const ciphertext = ciphertext_buf[0..padded_len];
@@ -78,25 +58,20 @@ pub fn encryptFilename(
         var encode_buf: [max_stack_encoded_length]u8 = undefined;
         const encoded = try base84.standard.encode(&encode_buf, ciphertext);
 
-        // Validate that encrypted filename fits within filesystem limit
         if (encoded.len > filesystem_filename_limit) {
             return FilenameError.EncryptedFilenameTooLong;
         }
 
-        // Return owned copy
         return allocator.dupe(u8, encoded);
     } else {
-        // Fall back to heap allocation for long filenames
         var padded = try allocator.alloc(u8, padded_len);
         defer allocator.free(padded);
 
-        // Copy plaintext and fill rest with null bytes
         @memcpy(padded[0..plaintext_name.len], plaintext_name);
         if (padded_len > plaintext_name.len) {
             @memset(padded[plaintext_name.len..], 0);
         }
 
-        // Encrypt with HCTR2 using empty tweak
         var cipher = hctr2.Hctr2_128.init(filename_key);
         const ciphertext = try allocator.alloc(u8, padded_len);
         defer allocator.free(ciphertext);
@@ -109,21 +84,19 @@ pub fn encryptFilename(
 
         const encoded = try base84.standard.encode(encode_buf, ciphertext);
 
-        // Validate that encrypted filename fits within filesystem limit
         if (encoded.len > filesystem_filename_limit) {
             return FilenameError.EncryptedFilenameTooLong;
         }
 
-        // Resize to actual encoded length
         return allocator.realloc(encode_buf, encoded.len);
     }
 }
 
 /// Decrypt a name that comes from an untrusted place, such as a git store.
 ///
-/// Only the canonical encoding of a usable path component is accepted. Anything else is an error rather than being passed through.
-///
-/// Returns: Owned slice that caller must free
+/// Only the canonical encoding of a usable path component is accepted.
+/// Anything else is an error rather than being passed through.
+/// The caller frees the result.
 pub fn decryptFilenameStrict(
     allocator: std.mem.Allocator,
     encrypted_name: []const u8,
@@ -132,7 +105,8 @@ pub fn decryptFilenameStrict(
     return decryptFilenameCanonical(allocator, encrypted_name, filename_key, .strict);
 }
 
-/// What a decrypted name may contain: `strict` for names that are printed and used with '/', `filesystem` for native paths with the given separator.
+/// What a decrypted name may contain.
+/// `strict` is for names that are printed and joined with '/'. `filesystem` is for native paths with the given separator.
 const DecryptionSafety = union(enum) {
     strict,
     filesystem: u8,
@@ -195,9 +169,7 @@ pub fn isSafeComponent(name: []const u8) bool {
 }
 
 /// Decrypt a relative path from a git store, one component at a time.
-/// Git reports paths with '/' on every platform.
-///
-/// Returns: Owned slice that caller must free
+/// Git reports paths with '/' on every platform. The caller frees the result.
 pub fn decryptPathStrict(
     allocator: std.mem.Allocator,
     encrypted_path: []const u8,
@@ -209,8 +181,7 @@ pub fn decryptPathStrict(
 /// Decrypt a filesystem path without allowing decrypted components to change its structure.
 /// A name that does not decode is kept as it is, so a directory can mix encrypted and plain names.
 /// A plain name that happens to decode cannot be told from an encrypted one.
-///
-/// Returns: Owned slice that caller must free
+/// The caller frees the result.
 pub fn decryptPathForFilesystem(
     allocator: std.mem.Allocator,
     encrypted_path: []const u8,
@@ -255,20 +226,15 @@ fn decryptPathWith(
     return std.mem.join(allocator, &.{sep}, components.items);
 }
 
-/// Encrypt a full path by encrypting each component separately
-///
+/// Encrypt a path one component at a time.
 /// `sep` separates the components: the native separator for filesystem paths, '/' for paths that git reports.
-///
-/// Note: The key parameter should be the derived filename_key from DerivedKeys.
-///
-/// Returns: Owned slice that caller must free
+/// The caller frees the result.
 pub fn encryptPath(
     allocator: std.mem.Allocator,
     path: []const u8,
     filename_key: [16]u8,
     sep: u8,
 ) ![]u8 {
-    // Split path by separator
     var components: std.ArrayList([]const u8) = .empty;
     defer {
         for (components.items) |component| {
@@ -279,7 +245,8 @@ pub fn encryptPath(
 
     var it = std.mem.splitScalar(u8, path, sep);
     while (it.next()) |component| {
-        if (component.len == 0) continue; // Skip empty components (e.g., leading slash)
+        // A leading separator gives an empty component.
+        if (component.len == 0) continue;
 
         const encrypted = try encryptFilename(allocator, component, filename_key);
         try components.append(allocator, encrypted);
@@ -288,7 +255,6 @@ pub fn encryptPath(
     return std.mem.join(allocator, &.{sep}, components.items);
 }
 
-// Tests
 test "encrypt and decrypt filename" {
     const testing = std.testing;
     const allocator = testing.allocator;
@@ -358,13 +324,12 @@ test "filename encryption length validation" {
 
     const key: [16]u8 = @splat(0x42);
 
-    // Test that typical filenames encrypt successfully and fit within limit
     const long_name = "tracing_attributes-9e84d350f1142111.tracing_attributes.cb6dd642f55c194a-cgu.15.rcgu.o";
     const encrypted = try encryptFilename(allocator, long_name, key);
     defer allocator.free(encrypted);
     try testing.expect(encrypted.len <= filesystem_filename_limit);
 
-    // Names of up to 197 bytes fit whatever the ciphertext looks like
+    // Names of up to 197 bytes fit whatever the ciphertext looks like.
     const safe_lengths = [_]usize{ 50, 100, 150, 197 };
     for (safe_lengths) |len| {
         const test_name = try allocator.alloc(u8, len);
@@ -377,8 +342,7 @@ test "filename encryption length validation" {
         try testing.expect(enc.len <= filesystem_filename_limit);
     }
 
-    // Names of 205 bytes or more never fit
-    // The last length takes the heap path
+    // Names of 205 bytes or more never fit. The last length takes the heap path.
     const unsafe_lengths = [_]usize{ 205, 215, 220, max_stack_filename_length + 1 };
     for (unsafe_lengths) |len| {
         const test_name = try allocator.alloc(u8, len);
@@ -406,7 +370,7 @@ test "encrypted names are valid file names on Windows" {
         const encrypted = try encryptFilename(allocator, name, key);
         defer allocator.free(encrypted);
 
-        // Reserved device names like CON are short, and a period never shows up
+        // Reserved device names like CON are short, and a period never shows up.
         try testing.expect(encrypted.len >= 20);
         try testing.expect(std.mem.findAny(u8, encrypted, " .<>:\"/\\|?*") == null);
         for (encrypted) |c| try testing.expect(c > 0x20 and c < 0x7f);

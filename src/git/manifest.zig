@@ -40,7 +40,6 @@ pub const Entry = struct {
     }
 };
 
-/// True when one of the entries covers the path.
 pub fn anyCovers(entries: []const Entry, plain: []const u8) bool {
     for (entries) |entry| {
         if (entry.covers(plain)) return true;
@@ -86,7 +85,8 @@ pub fn isReservedPath(path: []const u8) bool {
     return false;
 }
 
-/// The manifest keeps every line as written, comments included, so a hand-edited file survives an add or an rm untouched apart from the line that changes.
+/// The manifest keeps every line as written, comments included.
+/// A hand-edited file survives an add or an rm untouched, apart from the line that changes.
 pub const Manifest = struct {
     lines: std.ArrayList([]u8) = .empty,
 

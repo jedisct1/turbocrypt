@@ -2,13 +2,11 @@ const std = @import("std");
 const keygen = @import("keygen.zig");
 const builtin = @import("builtin");
 
-/// Maximum password length
 const MAX_PASSWORD_LENGTH = 1024;
 
 /// Raw mode needs a Windows console or termios
 const supports_raw_mode = builtin.os.tag != .wasi;
 
-/// Platform-specific terminal state
 const TerminalState = if (builtin.os.tag == .windows)
     struct {
         handle: std.os.windows.HANDLE,
@@ -21,8 +19,7 @@ else
 extern "kernel32" fn GetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, lpMode: *std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
 extern "kernel32" fn SetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, dwMode: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
 
-/// Prompt the user for a password (with confirmation for new passwords)
-/// Allocates memory for the password - caller must free
+/// Ask for a password, twice when confirm is set. The caller frees the result.
 pub fn promptPassword(
     allocator: std.mem.Allocator,
     prompt_text: []const u8,
@@ -31,9 +28,8 @@ pub fn promptPassword(
 ) ![]u8 {
     const stdout = std.Io.File.stdout();
 
-    // On Unix, try to open /dev/tty directly to avoid stdin buffering issues
-    // If the process is killed, buffered stdin could be echoed in cleartext
-    // Fall back to stdin if /dev/tty can't be opened (e.g., non-interactive scenarios)
+    // Read from /dev/tty when possible.
+    // A killed process could echo buffered stdin in clear text.
     const stdin_file = if (builtin.os.tag == .windows)
         std.Io.File.stdin()
     else blk: {
@@ -126,8 +122,7 @@ fn readLine(file: std.Io.File, buffer: []u8, raw: bool, io: std.Io) !usize {
     return pos;
 }
 
-/// Set raw mode for password input (disables echo, buffering, and line processing)
-/// This prevents buffered input from being echoed if the process is killed
+/// Raw mode keeps a killed process from echoing buffered input.
 fn setRawMode(file: std.Io.File, state: *TerminalState) !void {
     if (builtin.os.tag == .windows) {
         const handle = file.handle;
@@ -174,7 +169,6 @@ fn setRawMode(file: std.Io.File, state: *TerminalState) !void {
     }
 }
 
-/// Restore terminal to original mode
 fn restoreMode(file: std.Io.File, state: TerminalState) !void {
     if (builtin.os.tag == .windows) {
         if (SetConsoleMode(state.handle, state.original_mode) == .FALSE) {
@@ -185,7 +179,6 @@ fn restoreMode(file: std.Io.File, state: TerminalState) !void {
     }
 }
 
-/// Check if a key file is password-protected
 pub fn isKeyPasswordProtected(path: []const u8, io: std.Io) !bool {
     const file = try std.Io.Dir.openFile(.cwd(), io, path, .{});
     defer file.close(io);

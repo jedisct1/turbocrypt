@@ -4,10 +4,9 @@ const keygen = @import("keygen.zig");
 const processor = @import("processor.zig");
 const utils = @import("utils.zig");
 
-/// Configuration filename within app data directory
 pub const config_filename = "config.json";
 
-/// Key size (16 bytes for AEGIS-128)
+/// AEGIS-128X2 keys are 16 bytes.
 pub const key_length = 16;
 
 /// The JSON layout of the config file, with the key as a hex string
@@ -20,32 +19,18 @@ const JsonConfig = struct {
     encrypted_filenames: ?bool = null,
 };
 
-/// TurboCrypt configuration
 pub const Config = struct {
-    /// Default encryption key (raw bytes in the same format as key file)
-    /// - 16 bytes: plain key
-    /// - 21 bytes: password-protected (1 byte flag + 16 byte XOR'd key + 4 byte checksum)
-    /// Stored as hex in JSON
+    /// The default key in the key file layout, with or without a password.
     key: ?[]const u8 = null,
 
-    /// Default number of worker threads
-    /// null means use CPU count (capped at 16)
+    /// Null means one worker thread per CPU.
     threads: ?u32 = null,
 
-    /// Default buffer size in bytes
-    /// null means use default (4MB)
     buffer_size: ?usize = null,
-
-    /// Default exclude patterns
     exclude_patterns: []const []const u8 = &[_][]const u8{},
-
-    /// Ignore symbolic links
     ignore_symlinks: ?bool = null,
-
-    /// Encrypt filenames by default
     encrypted_filenames: ?bool = null,
 
-    /// Load config from JSON with proper memory management
     pub fn fromJson(allocator: std.mem.Allocator, json_str: []const u8) !Config {
         const parsed = try std.json.parseFromSlice(JsonConfig, allocator, json_str, .{
             .ignore_unknown_fields = true,
@@ -93,7 +78,6 @@ pub const Config = struct {
         return config;
     }
 
-    /// Serialize config to JSON string
     pub fn toJson(self: Config, allocator: std.mem.Allocator) ![]const u8 {
         const hex_key: ?[]const u8 = if (self.key) |key|
             try std.fmt.allocPrint(allocator, "{x}", .{key})
@@ -117,9 +101,7 @@ pub const Config = struct {
         );
     }
 
-    /// Free all allocated memory
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
-        // Clear key from memory for security and free
         if (self.key) |key| {
             std.crypto.secureZero(u8, @constCast(key));
             allocator.free(key);
@@ -134,10 +116,7 @@ pub const Config = struct {
     }
 };
 
-/// Get the application data directory for turbocrypt
-/// - macOS: ~/Library/Application Support/turbocrypt
-/// - Linux: $XDG_DATA_HOME/turbocrypt or ~/.local/share/turbocrypt
-/// - Windows: %LOCALAPPDATA%\turbocrypt
+/// The per-user data directory: Application Support on macOS, the XDG data home on Linux, LOCALAPPDATA on Windows.
 fn getAppDataDir(allocator: std.mem.Allocator, appname: []const u8, environ_map: *const std.process.Environ.Map) ![]const u8 {
     const native_os = builtin.os.tag;
     if (native_os == .windows) {
@@ -147,7 +126,6 @@ fn getAppDataDir(allocator: std.mem.Allocator, appname: []const u8, environ_map:
         const home = environ_map.get("HOME") orelse return error.EnvironmentVariableNotFound;
         return try std.fs.path.join(allocator, &[_][]const u8{ home, "Library", "Application Support", appname });
     } else {
-        // Linux/Unix: use XDG_DATA_HOME or default to ~/.local/share
         if (environ_map.get("XDG_DATA_HOME")) |xdg_data| {
             return try std.fs.path.join(allocator, &[_][]const u8{ xdg_data, appname });
         } else {
@@ -157,7 +135,6 @@ fn getAppDataDir(allocator: std.mem.Allocator, appname: []const u8, environ_map:
     }
 }
 
-/// Get the full path to the config file
 pub fn getConfigFilePath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
     const app_data_dir = try getAppDataDir(allocator, "turbocrypt", environ_map);
     defer allocator.free(app_data_dir);
@@ -165,13 +142,12 @@ pub fn getConfigFilePath(allocator: std.mem.Allocator, environ_map: *const std.p
     return try std.fs.path.join(allocator, &[_][]const u8{ app_data_dir, config_filename });
 }
 
-/// Load config from file
-/// Returns a default config if file doesn't exist
+/// A missing config file gives the defaults.
 pub fn load(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !Config {
     const config_path = try getConfigFilePath(allocator, environ_map);
     defer allocator.free(config_path);
 
-    const max_size = 1024 * 1024; // 1MB max config file
+    const max_size = 1024 * 1024;
     const json_str = std.Io.Dir.readFileAlloc(
         .cwd(),
         io,
@@ -179,7 +155,6 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.pr
         allocator,
         std.Io.Limit.limited(max_size),
     ) catch |err| {
-        // If file doesn't exist, return default config
         if (err == error.FileNotFound) {
             return Config{};
         }
@@ -190,23 +165,18 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.pr
     return try Config.fromJson(allocator, json_str);
 }
 
-/// Save config to file with secure permissions
 pub fn save(config: Config, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
-    // Get app data directory
     const app_data_dir = try getAppDataDir(allocator, "turbocrypt", environ_map);
     defer allocator.free(app_data_dir);
 
-    // Ensure directory exists
     std.Io.Dir.createDirPath(.cwd(), io, app_data_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {}, // That's fine
+        error.PathAlreadyExists => {},
         else => return err,
     };
 
-    // Get config file path
     const config_path = try std.Io.Dir.path.join(allocator, &[_][]const u8{ app_data_dir, config_filename });
     defer allocator.free(config_path);
 
-    // Serialize to JSON
     const json_str = try config.toJson(allocator);
     defer allocator.free(json_str);
 
@@ -282,10 +252,8 @@ test "Config - to/from JSON" {
         }),
     };
 
-    // Serialize
     const json_str = try config.toJson(allocator);
 
-    // Deserialize
     var config2 = try Config.fromJson(allocator, json_str);
 
     try std.testing.expectEqualSlices(u8, &test_key_data, config2.key.?);
@@ -295,7 +263,6 @@ test "Config - to/from JSON" {
     try std.testing.expectEqualStrings("*.log", config2.exclude_patterns[0]);
     try std.testing.expectEqualStrings(".git/", config2.exclude_patterns[1]);
 
-    // Cleanup
     config2.deinit(allocator);
     allocator.free(json_str);
     config.deinit(allocator);
