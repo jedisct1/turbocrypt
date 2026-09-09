@@ -184,16 +184,6 @@ test "resolveKeyPath - returns null when no path configured" {
     try std.testing.expect(result == null);
 }
 
-/// An environment whose config lives under `home`, on every platform.
-fn testEnviron(allocator: std.mem.Allocator, home: []const u8) !std.process.Environ.Map {
-    var environ_map = std.process.Environ.Map.init(allocator);
-    errdefer environ_map.deinit();
-    try environ_map.put("HOME", home);
-    try environ_map.put("XDG_DATA_HOME", home);
-    try environ_map.put("LOCALAPPDATA", home);
-    return environ_map;
-}
-
 fn saveConfigKey(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, key_data: []const u8) !void {
     var cfg = config.Config{ .key = try allocator.dupe(u8, key_data) };
     defer cfg.deinit(allocator);
@@ -209,7 +199,7 @@ test "resolveKey - precedence between file sources and the config" {
     try std.Io.Dir.createDirPath(.cwd(), io, home);
     defer std.Io.Dir.deleteTree(.cwd(), io, home) catch {};
 
-    var environ_map = try testEnviron(allocator, home);
+    var environ_map = try config.testEnviron(allocator, home);
     defer environ_map.deinit();
     try testing.expectError(error.KeyNotFound, resolveKey(allocator, null, null, io, &environ_map));
     try testing.expect(!try isProtected(allocator, null, io, &environ_map));
@@ -218,8 +208,8 @@ test "resolveKey - precedence between file sources and the config" {
     const env_key: [16]u8 = @splat(2);
     const cli_key: [16]u8 = @splat(3);
     try saveConfigKey(allocator, io, &environ_map, &config_key);
-    try keygen.writeKeyFile(home ++ "/env.key", env_key, null, io);
-    try keygen.writeKeyFile(home ++ "/cli.key", cli_key, null, io);
+    try keygen.writeKeyFile(home ++ "/env.key", env_key, null, allocator, io);
+    try keygen.writeKeyFile(home ++ "/cli.key", cli_key, null, allocator, io);
 
     try testing.expectEqualSlices(u8, &config_key, &try resolveKey(allocator, null, null, io, &environ_map));
     const from_config = try describeKeySource(allocator, null, &environ_map);
@@ -247,7 +237,7 @@ test "resolveKey - password-protected config key" {
     try std.Io.Dir.createDirPath(.cwd(), io, home);
     defer std.Io.Dir.deleteTree(.cwd(), io, home) catch {};
 
-    var environ_map = try testEnviron(allocator, home);
+    var environ_map = try config.testEnviron(allocator, home);
     defer environ_map.deinit();
 
     const key: [16]u8 = @splat(9);

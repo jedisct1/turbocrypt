@@ -296,3 +296,61 @@ test "git integration: store round trip, clone, tamper" {
     defer allocator.free(mine_b);
     try testing.expect(!utils.pathExists(mine_b, io));
 }
+
+test "git integration: an unencryptable private name aborts before writing" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    if (!gitAvailable(allocator, io)) return error.SkipZigTest;
+
+    const test_base = "tmp/git_long_private_name";
+    std.Io.Dir.deleteTree(.cwd(), io, test_base) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, test_base ++ "/home");
+    defer std.Io.Dir.deleteTree(.cwd(), io, test_base) catch {};
+
+    const base_abs = try std.Io.Dir.realPathFileAlloc(.cwd(), io, test_base, allocator);
+    defer allocator.free(base_abs);
+    const home = try std.fs.path.join(allocator, &.{ base_abs, "home" });
+    defer allocator.free(home);
+    const worktree = try std.fs.path.join(allocator, &.{ base_abs, "repo" });
+    defer allocator.free(worktree);
+    var env = try Env.init(allocator, home);
+    defer env.deinit();
+
+    try gitOk(allocator, io, &env, base_abs, &.{ "init", "-q", "-b", "main", "repo" });
+    try gitOk(allocator, io, &env, worktree, &.{ "commit", "-qm", "initial", "--allow-empty" });
+
+    var repo = try Repo.openAt(allocator, io, &env.map, worktree);
+    defer repo.deinit();
+    const keys = crypto.deriveKeys(@splat(11), null);
+    try cmd.setupStore(&repo);
+
+    const long_name: [205]u8 = @splat('a');
+    const private_path = try std.fmt.allocPrint(allocator, "private/{s}", .{&long_name});
+    defer allocator.free(private_path);
+    try writeFile(io, worktree, private_path, "secret", allocator);
+    const manifest_text = manifest_mod.default_text ++ "/private/\n";
+    try writeFile(io, worktree, manifest_mod.manifest_name, manifest_text, allocator);
+    var manifest = try manifest_mod.Manifest.parse(allocator, manifest_text);
+    defer manifest.deinit(allocator);
+    try sync.updateExcludeFile(&repo, &.{&manifest}, &.{}, &.{});
+
+    const staged_before = try git(allocator, io, &env, worktree, &.{ "diff", "--cached", "--name-only" });
+    defer allocator.free(staged_before);
+    var report = sync.Report{};
+    defer report.deinit(allocator);
+    try testing.expectError(sync.Error.SyncAborted, sync.encryptSync(&repo, keys, .{}, &report));
+    try testing.expectEqual(@as(usize, 1), report.count(.bad));
+    try testing.expectEqual(@as(usize, 0), report.count(.encrypted));
+    const staged_after = try git(allocator, io, &env, worktree, &.{ "diff", "--cached", "--name-only" });
+    defer allocator.free(staged_after);
+    try testing.expectEqualStrings(staged_before, staged_after);
+
+    var status = sync.Report{};
+    defer status.deinit(allocator);
+    try sync.collectStatus(&repo, keys, &status);
+    try testing.expectEqual(@as(usize, 1), status.count(.bad));
+    for (status.rows.items) |row| {
+        if (std.mem.eql(u8, row.path, private_path)) try testing.expectEqual(sync.Row.Kind.bad, row.kind);
+    }
+}

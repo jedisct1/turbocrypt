@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const keygen = @import("keygen.zig");
+const processor = @import("processor.zig");
 const utils = @import("utils.zig");
 
 /// Configuration filename within app data directory
@@ -209,18 +210,17 @@ pub fn save(config: Config, allocator: std.mem.Allocator, io: std.Io, environ_ma
     const json_str = try config.toJson(allocator);
     defer allocator.free(json_str);
 
-    // Use atomic write with temporary file to avoid permission race
-    const temp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{config_path});
-    defer allocator.free(temp_path);
+    try processor.writeFileAtomic(config_path, json_str, utils.private_file_permissions, null, allocator, io);
+}
 
-    const file = try utils.createPrivateFile(temp_path, .{}, io);
-    defer file.close(io);
-
-    try file.writeStreamingAll(io, json_str);
-    try file.sync(io); // Ensure data is written to disk
-
-    // Atomically rename temp to final path
-    try std.Io.Dir.rename(.cwd(), temp_path, .cwd(), config_path, io);
+/// An environment whose config lives under `home`, on every platform. For tests.
+pub fn testEnviron(allocator: std.mem.Allocator, home: []const u8) !std.process.Environ.Map {
+    var environ_map = std.process.Environ.Map.init(allocator);
+    errdefer environ_map.deinit();
+    try environ_map.put("HOME", home);
+    try environ_map.put("XDG_DATA_HOME", home);
+    try environ_map.put("LOCALAPPDATA", home);
+    return environ_map;
 }
 
 test "Config - rejects wrong value types" {
@@ -299,4 +299,47 @@ test "Config - to/from JSON" {
     config2.deinit(allocator);
     allocator.free(json_str);
     config.deinit(allocator);
+}
+
+test "Config - save does not follow a planted temporary-file symlink" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/config_atomic_symlink";
+    const home = root ++ "/home";
+    const target_path = root ++ "/target";
+    const sentinel = "leave this file alone";
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, home);
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = target_path, .data = sentinel });
+
+    var environ_map = try testEnviron(allocator, home);
+    defer environ_map.deinit();
+    const config_path = try getConfigFilePath(allocator, &environ_map);
+    defer allocator.free(config_path);
+    try std.Io.Dir.createDirPath(.cwd(), io, std.fs.path.dirname(config_path).?);
+    const planted_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{config_path});
+    defer allocator.free(planted_path);
+    const target_abs = try std.Io.Dir.realPathFileAlloc(.cwd(), io, target_path, allocator);
+    defer allocator.free(target_abs);
+    std.Io.Dir.symLink(.cwd(), io, target_abs, planted_path, .{}) catch |err| {
+        if (err == error.Unexpected or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+
+    try save(.{ .threads = 3 }, allocator, io, &environ_map);
+
+    const target = try std.Io.Dir.readFileAlloc(.cwd(), io, target_path, allocator, .limited(sentinel.len + 1));
+    defer allocator.free(target);
+    try testing.expectEqualStrings(sentinel, target);
+    const planted_stat = try std.Io.Dir.statFile(.cwd(), io, planted_path, .{ .follow_symlinks = false });
+    try testing.expectEqual(std.Io.File.Kind.sym_link, planted_stat.kind);
+    const config_stat = try std.Io.Dir.statFile(.cwd(), io, config_path, .{ .follow_symlinks = false });
+    try testing.expectEqual(std.Io.File.Kind.file, config_stat.kind);
+
+    var loaded = try load(allocator, io, &environ_map);
+    defer loaded.deinit(allocator);
+    try testing.expectEqual(@as(u32, 3), loaded.threads.?);
 }

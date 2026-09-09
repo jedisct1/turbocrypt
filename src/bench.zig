@@ -2,8 +2,29 @@ const std = @import("std");
 const crypto = @import("crypto.zig");
 const keygen = @import("keygen.zig");
 const processor = @import("processor.zig");
-const worker = @import("worker.zig");
 const progress = @import("progress.zig");
+const worker = @import("worker.zig");
+
+const max_temp_dir_attempts = 16;
+
+fn createTempDir(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    var attempt: usize = 0;
+    while (attempt < max_temp_dir_attempts) : (attempt += 1) {
+        var random: u64 = undefined;
+        io.random(std.mem.asBytes(&random));
+        const path = try std.fmt.allocPrint(allocator, ".turbocrypt-bench-{x}", .{random});
+        errdefer allocator.free(path);
+        std.Io.Dir.createDir(.cwd(), io, path, .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {
+                allocator.free(path);
+                continue;
+            },
+            else => return err,
+        };
+        return path;
+    }
+    return error.TempDirCollision;
+}
 
 /// Benchmark configuration
 const BenchConfig = struct {
@@ -227,23 +248,57 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derive
 
 /// Context for multi-threaded in-memory encryption
 const ThreadContext = struct {
-    input: []const u8,
-    output: []u8,
+    inputs: []const []u8,
+    outputs: []const []u8,
     derived_keys: crypto.DerivedKeys,
     io: std.Io,
     error_occurred: bool = false,
 
     fn encryptThread(ctx: *ThreadContext) void {
-        crypto.encryptZeroCopy(ctx.output, ctx.input, ctx.derived_keys, ctx.io);
+        for (ctx.inputs, ctx.outputs) |input, output| {
+            crypto.encryptZeroCopy(output, input, ctx.derived_keys, ctx.io);
+        }
     }
 
     fn decryptThread(ctx: *ThreadContext) void {
-        crypto.decryptZeroCopy(ctx.output, ctx.input, ctx.derived_keys) catch {
-            ctx.error_occurred = true;
-            return;
-        };
+        for (ctx.inputs, ctx.outputs) |input, output| {
+            crypto.decryptZeroCopy(output, input, ctx.derived_keys) catch {
+                ctx.error_occurred = true;
+                return;
+            };
+        }
     }
 };
+
+/// Hand each thread its group of chunks, run `entry` on all of them, and wait.
+/// Returns false when a thread reported an error.
+fn runOnThreads(
+    threads: []std.Thread,
+    contexts: []ThreadContext,
+    inputs: []const []u8,
+    outputs: []const []u8,
+    chunks_per_thread: usize,
+    derived_keys: crypto.DerivedKeys,
+    io: std.Io,
+    comptime entry: fn (*ThreadContext) void,
+) !bool {
+    for (threads, contexts, 0..) |*thread, *context, i| {
+        const start = i * chunks_per_thread;
+        context.* = .{
+            .inputs = inputs[start .. start + chunks_per_thread],
+            .outputs = outputs[start .. start + chunks_per_thread],
+            .derived_keys = derived_keys,
+            .io = io,
+        };
+        thread.* = try std.Thread.spawn(.{}, entry, .{context});
+    }
+    for (threads) |thread| thread.join();
+    std.mem.doNotOptimizeAway(outputs);
+    for (contexts) |context| {
+        if (context.error_occurred) return false;
+    }
+    return true;
+}
 
 /// Benchmark multi-threaded in-memory encryption/decryption
 fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto.DerivedKeys, config: BenchConfig, io: std.Io) !void {
@@ -310,10 +365,10 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
         }
 
         // Pre-allocate thread contexts and handles (reused across iterations)
-        var contexts = try allocator.alloc(ThreadContext, thread_count);
+        const contexts = try allocator.alloc(ThreadContext, thread_count);
         defer allocator.free(contexts);
 
-        var threads = try allocator.alloc(std.Thread, thread_count);
+        const threads = try allocator.alloc(std.Thread, thread_count);
         defer allocator.free(threads);
 
         // Benchmark encryption with multiple iterations
@@ -322,76 +377,18 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
 
         // Warmup
         for (0..config.warmup_iterations) |_| {
-            // Launch threads for first chunk of each thread
-            for (0..thread_count) |i| {
-                const start_chunk = i * chunks_per_thread;
-                contexts[i] = ThreadContext{
-                    .input = test_data.items[start_chunk],
-                    .output = encrypted_outputs.items[start_chunk],
-                    .derived_keys = derived_keys,
-                    .io = io,
-                };
-                threads[i] = try std.Thread.spawn(.{}, ThreadContext.encryptThread, .{&contexts[i]});
-            }
-            for (threads) |thread| thread.join();
-
-            // Process remaining chunks
-            for (0..thread_count) |i| {
-                const start_chunk = i * chunks_per_thread;
-                for (1..chunks_per_thread) |j| {
-                    const chunk_idx = start_chunk + j;
-                    crypto.encryptZeroCopy(
-                        encrypted_outputs.items[chunk_idx],
-                        test_data.items[chunk_idx],
-                        derived_keys,
-                        io,
-                    );
-                    std.mem.doNotOptimizeAway(&encrypted_outputs.items[chunk_idx]);
-                }
-            }
+            _ = try runOnThreads(threads, contexts, test_data.items, encrypted_outputs.items, chunks_per_thread, derived_keys, io, ThreadContext.encryptThread);
         }
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
             const start_time = std.Io.Clock.Timestamp.now(io, .awake);
 
-            // Launch threads for first chunk of each thread
-            for (0..thread_count) |i| {
-                const start_chunk = i * chunks_per_thread;
-                contexts[i] = ThreadContext{
-                    .input = test_data.items[start_chunk],
-                    .output = encrypted_outputs.items[start_chunk],
-                    .derived_keys = derived_keys,
-                    .io = io,
-                };
-                threads[i] = try std.Thread.spawn(.{}, ThreadContext.encryptThread, .{&contexts[i]});
-            }
-            for (threads) |thread| thread.join();
-
-            // Process remaining chunks
-            for (0..thread_count) |i| {
-                const start_chunk = i * chunks_per_thread;
-                for (1..chunks_per_thread) |j| {
-                    const chunk_idx = start_chunk + j;
-                    crypto.encryptZeroCopy(
-                        encrypted_outputs.items[chunk_idx],
-                        test_data.items[chunk_idx],
-                        derived_keys,
-                        io,
-                    );
-                    std.mem.doNotOptimizeAway(&encrypted_outputs.items[chunk_idx]);
-                }
-            }
+            const ok = try runOnThreads(threads, contexts, test_data.items, encrypted_outputs.items, chunks_per_thread, derived_keys, io, ThreadContext.encryptThread);
 
             const encrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             try encrypt_stats.add(encrypt_time, allocator);
-
-            // Check for errors
-            for (contexts) |*ctx| {
-                if (ctx.error_occurred) {
-                    return error.EncryptionFailed;
-                }
-            }
+            if (!ok) return error.EncryptionFailed;
         }
 
         const encrypt_result = BenchResult{
@@ -410,74 +407,18 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
 
         // Warmup
         for (0..config.warmup_iterations) |_| {
-            // Launch decryption threads
-            for (0..thread_count) |i| {
-                const start_chunk = i * chunks_per_thread;
-                contexts[i] = ThreadContext{
-                    .input = encrypted_outputs.items[start_chunk],
-                    .output = decrypted_outputs.items[start_chunk],
-                    .derived_keys = derived_keys,
-                    .io = io,
-                };
-                threads[i] = try std.Thread.spawn(.{}, ThreadContext.decryptThread, .{&contexts[i]});
-            }
-            for (threads) |thread| thread.join();
-
-            // Process remaining chunks
-            for (0..thread_count) |i| {
-                const start_chunk = i * chunks_per_thread;
-                for (1..chunks_per_thread) |j| {
-                    const chunk_idx = start_chunk + j;
-                    try crypto.decryptZeroCopy(
-                        decrypted_outputs.items[chunk_idx],
-                        encrypted_outputs.items[chunk_idx],
-                        derived_keys,
-                    );
-                    std.mem.doNotOptimizeAway(&decrypted_outputs.items[chunk_idx]);
-                }
-            }
+            _ = try runOnThreads(threads, contexts, encrypted_outputs.items, decrypted_outputs.items, chunks_per_thread, derived_keys, io, ThreadContext.decryptThread);
         }
 
         // Measured iterations
         for (0..config.measured_iterations) |_| {
             const start_time = std.Io.Clock.Timestamp.now(io, .awake);
 
-            // Launch decryption threads
-            for (0..thread_count) |i| {
-                const start_chunk = i * chunks_per_thread;
-                contexts[i] = ThreadContext{
-                    .input = encrypted_outputs.items[start_chunk],
-                    .output = decrypted_outputs.items[start_chunk],
-                    .derived_keys = derived_keys,
-                    .io = io,
-                };
-                threads[i] = try std.Thread.spawn(.{}, ThreadContext.decryptThread, .{&contexts[i]});
-            }
-            for (threads) |thread| thread.join();
-
-            // Process remaining chunks
-            for (0..thread_count) |i| {
-                const start_chunk = i * chunks_per_thread;
-                for (1..chunks_per_thread) |j| {
-                    const chunk_idx = start_chunk + j;
-                    try crypto.decryptZeroCopy(
-                        decrypted_outputs.items[chunk_idx],
-                        encrypted_outputs.items[chunk_idx],
-                        derived_keys,
-                    );
-                    std.mem.doNotOptimizeAway(&decrypted_outputs.items[chunk_idx]);
-                }
-            }
+            const ok = try runOnThreads(threads, contexts, encrypted_outputs.items, decrypted_outputs.items, chunks_per_thread, derived_keys, io, ThreadContext.decryptThread);
 
             const decrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             try decrypt_stats.add(decrypt_time, allocator);
-
-            // Check for errors
-            for (contexts) |*ctx| {
-                if (ctx.error_occurred) {
-                    return error.DecryptionFailed;
-                }
-            }
+            if (!ok) return error.DecryptionFailed;
         }
 
         const decrypt_result = BenchResult{
@@ -569,7 +510,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                 };
                 try pool.submitJob(job);
             }
-            pool.waitAll();
+            try pool.waitAll();
+            if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
 
             // Cleanup encrypted files
             for (file_paths.items) |path| {
@@ -599,7 +541,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                     };
                     try pool.submitJob(job);
                 }
-                pool.waitAll();
+                try pool.waitAll();
+                if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
             }
             const encrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             try encrypt_stats.add(encrypt_time, allocator);
@@ -644,7 +587,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                 };
                 try pool.submitJob(job);
             }
-            pool.waitAll();
+            try pool.waitAll();
+            if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
         }
 
         // Warmup
@@ -665,7 +609,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                 };
                 try pool.submitJob(job);
             }
-            pool.waitAll();
+            try pool.waitAll();
+            if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
 
             // Cleanup decrypted files
             for (file_paths.items) |path| {
@@ -695,7 +640,8 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                     };
                     try pool.submitJob(job);
                 }
-                pool.waitAll();
+                try pool.waitAll();
+                if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
             }
             const decrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             try decrypt_stats.add(decrypt_time, allocator);
@@ -752,11 +698,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     const key = keygen.generate(io);
     const derived_keys = crypto.deriveKeys(key, null);
 
-    // Ensure tmp/ directory exists
-    const tmp_dir = "tmp";
-    std.Io.Dir.createDir(.cwd(), io, tmp_dir, .default_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
+    const tmp_dir = try createTempDir(allocator, io);
+    defer allocator.free(tmp_dir);
+    defer std.Io.Dir.deleteTree(.cwd(), io, tmp_dir) catch {};
 
     // Run single-threaded benchmarks
     try benchSingleThreaded(allocator, derived_keys, in_memory_config, io);
@@ -769,4 +713,57 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
 
     std.debug.print("\nBenchmark completed!\n", .{});
     std.debug.print("Note: Results may vary based on CPU, memory speed, and system load.\n", .{});
+}
+
+test "benchmark files use an isolated temporary directory" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    const tmp_dir = try createTempDir(allocator, io);
+    defer allocator.free(tmp_dir);
+    defer std.Io.Dir.deleteTree(.cwd(), io, tmp_dir) catch {};
+    try testing.expect(std.mem.startsWith(u8, tmp_dir, ".turbocrypt-bench-"));
+
+    const test_file = try std.fs.path.join(allocator, &.{ tmp_dir, "bench_input_0.dat" });
+    defer allocator.free(test_file);
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = test_file, .data = "temporary" });
+
+    const data = try std.Io.Dir.readFileAlloc(.cwd(), io, test_file, allocator, .limited(9));
+    defer allocator.free(data);
+    try testing.expectEqualStrings("temporary", data);
+}
+
+test "benchmark thread context processes every assigned chunk" {
+    const testing = std.testing;
+    const io = testing.io;
+    const derived_keys = crypto.deriveKeys(@splat(0x2a), null);
+    var input_a = [_]u8{ 1, 2, 3 };
+    var input_b = [_]u8{ 4, 5, 6, 7 };
+    var encrypted_a: [input_a.len + crypto.overhead_size]u8 = undefined;
+    var encrypted_b: [input_b.len + crypto.overhead_size]u8 = undefined;
+    var decrypted_a: [input_a.len]u8 = undefined;
+    var decrypted_b: [input_b.len]u8 = undefined;
+    var inputs = [_][]u8{ &input_a, &input_b };
+    var encrypted = [_][]u8{ &encrypted_a, &encrypted_b };
+    var decrypted = [_][]u8{ &decrypted_a, &decrypted_b };
+
+    var context = ThreadContext{
+        .inputs = &inputs,
+        .outputs = &encrypted,
+        .derived_keys = derived_keys,
+        .io = io,
+    };
+    context.encryptThread();
+    context = .{
+        .inputs = &encrypted,
+        .outputs = &decrypted,
+        .derived_keys = derived_keys,
+        .io = io,
+    };
+    context.decryptThread();
+
+    try testing.expect(!context.error_occurred);
+    try testing.expectEqualSlices(u8, &input_a, &decrypted_a);
+    try testing.expectEqualSlices(u8, &input_b, &decrypted_b);
 }

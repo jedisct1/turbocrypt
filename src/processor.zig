@@ -115,10 +115,14 @@ pub fn writeFileAtomicIn(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
-    var atomic = try AtomicOutput.create(dest_name, .{}, tmp_dir, allocator, io);
+    var options: std.Io.Dir.CreateFileOptions = .{};
+    if (permissions) |perms| options.permissions = perms;
+    var atomic = try AtomicOutput.create(dest_name, options, tmp_dir, allocator, io);
     defer atomic.deinit(io);
 
     try atomic.file.writeStreamingAll(io, data);
+    // Synced before the rename, so a crash leaves the old file or the whole new one.
+    try atomic.file.sync(io);
     if (permissions) |perms| {
         try atomic.setPermissions(io, perms);
     }

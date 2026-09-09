@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const password = @import("password.zig");
+const processor = @import("processor.zig");
 const utils = @import("utils.zig");
 
 fn readAll(file: std.Io.File, io: std.Io, buffer: []u8) !usize {
@@ -41,21 +42,17 @@ pub fn writeKeyFile(
     path: []const u8,
     key: [key_length]u8,
     password_opt: ?[]const u8,
+    allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
-    const file = try utils.createPrivateFile(path, .{}, io);
-    defer file.close(io);
+    var protected_file: [protected_key_file_size]u8 = undefined;
+    const data: []const u8 = if (password_opt) |pwd| blk: {
+        protected_file[0] = @backingInt(KeyFormat.password_protected);
+        protected_file[1..].* = try password.protectKey(key, pwd);
+        break :blk &protected_file;
+    } else &key;
 
-    if (password_opt) |pwd| {
-        // Password-protected format: flag byte + XOR'd key
-        const protected = try password.protectKey(key, pwd);
-        const flag = [1]u8{@backingInt(KeyFormat.password_protected)};
-        try file.writeStreamingAll(io, &flag);
-        try file.writeStreamingAll(io, &protected);
-    } else {
-        // Plain format: just the key bytes
-        try file.writeStreamingAll(io, &key);
-    }
+    try processor.writeFileAtomic(path, data, utils.private_file_permissions, null, allocator, io);
 }
 
 /// Read a key from a file
@@ -150,7 +147,7 @@ test "key file write and read (plain)" {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    try writeKeyFile(test_path, original_key, null, io);
+    try writeKeyFile(test_path, original_key, null, std.testing.allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Read back
@@ -158,6 +155,35 @@ test "key file write and read (plain)" {
 
     // Verify they match
     try testing.expectEqualSlices(u8, &original_key, &read_key);
+}
+
+test "writing a key replaces a symbolic link without changing its target" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/key_atomic_symlink";
+    const target_path = root ++ "/target";
+    const key_path = root ++ "/key";
+    const sentinel = "do not replace";
+    const key: [key_length]u8 = @splat(0x5a);
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, root);
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = target_path, .data = sentinel });
+    std.Io.Dir.symLink(.cwd(), io, "target", key_path, .{}) catch |err| {
+        if (err == error.Unexpected or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+
+    try writeKeyFile(key_path, key, null, std.testing.allocator, io);
+
+    const target = try std.Io.Dir.readFileAlloc(.cwd(), io, target_path, allocator, .limited(sentinel.len + 1));
+    defer allocator.free(target);
+    try testing.expectEqualStrings(sentinel, target);
+    const stat = try std.Io.Dir.statFile(.cwd(), io, key_path, .{ .follow_symlinks = false });
+    try testing.expectEqual(std.Io.File.Kind.file, stat.kind);
+    try testing.expectEqualSlices(u8, &key, &try readKeyFile(key_path, null, io));
 }
 
 test "key file write and read (password-protected)" {
@@ -176,7 +202,7 @@ test "key file write and read (password-protected)" {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    try writeKeyFile(test_path, original_key, test_password, io);
+    try writeKeyFile(test_path, original_key, test_password, std.testing.allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Verify file size is correct for password-protected keys
@@ -205,7 +231,7 @@ test "password-protected key requires password" {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    try writeKeyFile(test_path, original_key, test_password, io);
+    try writeKeyFile(test_path, original_key, test_password, std.testing.allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Attempt to read without password should fail
@@ -227,7 +253,7 @@ test "wrong password fails" {
         if (err != error.PathAlreadyExists) return err;
     };
 
-    try writeKeyFile(test_path, original_key, correct_password, io);
+    try writeKeyFile(test_path, original_key, correct_password, std.testing.allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Read with wrong password should fail with InvalidPassword error
@@ -250,12 +276,12 @@ test "change password on protected key" {
     };
 
     // Write with old password
-    try writeKeyFile(test_path, original_key, old_password, io);
+    try writeKeyFile(test_path, original_key, old_password, std.testing.allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Read with old password and re-write with new password
     const read_key = try readKeyFile(test_path, old_password, io);
-    try writeKeyFile(test_path, read_key, new_password, io);
+    try writeKeyFile(test_path, read_key, new_password, std.testing.allocator, io);
 
     // Verify old password no longer works
     const result_old = readKeyFile(test_path, old_password, io);
@@ -280,7 +306,7 @@ test "add password protection to plain key" {
     };
 
     // Write as plain key
-    try writeKeyFile(test_path, original_key, null, io);
+    try writeKeyFile(test_path, original_key, null, std.testing.allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Verify file size is for plain key
@@ -291,7 +317,7 @@ test "add password protection to plain key" {
 
     // Read and re-write with password
     const read_key = try readKeyFile(test_path, null, io);
-    try writeKeyFile(test_path, read_key, test_password, io);
+    try writeKeyFile(test_path, read_key, test_password, std.testing.allocator, io);
 
     // Verify file size is now for protected key
     const file2 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
@@ -318,7 +344,7 @@ test "remove password protection from protected key" {
     };
 
     // Write with password
-    try writeKeyFile(test_path, original_key, test_password, io);
+    try writeKeyFile(test_path, original_key, test_password, std.testing.allocator, io);
     defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
 
     // Verify file size is for protected key
@@ -329,7 +355,7 @@ test "remove password protection from protected key" {
 
     // Read with password and re-write without password
     const read_key = try readKeyFile(test_path, test_password, io);
-    try writeKeyFile(test_path, read_key, null, io);
+    try writeKeyFile(test_path, read_key, null, std.testing.allocator, io);
 
     // Verify file size is now for plain key
     const file2 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});

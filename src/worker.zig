@@ -67,11 +67,8 @@ fn handleJobError(
     std.debug.print("\n{s} {s}\n", .{ error_prefix, job.source_path });
     printErrorDetails(err, is_encrypt);
 
-    // Only hold mutex for state updates
-    worker.error_mutex.lockUncancelable(worker.io);
-    worker.has_errors = true;
+    worker.markError();
     worker.progress_tracker.addFileFailed();
-    worker.error_mutex.unlock(worker.io);
 }
 
 /// Operation type for file processing
@@ -112,6 +109,10 @@ const WorkQueue = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        for (self.items.items) |job| {
+            self.allocator.free(job.source_path);
+            if (job.dest_path) |dest_path| self.allocator.free(dest_path);
+        }
         self.items.deinit(self.allocator);
     }
 
@@ -216,8 +217,10 @@ pub const WorkerPool = struct {
         };
     }
 
-    /// Clean up worker pool
+    /// Clean up worker pool.
+    /// Threads still running would touch the queue after it is gone, so they are joined first.
     pub fn deinit(self: *Self) void {
+        self.finish();
         self.work_queue.deinit();
         self.allocator.free(self.threads);
     }
@@ -237,6 +240,7 @@ pub const WorkerPool = struct {
             // Try to get a batch of jobs
             const maybe_batch = worker.work_queue.popBatch(BATCH_SIZE) catch |err| {
                 std.debug.print("[ERROR] Failed to pop batch: {}\n", .{err});
+                worker.markError();
                 break;
             };
 
@@ -336,11 +340,16 @@ pub const WorkerPool = struct {
         try self.work_queue.push(job);
     }
 
-    /// Start worker threads (call this before submitting jobs for concurrent processing)
-    pub fn start(self: *Self) void {
+    /// Start worker threads (call this before submitting jobs for concurrent processing).
+    /// Fewer threads than asked for is a warning. None at all is an error, since the jobs would never run.
+    pub fn start(self: *Self) !void {
         for (self.threads[0..self.thread_count]) |*thread| {
             thread.* = std.Thread.spawn(.{}, workerThread, .{self}) catch |err| {
-                std.debug.print("[ERROR] Failed to spawn worker thread: {}\n", .{err});
+                if (self.spawned_count == 0) {
+                    std.debug.print("[ERROR] Failed to spawn worker thread: {}\n", .{err});
+                    return err;
+                }
+                std.debug.print("[WARNING] Could not start worker thread {d} of {d}, continuing with {d}: {}\n", .{ self.spawned_count + 1, self.thread_count, self.spawned_count, err });
                 break;
             };
             self.spawned_count += 1;
@@ -359,13 +368,19 @@ pub const WorkerPool = struct {
         for (self.threads[0..self.spawned_count]) |thread| {
             thread.join();
         }
+        self.spawned_count = 0;
     }
 
-    /// Start worker threads and wait for all jobs to complete (convenience method)
-    /// For backward compatibility with two-phase processing
-    pub fn waitAll(self: *Self) void {
-        self.start();
+    /// Start the threads and wait for every job, for callers that queue all their jobs first.
+    pub fn waitAll(self: *Self) !void {
+        try self.start();
         self.finish();
+    }
+
+    fn markError(self: *Self) void {
+        self.error_mutex.lockUncancelable(self.io);
+        self.has_errors = true;
+        self.error_mutex.unlock(self.io);
     }
 
     /// Check if any errors occurred
@@ -389,4 +404,25 @@ test "worker pool initialization" {
     defer pool.deinit();
 
     try testing.expect(!pool.hadErrors());
+}
+
+test "worker pool releases jobs that were never started" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const derived = crypto.deriveKeys(@splat(42), null);
+    var tracker = progress.ProgressTracker.init(0, 0, io);
+    var pool = try WorkerPool.init(allocator, 1, derived, &tracker, false, false, io);
+    defer pool.deinit();
+
+    const source = try allocator.dupe(u8, "source");
+    errdefer allocator.free(source);
+    const destination = try allocator.dupe(u8, "destination");
+    errdefer allocator.free(destination);
+    try pool.submitJob(.{
+        .source_path = source,
+        .dest_path = destination,
+        .operation = .encrypt,
+        .file_size = 0,
+    });
 }

@@ -686,6 +686,7 @@ Settings are applied in this order (highest priority first):
 - Keep backups: Store a copy of your key in a safe, separate location
 - Use password protection: For keys stored on your computer, consider using `turbocrypt keygen --password` or adding protection later with `turbocrypt change-password`
 - Change passwords when needed: If you suspect your password may be compromised, use `turbocrypt change-password` to update it without regenerating the key
+- Key and config files are replaced in one step: `keygen`, `change-password` and `config` write a new file and rename it into place. A symbolic link at that path is replaced by a regular file, not followed
 - Never share keys: Each person should have their own key, or use password-protected keys with different passwords for additional security
 
 ### Safe Workflows

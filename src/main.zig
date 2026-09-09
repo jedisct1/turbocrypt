@@ -384,7 +384,7 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     }
 
     // Write to file
-    try keygen.writeKeyFile(output_path, key, password_buf, io);
+    try keygen.writeKeyFile(output_path, key, password_buf, allocator, io);
 
     std.debug.print("Key generated and saved to: {s}\n", .{output_path});
     if (opts.password) {
@@ -439,6 +439,7 @@ const DirectoryScanContext = struct {
     key: [16]u8,
     exclude_patterns: std.ArrayList([]const u8),
     ignore_symlinks: bool,
+    dry_run: bool,
     io: std.Io,
 
     // Mode-specific data
@@ -496,6 +497,8 @@ const DirectoryScanContext = struct {
             transformed = try self.transformPath(relative_path, "directory name");
         }
 
+        if (self.dry_run) return;
+
         const dest_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ self.dest_base, transformed orelse relative_path });
         defer self.allocator.free(dest_dir);
         utils.ensureDirectory(dest_dir, self.io) catch |err| {
@@ -537,7 +540,7 @@ const DirectoryScanContext = struct {
         return (if (self.is_encrypt)
             filename_crypto.encryptPath(self.allocator, path, self.key, std.fs.path.sep)
         else
-            filename_crypto.decryptPath(self.allocator, path, self.key, std.fs.path.sep)) catch |err| {
+            filename_crypto.decryptPathForFilesystem(self.allocator, path, self.key, std.fs.path.sep)) catch |err| {
             std.debug.print("\n[ERROR] Failed to {s} {s}: {s}\n", .{
                 if (self.is_encrypt) "encrypt" else "decrypt",
                 what,
@@ -572,18 +575,7 @@ const DirectoryScanContext = struct {
         const dest_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.dest_base, dest_relative_path });
         errdefer self.allocator.free(dest_path);
 
-        // Ensure destination directory exists
-        if (std.fs.path.dirname(dest_path)) |dest_dir| {
-            utils.ensureDirectory(dest_dir, self.io) catch |err| {
-                std.debug.print("\n[ERROR] Failed to create destination directory: {s}\n", .{dest_dir});
-                std.debug.print("        For file: {s}\n", .{full_path});
-                std.debug.print("        Reason: {}\n", .{err});
-                if (self.encrypt_filenames and !self.is_encrypt) {
-                    std.debug.print("        Suggestion: Filename may be corrupted or encrypted with a different key\n", .{});
-                }
-                return err;
-            };
-        }
+        if (!self.dry_run) try self.ensureParent(dest_path, full_path);
 
         try worker_pool.submitJob(.{
             .source_path = source_path,
@@ -592,7 +584,26 @@ const DirectoryScanContext = struct {
             .file_size = file_size,
         });
     }
+
+    fn ensureParent(self: *DirectoryScanContext, dest_path: []const u8, full_path: []const u8) !void {
+        const dest_dir = std.fs.path.dirname(dest_path) orelse return;
+        utils.ensureDirectory(dest_dir, self.io) catch |err| {
+            std.debug.print("\n[ERROR] Failed to create destination directory: {s}\n", .{dest_dir});
+            std.debug.print("        For file: {s}\n", .{full_path});
+            std.debug.print("        Reason: {}\n", .{err});
+            if (self.encrypt_filenames and !self.is_encrypt) {
+                std.debug.print("        Suggestion: Filename may be corrupted or encrypted with a different key\n", .{});
+            }
+            return err;
+        };
+    }
 };
+
+/// The dry run of one file: the source must exist, nothing else is touched.
+fn dryRunSingleFile(source_path: []const u8, verb: []const u8, io: std.Io) !void {
+    _ = try std.Io.Dir.statFile(.cwd(), io, source_path, .{});
+    std.debug.print("[DRY RUN] Would {s} 1 file...\n", .{verb});
+}
 
 /// Unified encrypt/decrypt processing function
 fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt: bool, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
@@ -652,6 +663,16 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         return error.InvalidArguments;
     };
 
+    const relation = try utils.pathRelation(source_path, dest_path, allocator, io);
+    if (relation == .same and !opts.in_place) {
+        std.debug.print("Error: Source and destination must differ unless --in-place is used\n", .{});
+        return error.InvalidArguments;
+    }
+    if (is_dir and relation == .descendant) {
+        std.debug.print("Error: Destination directory must not be inside the source directory\n", .{});
+        return error.InvalidArguments;
+    }
+
     const key = keyloader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
         return keyloader.explainLoadError(allocator, err, opts.key, environ_map);
     };
@@ -665,7 +686,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         std.debug.print("{s} directory: {s} -> {s}\n", .{ op_name_cap, source_path, dest_path });
 
         // Ensure destination directory exists
-        try utils.ensureDirectory(dest_path, io);
+        if (!opts.dry_run) try utils.ensureDirectory(dest_path, io);
 
         // Determine thread count (use option or default)
         const thread_count = try getThreadCount(opts);
@@ -685,6 +706,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
+                .dry_run = opts.dry_run,
                 .io = io,
                 .mode = .{ .scan_only = .{} },
             };
@@ -725,8 +747,9 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 });
             }
 
-            pool.waitAll();
+            try pool.waitAll();
             tracker.displayFinal();
+            if (pool.hadErrors()) return error.FileProcessingFailed;
         } else {
             // Non-in-place: use concurrent scan-and-process for better performance
             if (opts.dry_run) {
@@ -739,11 +762,11 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
             defer pool.deinit();
 
-            // Start worker threads BEFORE scanning so they can process files concurrently
-            pool.start();
-
             try tracker.startDisplay();
             defer tracker.stopDisplay();
+
+            // Start worker threads before scanning so they can process files concurrently
+            try pool.start();
 
             var ctx = DirectoryScanContext{
                 .source_base = source_path,
@@ -755,6 +778,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
+                .dry_run = opts.dry_run,
                 .io = io,
                 .mode = .{ .scan_and_process = .{
                     .worker_pool = &pool,
@@ -771,6 +795,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
 
             pool.finish();
             tracker.displayFinal();
+            if (pool.hadErrors()) return error.FileProcessingFailed;
         }
     } else {
         // Process single file (no parallelization needed)
@@ -782,6 +807,8 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         }
 
         std.debug.print("{s} file: {s} -> {s}\n", .{ op_name_cap, source_path, dest_path });
+
+        if (opts.dry_run) return dryRunSingleFile(source_path, "process", io);
 
         // Ensure destination directory exists
         if (std.fs.path.dirname(dest_path)) |dest_dir| {
@@ -875,6 +902,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             .key = derived_keys.filename_key,
             .exclude_patterns = opts.exclude_patterns,
             .ignore_symlinks = opts.ignore_symlinks,
+            .dry_run = opts.dry_run,
             .io = io,
             .mode = .{ .scan_only = .{} },
         };
@@ -913,7 +941,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             try pool.submitJob(job);
         }
 
-        pool.waitAll();
+        try pool.waitAll();
         tracker.displayFinal();
 
         if (pool.hadErrors()) {
@@ -931,6 +959,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         }
 
         std.debug.print("Verifying file: {s}\n", .{source_path});
+        if (opts.dry_run) return dryRunSingleFile(source_path, "verify", io);
 
         processor.verifyFile(source_path, derived_keys, allocator, opts.quick, io) catch |err| {
             std.debug.print("\n[VERIFY FAILED] {s}\n", .{source_path});
@@ -1063,7 +1092,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     for (list_ctx.file_paths.items, list_ctx.file_sizes.items) |file_path, file_size| {
         // Decrypt filename if needed
         const display_path = if (opts.encrypt_filenames) blk: {
-            const decrypted = filename_crypto.decryptPath(allocator, file_path, filename_key, std.fs.path.sep) catch |err| {
+            const decrypted = filename_crypto.decryptPathForFilesystem(allocator, file_path, filename_key, std.fs.path.sep) catch |err| {
                 // If decryption fails, show encrypted name with a marker
                 std.debug.print("  {s} ({s}) [decrypt error: {}]\n", .{ file_path, formatSize(file_size), err });
                 continue;
@@ -1132,10 +1161,11 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
     const remove_password = opts.remove_password;
 
     // Read the current key file to determine its format
-    const file = try std.Io.Dir.openFile(.cwd(), io, key_path, .{});
-    defer file.close(io);
-    const stat = try file.stat(io);
-    const file_size = stat.size;
+    const file_size = blk: {
+        const file = try std.Io.Dir.openFile(.cwd(), io, key_path, .{});
+        defer file.close(io);
+        break :blk (try file.stat(io)).size;
+    };
 
     if (file_size != keygen.plain_key_file_size and file_size != keygen.protected_key_file_size) {
         std.debug.print("Error: Invalid key file size (expected {d} or {d} bytes, got {d})\n", .{ keygen.plain_key_file_size, keygen.protected_key_file_size, file_size });
@@ -1168,7 +1198,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
 
         if (remove_password) {
             // Remove password protection: write as plain key
-            try keygen.writeKeyFile(key_path, actual_key, null, io);
+            try keygen.writeKeyFile(key_path, actual_key, null, allocator, io);
             std.debug.print("Password protection removed from key file: {s}\n", .{key_path});
             std.debug.print("WARNING: The key is now stored in plain text. Keep it secure!\n", .{});
             return;
@@ -1180,7 +1210,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
                 allocator.free(new_password_buf);
             }
 
-            try keygen.writeKeyFile(key_path, actual_key, new_password_buf, io);
+            try keygen.writeKeyFile(key_path, actual_key, new_password_buf, allocator, io);
             std.debug.print("Password changed successfully for key file: {s}\n", .{key_path});
         }
     } else {
@@ -1202,7 +1232,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
             allocator.free(new_password_buf);
         }
 
-        try keygen.writeKeyFile(key_path, actual_key, new_password_buf, io);
+        try keygen.writeKeyFile(key_path, actual_key, new_password_buf, allocator, io);
         std.debug.print("Password protection added to key file: {s}\n", .{key_path});
     }
 }
@@ -1666,6 +1696,148 @@ pub fn main(init: std.process.Init) !void {
         printUsage();
         std.process.exit(1);
     }
+}
+
+test "directory processing returns an error when a worker fails" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_worker_failure";
+    const source = root ++ "/source";
+    const destination = root ++ "/destination";
+    const key_path = root ++ "/key";
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, source);
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/bad.enc", .data = "not ciphertext" });
+    try keygen.writeKeyFile(key_path, @splat(7), null, allocator, io);
+
+    var environ_map = try config_mod.testEnviron(allocator, root);
+    defer environ_map.deinit();
+    const args = [_][]const u8{ "--threads", "1", "--key", key_path, source, destination };
+    try testing.expectError(error.FileProcessingFailed, cmdProcess(&args, allocator, false, io, &environ_map));
+
+    const in_place_args = [_][]const u8{ "--in-place", "--threads", "1", "--key", key_path, source };
+    try testing.expectError(error.FileProcessingFailed, cmdProcess(&in_place_args, allocator, false, io, &environ_map));
+}
+
+test "dry run does not create directory or file destinations" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_dry_run";
+    const source_dir = root ++ "/source";
+    const dir_destination = root ++ "/directory-output";
+    const file_destination = root ++ "/missing/file.enc";
+    const key_path = root ++ "/key";
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, source_dir ++ "/nested");
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source_dir ++ "/nested/file", .data = "plain text" });
+    try keygen.writeKeyFile(key_path, @splat(8), null, allocator, io);
+
+    var environ_map = try config_mod.testEnviron(allocator, root);
+    defer environ_map.deinit();
+    const dir_args = [_][]const u8{ "--dry-run", "--threads", "1", "--key", key_path, source_dir, dir_destination };
+    try cmdProcess(&dir_args, allocator, true, io, &environ_map);
+    try testing.expect(!utils.pathExists(dir_destination, io));
+
+    const file_args = [_][]const u8{ "--dry-run", "--key", key_path, source_dir ++ "/nested/file", file_destination };
+    try cmdProcess(&file_args, allocator, true, io, &environ_map);
+    try testing.expect(!utils.pathExists(file_destination, io));
+    try testing.expect(!utils.pathExists(root ++ "/missing", io));
+}
+
+test "dry run does not verify a single file" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_verify_dry_run";
+    const source = root ++ "/not-encrypted";
+    const key_path = root ++ "/key";
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, root);
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source, .data = "plain text" });
+    try keygen.writeKeyFile(key_path, @splat(6), null, allocator, io);
+
+    var environ_map = try config_mod.testEnviron(allocator, root);
+    defer environ_map.deinit();
+    const args = [_][]const u8{ "--dry-run", "--key", key_path, source };
+    try cmdVerify(&args, allocator, io, &environ_map);
+}
+
+test "decrypted filenames cannot escape the destination" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_filename_escape";
+    const source = root ++ "/source";
+    const destination = root ++ "/destination";
+    const plain_path = root ++ "/plain";
+    const escaped_path = root ++ "/escaped";
+    const key_path = root ++ "/key";
+    const key: [16]u8 = @splat(9);
+    const derived_keys = crypto.deriveKeys(key, null);
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, source);
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = plain_path, .data = "secret" });
+    try keygen.writeKeyFile(key_path, key, null, allocator, io);
+
+    const planted_name = try filename_crypto.encryptFilename(allocator, "../escaped", derived_keys.filename_key);
+    defer allocator.free(planted_name);
+    const planted_path = try std.fs.path.join(allocator, &.{ source, planted_name });
+    defer allocator.free(planted_path);
+    try processor.encryptFile(plain_path, planted_path, derived_keys, allocator, io);
+
+    var environ_map = try config_mod.testEnviron(allocator, root);
+    defer environ_map.deinit();
+    const args = [_][]const u8{ "--threads", "1", "--encrypted-filenames", "--key", key_path, source, destination };
+    try testing.expectError(filename_crypto.StrictError.UnsafeDecryptedFilename, cmdProcess(&args, allocator, false, io, &environ_map));
+    try testing.expect(!utils.pathExists(escaped_path, io));
+}
+
+test "directory destination cannot be inside the source" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_destination_overlap";
+    const source = root ++ "/source";
+    const destination = source ++ "/output";
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, source);
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/file", .data = "plain" });
+
+    var environ_map = try config_mod.testEnviron(allocator, root);
+    defer environ_map.deinit();
+    const args = [_][]const u8{ source, destination };
+    try testing.expectError(error.InvalidArguments, cmdProcess(&args, allocator, true, io, &environ_map));
+    try testing.expect(!utils.pathExists(destination, io));
+
+    const same_args = [_][]const u8{ source, source };
+    try testing.expectError(error.InvalidArguments, cmdProcess(&same_args, allocator, true, io, &environ_map));
+
+    const file_path = root ++ "/file";
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = file_path, .data = "plain" });
+    const same_file_args = [_][]const u8{ file_path, file_path };
+    try testing.expectError(error.InvalidArguments, cmdProcess(&same_file_args, allocator, true, io, &environ_map));
+
+    const source_link = root ++ "/source-link";
+    std.Io.Dir.symLink(.cwd(), io, "source", source_link, .{ .is_directory = true }) catch |err| {
+        if (err == error.Unexpected or err == error.AccessDenied) return;
+        return err;
+    };
+    const linked_destination = source_link ++ "/output";
+    const linked_args = [_][]const u8{ source, linked_destination };
+    try testing.expectError(error.InvalidArguments, cmdProcess(&linked_args, allocator, true, io, &environ_map));
+    try testing.expect(!utils.pathExists(linked_destination, io));
 }
 
 // Test references - ensures tests from imported modules are included

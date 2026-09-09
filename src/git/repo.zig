@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const keygen = @import("../keygen.zig");
+const processor = @import("../processor.zig");
 const utils = @import("../utils.zig");
 
 pub const Error = error{
@@ -219,7 +220,7 @@ pub const Repo = struct {
             try data.appendSlice(self.allocator, path);
             try data.append(self.allocator, 0);
         }
-        try utils.writePrivateFile(self.pathspec_path, data.items, self.io);
+        try processor.writeFileAtomic(self.pathspec_path, data.items, utils.private_file_permissions, null, self.allocator, self.io);
 
         const from_file = try std.fmt.allocPrint(self.allocator, "--pathspec-from-file={s}", .{self.pathspec_path});
         defer self.allocator.free(from_file);
@@ -286,7 +287,7 @@ pub const Repo = struct {
 
     pub fn saveKey(self: *const Repo, key: [16]u8) !void {
         try self.ensureDirs();
-        try keygen.writeKeyFile(self.key_path, key, null, self.io);
+        try keygen.writeKeyFile(self.key_path, key, null, self.allocator, self.io);
     }
 
     /// Create the private directory and the temp directory, owner only.

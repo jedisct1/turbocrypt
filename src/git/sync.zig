@@ -20,6 +20,8 @@ pub const attributes_text = "* binary -filter -ident -working-tree-encoding -exp
 /// This bound keeps memory use in check.
 pub const max_file_size: u64 = 256 * 1024 * 1024;
 
+pub const long_name_detail = "name too long once encrypted, keep components under about 200 bytes";
+
 const state_version = 1;
 const max_state_size = 64 * 1024 * 1024;
 
@@ -92,6 +94,7 @@ pub const Decision = enum {
     abort_no_baseline,
     abort_both_changed,
     abort_bad,
+    abort_plain,
     need_compare,
 };
 
@@ -683,7 +686,7 @@ pub fn collectCandidates(ctx: *const Context, manifest: Manifest) !Candidates {
     defer allocator.free(private_lines);
     const private_file = try std.fs.path.join(allocator, &.{ repo.private_dir, "candidates" });
     defer allocator.free(private_file);
-    try utils.writePrivateFile(private_file, private_lines, repo.io);
+    try processor.writeFileAtomic(private_file, private_lines, utils.private_file_permissions, null, allocator, repo.io);
     const exclude_from = try std.fmt.allocPrint(allocator, "--exclude-from={s}", .{private_file});
     defer allocator.free(exclude_from);
 
@@ -921,10 +924,23 @@ fn analyze(ctx: *const Context, only: []const []const u8, report: *Report) ![]Pa
                 },
                 else => return err,
             };
+        } else if (info.values.cur != null and !try nameFits(allocator, ctx.keys, plain)) {
+            try report.add(allocator, .bad, plain, long_name_detail);
+            info.bad = true;
         }
         try infos.append(allocator, info);
     }
     return infos.toOwnedSlice(allocator);
+}
+
+/// True when every component of the path still fits a file name once encrypted.
+pub fn nameFits(allocator: std.mem.Allocator, keys: crypto.DerivedKeys, plain: []const u8) !bool {
+    const cipher = filename_crypto.encryptPath(allocator, plain, keys.filename_key, '/') catch |err| switch (err) {
+        filename_crypto.FilenameError.EncryptedFilenameTooLong => return false,
+        else => return err,
+    };
+    allocator.free(cipher);
+    return true;
 }
 
 fn freeInfo(allocator: std.mem.Allocator, info: *PathInfo) void {
@@ -968,15 +984,13 @@ fn compare(ctx: *const Context, info: *PathInfo, report: *Report) !void {
     info.values.cur_eq_new = std.mem.eql(u8, &decrypted, &cur.plain) and cur.exec == new.exec;
 }
 
-/// An entry that does not decrypt cannot be used and must not be committed as it is.
-/// The encrypt direction stops on it, or replaces it from the plain file when forced.
-/// The decrypt direction leaves it alone.
+/// A bad path stops the encrypt direction and is left alone by the decrypt direction.
+/// A bad entry can be replaced from the plain file when forced. A plain file that cannot be encrypted has no such way out.
 fn badDecision(info: *const PathInfo, direction: Direction, force: bool) Decision {
-    if (direction == .encrypt) {
-        if (force and info.values.cur != null) return .encrypt;
-        return .abort_bad;
-    }
-    return .none;
+    if (direction != .encrypt) return .none;
+    if (info.cipher_rel == null) return .abort_plain;
+    if (force and info.values.cur != null) return .encrypt;
+    return .abort_bad;
 }
 
 pub const Direction = enum { encrypt, decrypt };
@@ -986,7 +1000,7 @@ pub const Direction = enum { encrypt, decrypt };
 fn decide(ctx: *const Context, info: *PathInfo, direction: Direction, force: bool, report: *Report) !void {
     defer if (info.decision != .write_plain) freeDecrypted(ctx.allocator, info);
     if (info.bad) {
-        info.decision = if (info.values.new != null) badDecision(info, direction, force) else .none;
+        info.decision = badDecision(info, direction, force);
         return;
     }
     var decision = decideFor(info.values, direction, force);
@@ -1523,6 +1537,7 @@ fn reportProblem(allocator: std.mem.Allocator, info: *const PathInfo, report: *R
         .abort_no_baseline => try report.add(allocator, .conflict, info.plain, "plain file and entry both exist and differ, no baseline: decrypt --force or encrypt --force"),
         .abort_both_changed => try report.add(allocator, .conflict, info.plain, "changed here and upstream: decrypt --force or encrypt --force"),
         .abort_bad => try report.add(allocator, .conflict, info.plain, "entry cannot be committed as it is: encrypt --force replaces it from the plain file, rm drops it"),
+        .abort_plain => {},
         .warn_missing => {
             try report.add(allocator, .missing, info.plain, "entry present, plain file absent: decrypt restores it, rm deletes it");
             return false;
@@ -1604,13 +1619,7 @@ pub fn encryptSync(repo: *const Repo, keys: crypto.DerivedKeys, options: Options
     for (pass.infos) |*info| {
         switch (info.decision) {
             .encrypt => {
-                encryptPlain(ctx, info, &stage) catch |err| switch (err) {
-                    filename_crypto.FilenameError.EncryptedFilenameTooLong => {
-                        try report.add(allocator, .bad, info.plain, "name too long once encrypted, keep components under about 200 bytes");
-                        continue;
-                    },
-                    else => return err,
-                };
+                try encryptPlain(ctx, info, &stage);
                 try recordBaseline(ctx, info);
                 try report.add(allocator, .encrypted, info.plain, "");
             },
@@ -1861,6 +1870,24 @@ test "encrypt direction decisions" {
     try testing.expectEqual(Decision.record, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = true }, false));
     try testing.expectEqual(Decision.abort_both_changed, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = false }, false));
     try testing.expectEqual(Decision.encrypt, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = false }, true));
+}
+
+test "bad path decisions" {
+    const testing = std.testing;
+    const cur = Cur{ .plain = @splat(1), .exec = false };
+
+    var plain_only = PathInfo{ .plain = @constCast("a"), .values = .{ .old = null, .new = null, .cur = cur }, .bad = true };
+    try testing.expectEqual(Decision.abort_plain, badDecision(&plain_only, .encrypt, true));
+    try testing.expectEqual(Decision.none, badDecision(&plain_only, .decrypt, false));
+    plain_only.values.cur = null;
+    try testing.expectEqual(Decision.abort_plain, badDecision(&plain_only, .encrypt, false));
+
+    var entry = PathInfo{ .plain = @constCast("a"), .cipher_rel = @constCast("b"), .values = .{ .old = null, .new = null, .cur = cur }, .bad = true };
+    try testing.expectEqual(Decision.abort_bad, badDecision(&entry, .encrypt, false));
+    try testing.expectEqual(Decision.encrypt, badDecision(&entry, .encrypt, true));
+    entry.values.cur = null;
+    try testing.expectEqual(Decision.abort_bad, badDecision(&entry, .encrypt, true));
+    try testing.expectEqual(Decision.none, badDecision(&entry, .decrypt, true));
 }
 
 test "state round trip" {

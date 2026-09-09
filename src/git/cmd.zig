@@ -421,7 +421,7 @@ fn cmdExportKey(args: []const []const u8, allocator: std.mem.Allocator, io: std.
     };
     if (flags.password) password = try prompt.promptPassword(allocator, "Password for the exported key: ", true, io);
 
-    try keygen.writeKeyFile(flags.positional[0], key, password, io);
+    try keygen.writeKeyFile(flags.positional[0], key, password, allocator, io);
     std.debug.print("Key written to {s}{s}\n", .{ flags.positional[0], if (password != null) " (password protected)" else "" });
 }
 
@@ -537,11 +537,10 @@ fn checkAddable(repo: *const Repo, keys: crypto.DerivedKeys, plain: []const u8) 
         std.debug.print("Error: {s} is larger than 256 MiB\n", .{plain});
         return sync.Error.FileTooLarge;
     }
-    const cipher_rel = filename_crypto.encryptPath(allocator, plain, keys.filename_key, '/') catch |err| {
-        std.debug.print("Error: {s} has a name that is too long once encrypted, keep components under about 200 bytes\n", .{plain});
-        return err;
-    };
-    allocator.free(cipher_rel);
+    if (!try sync.nameFits(allocator, keys, plain)) {
+        std.debug.print("Error: {s}: {s}\n", .{ plain, sync.long_name_detail });
+        return filename_crypto.FilenameError.EncryptedFilenameTooLong;
+    }
 }
 
 fn cmdRm(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {

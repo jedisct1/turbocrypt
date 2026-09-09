@@ -2,24 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 /// Mode for files that hold secrets, such as keys and the config file
-const private_file_permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows)
+pub const private_file_permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows)
     .default_file
 else
     .fromMode(0o600);
-
-/// Create a file that only its owner can read.
-/// An existing file keeps its old mode, so it is tightened before any write.
-/// Windows has no Unix modes, so the file keeps the default mode there.
-pub fn createPrivateFile(path: []const u8, options: std.Io.Dir.CreateFileOptions, io: std.Io) !std.Io.File {
-    var opts = options;
-    opts.permissions = private_file_permissions;
-    const file = try std.Io.Dir.createFile(.cwd(), io, path, opts);
-    errdefer file.close(io);
-    if (builtin.os.tag != .windows) {
-        try file.setPermissions(io, private_file_permissions);
-    }
-    return file;
-}
 
 /// Callback function type for directory walking
 /// Parameters: relative_path, full_path, is_directory
@@ -91,11 +77,40 @@ pub fn ensureDirectory(path: []const u8, io: std.Io) !void {
     };
 }
 
-/// Write a whole private file in one go.
-pub fn writePrivateFile(path: []const u8, data: []const u8, io: std.Io) !void {
-    const file = try createPrivateFile(path, .{}, io);
-    defer file.close(io);
-    try file.writeStreamingAll(io, data);
+pub const PathRelation = enum { same, descendant, other };
+
+/// The real path of `path`. A path that does not exist yet builds on the real path of its nearest ancestor.
+pub fn canonicalizePotentialPath(path: []const u8, allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    const canonical = std.Io.Dir.realPathFileAlloc(.cwd(), io, path, allocator) catch |err| switch (err) {
+        error.FileNotFound => {
+            const parent = std.fs.path.dirname(path) orelse return allocator.dupe(u8, path);
+            const canonical_parent = try canonicalizePotentialPath(parent, allocator, io);
+            defer allocator.free(canonical_parent);
+            return std.fs.path.join(allocator, &.{ canonical_parent, std.fs.path.basename(path) });
+        },
+        else => return err,
+    };
+    // The real path carries a sentinel, so a plain slice could not free it.
+    defer allocator.free(canonical);
+    return allocator.dupe(u8, canonical);
+}
+
+/// Where `candidate` stands relative to `parent`, symbolic links resolved: the same place, inside it, or elsewhere.
+/// Neither path has to exist yet.
+pub fn pathRelation(parent: []const u8, candidate: []const u8, allocator: std.mem.Allocator, io: std.Io) !PathRelation {
+    const cwd = try std.Io.Dir.realPathFileAlloc(.cwd(), io, ".", allocator);
+    defer allocator.free(cwd);
+    const parent_canonical = try canonicalizePotentialPath(parent, allocator, io);
+    defer allocator.free(parent_canonical);
+    const candidate_canonical = try canonicalizePotentialPath(candidate, allocator, io);
+    defer allocator.free(candidate_canonical);
+
+    const relative = try std.fs.path.relative(allocator, cwd, null, parent_canonical, candidate_canonical);
+    defer allocator.free(relative);
+    if (relative.len == 0) return .same;
+    if (std.fs.path.isAbsolute(relative)) return .other;
+    const first = relative[0 .. std.mem.indexOfAny(u8, relative, "/\\") orelse relative.len];
+    return if (std.mem.eql(u8, first, "..")) .other else .descendant;
 }
 
 /// True when one of the strings equals the needle.
@@ -490,4 +505,20 @@ test "ignore symlinks flag" {
         try testing.expectEqual(@as(usize, 1), ctx.files.items.len);
         try testing.expectEqualStrings("target.txt", ctx.files.items[0]);
     }
+}
+
+test "path relation" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/relation/source/inner");
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/relation") catch {};
+
+    try testing.expectEqual(PathRelation.same, try pathRelation("tmp/relation/source", "tmp/relation/source", allocator, io));
+    try testing.expectEqual(PathRelation.same, try pathRelation("tmp/relation/source", "tmp/relation/source/inner/..", allocator, io));
+    try testing.expectEqual(PathRelation.descendant, try pathRelation("tmp/relation/source", "tmp/relation/source/new/deeper", allocator, io));
+    try testing.expectEqual(PathRelation.other, try pathRelation("tmp/relation/source", "tmp/relation/sibling", allocator, io));
+    try testing.expectEqual(PathRelation.other, try pathRelation("tmp/relation/source", "tmp/relation", allocator, io));
+    try testing.expectEqual(PathRelation.other, try pathRelation("tmp/relation/source", "tmp/relation/source-two", allocator, io));
 }
