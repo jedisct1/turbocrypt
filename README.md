@@ -7,45 +7,36 @@
 A fast, easy-to-use, and secure command-line tool for encrypting and decrypting files or entire directory trees.
 
 - [TurboCrypt](#turbocrypt)
-  - [What Makes TurboCrypt Different](#what-makes-turbocrypt-different)
   - [Installation](#installation)
-    - [Download Pre-Built Binaries](#download-pre-built-binaries)
-    - [Build from Source](#build-from-source)
-  - [Quick Start](#quick-start)
-    - [Step 1: Generate an Encryption Key](#step-1-generate-an-encryption-key)
-    - [Step 2: Set Your Default Key](#step-2-set-your-default-key)
-    - [Step 3: Encrypt Files](#step-3-encrypt-files)
-    - [Step 4: Verify Encrypted Files](#step-4-verify-encrypted-files)
-    - [Step 5: Decrypt Files](#step-5-decrypt-files)
-  - [Usage Examples](#usage-examples)
-    - [Password-Protected Keys](#password-protected-keys)
-    - [Managing Key Passwords](#managing-key-passwords)
-    - [Adding an Extra Layer of Protection with Contexts](#adding-an-extra-layer-of-protection-with-contexts)
-    - [Encrypting in Place](#encrypting-in-place)
-    - [Hiding Filenames](#hiding-filenames)
-    - [Skipping Certain Files](#skipping-certain-files)
-    - [Previewing Operations with Dry Run](#previewing-operations-with-dry-run)
-    - [Verifying File Integrity](#verifying-file-integrity)
-    - [Listing Encrypted Directory Contents](#listing-encrypted-directory-contents)
-    - [Setting Up Defaults](#setting-up-defaults)
+  - [Quick start](#quick-start)
+    - [Step 1: Generate a key](#step-1-generate-a-key)
+    - [Step 2: Set the default key](#step-2-set-the-default-key)
+    - [Step 3: Encrypt files](#step-3-encrypt-files)
+    - [Step 4: Verify the result](#step-4-verify-the-result)
+    - [Step 5: Decrypt files](#step-5-decrypt-files)
+  - [Examples](#examples)
+    - [Password-protected keys](#password-protected-keys)
+    - [Contexts](#contexts)
+    - [In-place encryption](#in-place-encryption)
+    - [Encrypted filenames](#encrypted-filenames)
+    - [Excluding files](#excluding-files)
+    - [Dry runs](#dry-runs)
+    - [Verification](#verification)
+    - [Listing a directory](#listing-a-directory)
+    - [Defaults](#defaults)
     - [Private Files in a Git Repository](#private-files-in-a-git-repository)
-  - [All Commands](#all-commands)
-    - [Key Management](#key-management)
+  - [All commands](#all-commands)
+    - [Key management](#key-management)
     - [Encryption](#encryption)
     - [Decryption](#decryption)
-    - [Verification](#verification)
-    - [Configuration](#configuration)
+    - [Verification and listing](#verification-and-listing)
+    - [Configuration commands](#configuration-commands)
     - [Git](#git)
-    - [Performance Testing](#performance-testing)
-  - [Command-Line Options](#command-line-options)
-  - [File Portability](#file-portability)
-    - [Filename Encryption](#filename-encryption)
-  - [Configuration File](#configuration-file)
-    - [Priority Order](#priority-order)
-  - [Best Practices](#best-practices)
-    - [Key Management](#key-management-1)
-    - [Safe Workflows](#safe-workflows)
-    - [Performance Tips](#performance-tips)
+    - [Benchmarks and version](#benchmarks-and-version)
+    - [Options](#options)
+  - [File portability](#file-portability)
+  - [Configuration](#configuration)
+  - [A few cautions](#a-few-cautions)
   - [Troubleshooting](#troubleshooting)
     - ["Wrong decryption key, wrong context, or corrupted file header"](#wrong-decryption-key-wrong-context-or-corrupted-file-header)
     - ["Authentication failed" during decryption](#authentication-failed-during-decryption)
@@ -55,30 +46,21 @@ A fast, easy-to-use, and secure command-line tool for encrypting and decrypting 
     - ["nothing to commit" after editing a private file](#nothing-to-commit-after-editing-a-private-file)
     - ["commit refused, private files are tracked by git"](#commit-refused-private-files-are-tracked-by-git)
     - [A merge conflict on a private file](#a-merge-conflict-on-a-private-file)
+    - ["entry cannot be committed as it is"](#entry-cannot-be-committed-as-it-is)
     - ["this repository already has a different key"](#this-repository-already-has-a-different-key)
     - ["the store has no files for" a key](#the-store-has-no-files-for-a-key)
     - [Hooks do not run from a GUI client](#hooks-do-not-run-from-a-gui-client)
-  - [Environment Variables](#environment-variables)
-
-## What Makes TurboCrypt Different
-
-- Fast: Uses AEGIS-128X2 and multi-threaded processing for directories
-- Secure: Every file is authenticated - tampering is detected automatically
-- Simple: Clean command-line interface with sensible defaults
-- Flexible: Works with single files or entire directory trees, with optional filename encryption
+  - [Environment variables](#environment-variables)
 
 ## Installation
 
-### Download Pre-Built Binaries
+Linux, macOS and Windows binaries are available from the
+[releases page](https://github.com/jedisct1/turbocrypt/releases), so the
+quickest installation is to download the archive for your system.
 
-Pre-built binaries for Linux, macOS, and Windows are available at:
-https://github.com/jedisct1/turbocrypt/releases
-
-### Build from Source
-
-Note: Building from source is recommended for best performance. The compiled binary will be optimized for your specific platform, while pre-built binaries are built for the lowest common denominator.
-
-Requirements: [Zig](https://ziglang.org/download/) (master)
+For the best performance, build locally instead. Zig can then optimize the
+binary for the machine it will run on. You will need the master version of
+[Zig](https://ziglang.org/download/):
 
 ```bash
 git clone https://github.com/jedisct1/turbocrypt.git
@@ -86,249 +68,209 @@ cd turbocrypt
 zig build -Doptimize=ReleaseFast
 ```
 
-The compiled binary will be in `zig-out/bin/turbocrypt`. Move it elsewhere, add it to your PATH or use the full path.
+The binary is written to `zig-out/bin/turbocrypt`.
 
-## Quick Start
+## Quick start
 
-### Step 1: Generate an Encryption Key
+### Step 1: Generate a key
 
-First, create a key file. This is a random 128-bit key that you'll use to encrypt and decrypt your files.
+First, create the key that will encrypt and decrypt your files:
 
 ```bash
 turbocrypt keygen secret.key
 ```
 
-Important: Keep this key file safe! Anyone with access to it can decrypt your files.
+The file contains a random 128-bit key. Keep a backup somewhere separate,
+because losing it also means losing access to the encrypted files. Anyone who
+gets a copy of it can decrypt them.
 
-### Step 2: Set Your Default Key
+### Step 2: Set the default key
 
-Store the key in your configuration so you don't have to specify it every time:
+Next, copy the key into the configuration so that you do not need to pass
+`--key` to every command:
 
 ```bash
 turbocrypt config set-key secret.key
 ```
 
-After this, you can encrypt and decrypt without specifying the key. The tool is now ready to use!
+From this point on, TurboCrypt will use the stored copy unless a command
+selects another key explicitly. Moving or deleting `secret.key` does not
+change that copy.
 
-### Step 3: Encrypt Files
+### Step 3: Encrypt files
 
-Encrypt a single file:
+Once the key is configured, the same command works on a file or a whole
+directory:
 
 ```bash
+# A single file
 turbocrypt encrypt document.pdf document.pdf.enc
-```
 
-Encrypt an entire directory:
-
-```bash
+# A directory tree
 turbocrypt encrypt my-documents/ encrypted-documents/
 ```
 
-### Step 4: Verify Encrypted Files
+### Step 4: Verify the result
 
-Check that your encrypted files are intact:
+Before deleting the original, authenticate the encrypted copy from beginning
+to end:
 
 ```bash
 turbocrypt verify encrypted-documents/
 ```
 
-This confirms all files were encrypted successfully and haven't been corrupted or tampered with.
-
-For a faster check that just verifies you have the correct key:
+For a faster key check, `verify --quick` authenticates only the header. It does
+not detect damage elsewhere in the file.
 
 ```bash
 turbocrypt verify --quick encrypted-documents/
 ```
 
-### Step 5: Decrypt Files
+### Step 5: Decrypt files
 
-Decrypt a file:
+Finally, supply the encrypted source and the destination for the plaintext.
+As with encryption, the source may be a file or a directory:
 
 ```bash
+# A single file
 turbocrypt decrypt document.pdf.enc document.pdf
-```
 
-Decrypt the entire directory:
-
-```bash
+# A directory tree
 turbocrypt decrypt encrypted-documents/ my-documents/
 ```
 
-That's it!
+## Examples
 
-## Usage Examples
+### Password-protected keys
 
-### Password-Protected Keys
-
-If you want to protect your key file, you can encrypt it with a password:
+`--password` encrypts the key file itself. TurboCrypt detects protected keys
+when it loads them and prompts for the password automatically:
 
 ```bash
-# Generate a password-protected key
+# Create a protected key
 turbocrypt keygen --password protected.key
-# Enter your password when prompted
 
-# Use it (you'll be prompted for the password)
-turbocrypt encrypt --key protected.key --password source/ dest/
+# The protected key triggers a prompt when it is used
+turbocrypt encrypt --key protected.key source/ dest/
 ```
 
-### Managing Key Passwords
+You can still pass `--password` to force the prompt.
 
-You can add, change, or remove password protection on existing keys:
+You can also add protection to a plain key, change an existing password, or
+remove the password later. In each case, the underlying encryption key stays
+the same.
 
 ```bash
-# Add password protection to a plain key
+# Add protection to a plain key
 turbocrypt change-password secret.key
-# Enter your new password when prompted
 
-# Change the password on a protected key
+# Change the password of a protected key
 turbocrypt change-password protected.key
-# Enter current password, then new password
 
-# Remove password protection from a key
+# Remove password protection
 turbocrypt change-password --remove-password protected.key
-# Enter current password to confirm
 ```
 
-This is useful when you want to:
-- Add password protection to an existing plain key without regenerating it
-- Change a compromised or forgotten password while keeping the same encryption key
-- Remove password protection when moving a key to secure storage
+### Contexts
 
-### Adding an Extra Layer of Protection with Contexts
-
-When you encrypt a directory, you can optionally specify a context string. This adds an additional secret that's required to decrypt your files - think of it as a second password that works alongside your encryption key.
-
-Here's why this matters: Even if someone gains access to your encryption key file and your password, they still won't be able to decrypt your files without knowing the context you used. The context acts as an extra safeguard that you keep in your head rather than written down.
+A context changes the key used for encryption. As a result, decryption
+requires both the same key file and the exact same context. Omitting the
+context or supplying another string fails authentication.
 
 ```bash
-# Encrypt with a context
+# Encrypt in the "my-secret-phrase" context
 turbocrypt encrypt --key my-secret.key --context "my-secret-phrase" documents/ encrypted/
 
-# To decrypt, you MUST provide the exact same context
+# Use that context again to decrypt
 turbocrypt decrypt --key my-secret.key --context "my-secret-phrase" encrypted/ documents/
-
-# Wrong context? Decryption will fail, even with the correct key
-turbocrypt decrypt --key my-secret.key --context "wrong-phrase" encrypted/ documents/
-# Error: Wrong decryption key, wrong context, or corrupted file header
 ```
 
-Each context creates completely different encrypted files, even when using the same key. Files encrypted with context "project-a" cannot be decrypted with context "project-b", or without any context at all.
+Contexts provide separate encryption domains while reusing a key file. If the
+context is meant to remain secret, do not put it in shell history or scripts.
 
-### Encrypting in Place
-
-Sometimes you want to encrypt files directly without creating copies:
+### In-place encryption
 
 ```bash
 turbocrypt encrypt --key my-secret.key --in-place my-documents/
 ```
 
-Warning: This overwrites the original files. For safety, TurboCrypt writes the encrypted data to a temporary file first and then atomically replaces the original. Make sure you have backups first!
+This replaces every source file. TurboCrypt first writes a temporary file and
+then renames it over the original, but that does not substitute for a backup.
 
-### Hiding Filenames
+### Encrypted filenames
 
-If you want to conceal not just the contents but also the names of your files:
+Pass `--encrypted-filenames` in both directions:
 
 ```bash
-# Encrypt with encrypted filenames
+# Encrypt both contents and names
 turbocrypt encrypt --key my-secret.key --encrypted-filenames source/ dest/
 
-# Decrypt - you MUST use --encrypted-filenames to decrypt
+# The option is required again during decryption
 turbocrypt decrypt --key my-secret.key --encrypted-filenames dest/ restored/
 ```
 
-This encrypts each filename component, making it impossible to tell what files are in the encrypted directory without the key. Note: You must use `--encrypted-filenames` for both encryption AND decryption.
+Each component of a path gets an opaque name. However, the directory
+structure, file sizes and number of entries remain visible.
 
-### Skipping Certain Files
+### Excluding files
 
-Use exclude patterns to skip files you don't want to encrypt:
+`--exclude` may be repeated. For example, this skips logs and the repository
+metadata:
 
 ```bash
-# Skip log files and the .git directory
 turbocrypt encrypt --key my-secret.key \
   --exclude "*.log" \
   --exclude ".git/" \
   my-project/ encrypted-project/
 ```
 
-Common exclude patterns:
-- `*.log` - skip all .log files
-- `*.tmp` - skip temporary files
-- `.git/` - skip git repository data
-- `node_modules/` - skip Node.js dependencies
-- `__pycache__/` - skip Python cache files
+### Dry runs
 
-### Previewing Operations with Dry Run
-
-Before encrypting or decrypting files, you can preview what will happen without actually processing them:
+Use `--dry-run` to check paths and exclusions before starting the real job. It
+prints the file count and total size without modifying anything:
 
 ```bash
-# See what files would be encrypted
-turbocrypt encrypt --dry-run --key my-secret.key documents/ encrypted/
-
-# Test exclude patterns before committing
 turbocrypt encrypt --dry-run --key my-secret.key \
   --exclude "*.log" \
   --exclude "node_modules/" \
   large-project/ encrypted-project/
-
-# Preview decryption
-turbocrypt decrypt --dry-run --key my-secret.key encrypted/ restored/
 ```
 
-This is particularly useful for:
-- Testing exclude patterns before processing large directories
-- Verifying source and destination paths are correct
-- Estimating how many files will be processed
-- Checking operations before committing to them
+The same flag also works with `decrypt` and `verify`.
 
-The `--dry-run` flag works with all operations (encrypt, decrypt, verify) and shows accurate file counts and sizes without modifying any files.
+### Verification
 
-### Verifying File Integrity
-
-Check if encrypted files are intact without decrypting them:
+By default, verification authenticates the header and contents without
+writing the plaintext. In contrast, quick verification authenticates only the
+header. That is enough to check the key and context, but it says nothing about
+the integrity of the file contents.
 
 ```bash
-# Verify a single file
+# Check one file
 turbocrypt verify --key my-secret.key encrypted-file.enc
 
-# Verify an entire directory
+# Check a directory tree
 turbocrypt verify --key my-secret.key encrypted-documents/
 
-# Quick verification (only checks if you have the correct key)
+# Check only the headers
 turbocrypt verify --quick --key my-secret.key encrypted-documents/
 ```
 
-This is useful for checking backups or verifying files after transferring them.
+### Listing a directory
 
-Quick vs Full Verification:
-- `--quick`: Only verifies the header MAC (checks if you have the correct key). Much faster but doesn't verify data integrity.
-- Full verification (default): Checks both the header MAC and content, ensuring both key correctness and data integrity.
-
-### Listing Encrypted Directory Contents
-
-You can list the contents of an encrypted directory without fully decrypting the files:
+`list` reports paths, encrypted sizes and a total without decrypting file
+contents. When the names were encrypted, add the key and
+`--encrypted-filenames` to make them readable in the listing.
 
 ```bash
-# List encrypted directory (shows encrypted filenames as-is)
+# Show names as stored
 turbocrypt list encrypted-documents/
 
-# List with decrypted filenames (requires the correct key)
+# Decrypt encrypted names for the listing
 turbocrypt list --key my-secret.key --encrypted-filenames encrypted-documents/
 ```
 
-The list command displays:
-- File paths (decrypted if `--encrypted-filenames` is used)
-- File sizes (encrypted size, which includes 48-byte overhead per file)
-- Total file count and combined size
-
-This is useful for:
-- Browsing encrypted backups without extracting them
-- Verifying what files are in an encrypted archive
-- Finding specific files before decrypting the entire directory
-- Quick inventory of encrypted data
-
-Example output:
-```
+```text
 Listing contents: encrypted-documents/
 
   report.pdf (2500 bytes)
@@ -339,31 +281,25 @@ Listing contents: encrypted-documents/
 Total: 4 files, 13.4 KB
 ```
 
-### Setting Up Defaults
+### Defaults
 
-If you use the same key and settings frequently, save them:
+Keys, thread counts, buffer sizes, exclusions, symlink handling and filename
+encryption can be saved in the configuration:
 
 ```bash
-# Set your default key (stores it in config)
+# Choose the key and worker count
 turbocrypt config set-key my-secret.key
-
-# Set default thread count
 turbocrypt config set-threads 8
 
-# Add permanent exclude patterns
+# Keep these exclusions for later commands
 turbocrypt config add-exclude "*.log"
 turbocrypt config add-exclude ".git/"
 
-# View your configuration
+# Review the result
 turbocrypt config show
 ```
 
-Now you can run commands without repeating options:
-
-```bash
-# Uses the key and excludes from your config
-turbocrypt encrypt source/ dest/
-```
+Command-line options still take precedence over saved values.
 
 ### Private Files in a Git Repository
 
@@ -469,270 +405,256 @@ Linked worktrees are not supported. On Windows, the hooks run through
 the `sh` that comes with Git for Windows. The hooks are a convenience: `git commit --no-verify` skips them, and
 `git add -f` can stage a plain file on purpose.
 
-## All Commands
+## All commands
 
-### Key Management
+These examples cover the current command set. For the exact usage accepted by
+the installed version, run `turbocrypt --help` or `turbocrypt git help`.
+
+### Key management
 
 ```bash
-# Generate a new key
+# Write a new key
 turbocrypt keygen output.key
 
-# Generate a password-protected key
+# Protect a new key with a password
 turbocrypt keygen --password output.key
 
-# Add password protection to existing key
+# Add or change password protection
 turbocrypt change-password my.key
 
-# Change password on protected key
-turbocrypt change-password protected.key
-
-# Remove password protection
-turbocrypt change-password --remove-password protected.key
-
-# Set default key in config
-turbocrypt config set-key my.key
+# Turn a protected key back into a plain key
+turbocrypt change-password --remove-password my.key
 ```
 
 ### Encryption
 
 ```bash
-# Basic encryption
+# Encrypt a file or directory
 turbocrypt encrypt --key KEY source dest
 
-# With password-protected key
+# Force a password prompt (protected keys are normally detected)
 turbocrypt encrypt --key KEY --password source dest
 
-# Encrypt in place (overwrites source)
+# Replace the source instead of writing a second copy
 turbocrypt encrypt --key KEY --in-place source/
 
-# Encrypt filenames too
+# Encrypt every component of the destination path
 turbocrypt encrypt --key KEY --encrypted-filenames source/ dest/
 
-# Exclude certain files
+# Skip matching paths; --exclude may be repeated
 turbocrypt encrypt --key KEY --exclude "*.log" --exclude ".git/" source/ dest/
 
-# Use context for key derivation
+# Derive a key for this context
 turbocrypt encrypt --key KEY --context "project-x" source/ dest/
 
-# Add .enc suffix automatically
+# Add .enc to destination names
 turbocrypt encrypt --key KEY --enc-suffix source/ dest/
 
-# Custom thread count
+# Override the configured worker count
 turbocrypt encrypt --key KEY --threads 16 source/ dest/
 
-# Preview without actually encrypting
+# Check the paths and totals without writing files
 turbocrypt encrypt --key KEY --dry-run source/ dest/
 ```
 
 ### Decryption
 
 ```bash
-# Basic decryption
+# Decrypt a file or directory
 turbocrypt decrypt --key KEY source dest
 
-# Decrypt in place
+# Replace encrypted files in place
 turbocrypt decrypt --key KEY --in-place encrypted/
 
-# Decrypt encrypted filenames (must use --encrypted-filenames if used during encryption)
+# Recover names that were encrypted too
 turbocrypt decrypt --key KEY --encrypted-filenames encrypted/ decrypted/
 
-# Decrypt with context (must match encryption context)
+# The context must match the one used for encryption
 turbocrypt decrypt --key KEY --context "project-x" encrypted/ decrypted/
 
-# Remove .enc suffix automatically
+# Remove .enc and skip source files without that suffix
 turbocrypt decrypt --key KEY --enc-suffix encrypted/ decrypted/
 
-# Preview without actually decrypting
+# Show what would be decrypted
 turbocrypt decrypt --key KEY --dry-run encrypted/ decrypted/
 ```
 
-### Verification
+### Verification and listing
 
 ```bash
-# Verify file integrity (full verification)
+# Authenticate the complete contents
 turbocrypt verify --key KEY encrypted-file.enc
-
-# Verify directory (full verification)
 turbocrypt verify --key KEY encrypted-directory/
 
-# Quick verification (only checks key correctness, not data integrity)
+# Authenticate headers only
 turbocrypt verify --quick --key KEY encrypted-directory/
 
-# Quick verification with context
+# A context used for encryption is also needed here
 turbocrypt verify --quick --key KEY --context "project-x" encrypted/
 
-# Preview verification without actually verifying
+# Preview verification without reading and authenticating the contents
 turbocrypt verify --key KEY --dry-run encrypted/
+
+# List stored paths as they appear on disk
+turbocrypt list encrypted-directory/
+
+# Decrypt encrypted names in the listing
+turbocrypt list --key KEY --encrypted-filenames encrypted-directory/
 ```
 
-### Configuration
+### Configuration commands
 
 ```bash
-# View current settings
+# Inspect the current values
 turbocrypt config show
 
-# Set default key
+# Copy a key into the config, then set processing defaults
 turbocrypt config set-key path/to/key
-
-# Set thread count
 turbocrypt config set-threads 8
-
-# Set buffer size (in bytes)
 turbocrypt config set-buffer-size 8388608
 
-# Manage exclude patterns
+# Add or remove a persistent exclusion
 turbocrypt config add-exclude "*.tmp"
 turbocrypt config remove-exclude "*.tmp"
 
-# Set symlink behavior
+# Choose how directory jobs handle links and names
 turbocrypt config set-ignore-symlinks true
-
-# Set filename encryption default
 turbocrypt config set-encrypted-filenames true
 ```
 
 ### Git
 
 ```bash
-# Set up the repository you are in, with --key, TURBOCRYPT_KEY_FILE or the default key
+# Set up this repository with the selected key
 turbocrypt git init
 
-# Set up a clone with the shared key
+# Set up a clone with a key already represented in .enc/
 turbocrypt git unlock --key team.key
 
-# Join a repository with a key that has no files in it yet
+# Join with a key that has no files in the repository yet
 turbocrypt git init --key my.key
 
-# Share the key
+# Write a password-protected copy of the repository key
 turbocrypt git export-key --password team.key
 
-# Make files or directories private, or public again
+# Make paths private or public again
 turbocrypt git add INTERNAL-DOC.md ops/
 turbocrypt git rm INTERNAL-DOC.md
 
-# See what is private and what is out of sync
+# Compare the working files with the encrypted store
 turbocrypt git status
 
-# Refresh the store from the plain files, or the plain files from the store
+# Refresh one side from the other
 turbocrypt git encrypt
 turbocrypt git decrypt
 
-# Resolve a file that changed on both sides
-turbocrypt git decrypt --force docs/internal.md   # take the upstream version
-turbocrypt git encrypt --force docs/internal.md   # keep yours
+# Resolve a file changed on both sides
+turbocrypt git decrypt --force docs/internal.md  # take the upstream version
+turbocrypt git encrypt --force docs/internal.md  # keep the working version
 ```
 
-### Performance Testing
+### Benchmarks and version
 
 ```bash
-# Run benchmarks
+# Measure encryption throughput
 turbocrypt bench
+
+# Print the installed version
+turbocrypt version
 ```
 
-## Command-Line Options
+### Options
 
-Options available for most commands:
+The processing commands accept the following options where they apply:
 
-- `--key <path>` - Path to key file (required unless set in config)
-- `--password` - Prompt for password (for password-protected keys)
-- `--context <string>` - Context string for key derivation (creates independent key namespace)
-- `--threads <n>` - Number of parallel threads (default: CPU count capped at 16, max 64)
-- `--in-place` - Overwrite source files instead of creating new ones
-- `--encrypted-filenames` - Encrypt/decrypt filenames (required for both encryption and decryption, cannot be used with --in-place)
-- `--enc-suffix` - Add/remove .enc suffix automatically
-- `--exclude <pattern>` - Skip files matching pattern (can use multiple times)
-- `--ignore-symlinks` - Skip symbolic links
-- `--quick` - (verify only) Only check header MAC, skip full verification - faster but doesn't verify data integrity
-- `--dry-run` - Show what would be processed without actually encrypting/decrypting - useful for testing exclude patterns and verifying operations
-- `--force` - Overwrite existing files without asking
-- `--buffer-size <bytes>` - Set I/O buffer size (default: 4MB)
+| Option                  | Effect                                                                      |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `--key <path>`          | Use this key instead of the environment or configuration                    |
+| `--password`            | Force a password prompt; protected keys are normally detected               |
+| `--context <string>`    | Derive a separate key namespace from the context                            |
+| `--threads <n>`         | Override the default of one worker per CPU, capped at 16; the maximum is 64 |
+| `--buffer-size <bytes>` | Change the 4 MiB I/O buffer                                                 |
+| `--in-place`            | Replace the source during encryption or decryption                          |
+| `--force`               | Replace an existing destination without prompting                           |
+| `--enc-suffix`          | Add `.enc` when encrypting; remove it and skip other names when decrypting  |
+| `--encrypted-filenames` | Encrypt each path component; incompatible with `--in-place`                 |
+| `--exclude <pattern>`   | Skip matching paths; may be repeated                                        |
+| `--ignore-symlinks`     | Skip symbolic links                                                         |
+| `--quick`               | Authenticate only the header during verification                            |
+| `--dry-run`             | Report what would be processed without changing files                       |
 
-## File Portability
+## File portability
 
-Encrypted files can be freely moved between directories and renamed. The encryption intentionally does not depend on the file's path, filename, or parent directories. This means you can reorganize and rename your encrypted files however you like without needing to re-encrypt them.
+Encrypted contents do not depend on a file's name or path. An encrypted file
+can be moved or renamed without re-encrypting it.
 
-### Filename Encryption
+With `--encrypted-filenames`, each path component is encrypted separately and
+encoded with base84 so that it remains a valid name on Linux, macOS and
+Windows. The directory structure is preserved. Use the option again when
+decrypting.
 
-When using `--encrypted-filenames`:
+## Configuration
 
-- Each path component (directory or filename) is encrypted separately
-- Encoded with base84, so the names are valid on Linux, macOS and Windows
-- Preserves directory structure (you still see folders, just with encrypted names)
-- Must be used for both encryption and decryption operations
-
-## Configuration File
-
-TurboCrypt stores your settings in a JSON configuration file:
+TurboCrypt stores its JSON configuration here:
 
 - macOS: `~/Library/Application Support/turbocrypt/config.json`
 - Linux: `~/.local/share/turbocrypt/config.json`
 - Windows: `%LOCALAPPDATA%\turbocrypt\config.json`
 
-The config file is created with restricted permissions (owner read/write only) to protect your key if you choose to store it there.
+The file is created for owner read/write access only. Explicit command-line
+options win over `TURBOCRYPT_KEY_FILE`, which in turn wins over values in this
+file.
 
-### Priority Order
+`config set-key` copies the key into the configuration; it does not retain the
+path to the original key file. Also, if a command supplies one or more
+`--exclude` patterns, they replace the configured exclusion list for that run.
 
-Settings are applied in this order (highest priority first):
+## A few cautions
 
-1. Command-line flags (e.g., `--key`, `--threads`)
-2. Environment variables (`TURBOCRYPT_KEY_FILE`)
-3. Configuration file settings
+Generate keys with `turbocrypt keygen` and keep a backup away from the data it
+protects. Password protection limits access to a key file at rest; changing
+that password does not change the encryption key.
 
-## Best Practices
+`keygen`, `change-password` and the configuration commands write a new file
+and rename it into place. If the destination is a symbolic link, the link is
+replaced by a regular file rather than followed.
 
-### Key Management
+Keep the plaintext until a full `verify` succeeds on the encrypted copy.
+`--dry-run` is useful before a large directory job, particularly when exclude
+patterns are involved.
 
-- Generate strong keys: Always use `turbocrypt keygen` - don't create keys manually
-- Keep backups: Store a copy of your key in a safe, separate location
-- Use password protection: For keys stored on your computer, consider using `turbocrypt keygen --password` or adding protection later with `turbocrypt change-password`
-- Change passwords when needed: If you suspect your password may be compromised, use `turbocrypt change-password` to update it without regenerating the key
-- Key and config files are replaced in one step: `keygen`, `change-password` and `config` write a new file and rename it into place. A symbolic link at that path is replaced by a regular file, not followed
-- Never share keys: Each person should have their own key, or use password-protected keys with different passwords for additional security
-
-### Safe Workflows
-
-- Preview first: Use `--dry-run` to see what will be processed before running the actual operation
-- Test first: Try encrypting/decrypting a small test directory before processing important data
-- Test exclude patterns: Use `--dry-run` with `--exclude` to verify your patterns work as expected
-- Verify after transfer: Use `turbocrypt verify` to check files after copying or uploading them
-- Keep originals: Don't delete unencrypted files until you've verified the encrypted versions
-- Exclude unnecessary files: Use `--exclude` to skip cache, logs, and other regenerable files
-
-### Performance Tips
-
-- Adjust threads for directories: Use `--threads` based on your CPU core count and disk features
-- Larger buffers for huge files: Try `--buffer-size 16777216` (16MB) for very large files
-- Exclude unnecessary files: Using exclude patterns is faster than encrypting files and deleting them later
+More threads are not always faster. A small worker count often suits trees of
+small files, while a larger buffer can help with very large files. Measure on
+the storage you actually use; `turbocrypt bench` is available for that.
 
 ## Troubleshooting
 
 ### "Wrong decryption key, wrong context, or corrupted file header"
 
-This error means either:
-- You're using the wrong key file
-- You're using the wrong context (or missing a required context)
-- The file wasn't encrypted with TurboCrypt
-- The file header is corrupted
-
-Double-check you're using the same key and context that were used to encrypt the file.
+TurboCrypt cannot distinguish a wrong key or context from a foreign or damaged
+header. Check the key and use exactly the context supplied during encryption.
 
 ### "Authentication failed" during decryption
 
-The file has been modified or corrupted after encryption. TurboCrypt detected tampering and refused to decrypt. This is a security feature - the file may have been altered maliciously or damaged during storage/transfer.
+The header was accepted, but the encrypted contents did not authenticate. Get
+another copy of the file if one is available, because TurboCrypt will not
+produce unauthenticated output.
 
 ### "Access denied" errors with large files
 
-On some systems, memory-mapped I/O (used for files >1MB) requires specific permissions. Try running with sudo/administrator privileges, or check that your user has read/write access to both source and destination directories.
+TurboCrypt memory-maps files larger than 1 MiB. If only large files fail,
+check that the current user can read the source and write both the destination
+directory and its existing file, if any.
 
 ### Performance is slow
 
-- Check if you're using too many threads (`--threads 4` is often faster than 32 for small files)
-- Ensure your source/destination are on fast storage (SSD vs HDD makes a big difference)
-- For many small files, threading overhead can reduce performance - try using `--threads 2`
+Try fewer threads for a tree of small files; `--threads 2` or `--threads 4`
+can beat a large worker count. For large files, storage speed is usually the
+limit.
 
 ### Out of memory errors
 
-Reduce the buffer size: `--buffer-size 1048576` (1MB instead of default 4MB)
+Reduce the per-file buffer, for example with `--buffer-size 1048576`.
 
 ### "nothing to commit" after editing a private file
 
@@ -784,13 +706,13 @@ GUI clients run hooks with a minimal PATH. The installed hooks use the
 absolute path of the `turbocrypt` binary recorded at `init` time. When the
 binary moved, run `turbocrypt git init` again to refresh the hooks.
 
-## Environment Variables
+## Environment variables
 
-- `TURBOCRYPT_KEY_FILE`: Path to your key file (overridden by `--key` flag). `turbocrypt git init` and `unlock` read it once, when they bind a key to a repository.
-
-Example:
+`TURBOCRYPT_KEY_FILE` supplies the key path when `--key` was not given. The
+Git `init` and `unlock` commands read it only once, when they bind the key to
+the repository.
 
 ```bash
 export TURBOCRYPT_KEY_FILE=~/.ssh/turbocrypt.key
-turbocrypt encrypt source/ dest/  # Uses key from environment
+turbocrypt encrypt source/ dest/  # uses the key above
 ```
