@@ -39,10 +39,9 @@ pub fn build(b: *std.Build) void {
     }
 
     // macOS git turns decomposed file names into their composed form.
-    // The git integration does the same through iconv, like git itself.
+    // The git integration does the same through libiconv, which it loads with dlopen.
     if (target.result.os.tag == .macos) {
         exe.root_module.link_libc = true;
-        exe.root_module.linkSystemLibrary("iconv", .{});
     }
 
     b.installArtifact(exe);

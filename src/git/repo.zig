@@ -326,9 +326,30 @@ pub const Repo = struct {
 
 const iconv_failed = std.math.maxInt(usize);
 
-extern "c" fn iconv_open(tocode: [*:0]const u8, fromcode: [*:0]const u8) ?*anyopaque;
-extern "c" fn iconv(cd: ?*anyopaque, inbuf: ?*?[*]u8, inbytesleft: ?*usize, outbuf: ?*?[*]u8, outbytesleft: ?*usize) usize;
-extern "c" fn iconv_close(cd: ?*anyopaque) c_int;
+/// The libiconv functions, loaded at run time.
+/// Every macOS install ships the library.
+/// Zig cannot link it when it cross-compiles to macOS, because it only has a stub for libSystem.
+const Libiconv = struct {
+    lib: std.DynLib,
+    iconv_open: *const fn (tocode: [*:0]const u8, fromcode: [*:0]const u8) callconv(.c) ?*anyopaque,
+    iconv: *const fn (cd: ?*anyopaque, inbuf: ?*?[*]u8, inbytesleft: ?*usize, outbuf: ?*?[*]u8, outbytesleft: ?*usize) callconv(.c) usize,
+    iconv_close: *const fn (cd: ?*anyopaque) callconv(.c) c_int,
+
+    fn load() error{Unavailable}!Libiconv {
+        var lib = std.DynLib.openZ("/usr/lib/libiconv.2.dylib") catch return error.Unavailable;
+        errdefer lib.close();
+        return .{
+            .lib = lib,
+            .iconv_open = lib.lookup(@FieldType(Libiconv, "iconv_open"), "iconv_open") orelse return error.Unavailable,
+            .iconv = lib.lookup(@FieldType(Libiconv, "iconv"), "iconv") orelse return error.Unavailable,
+            .iconv_close = lib.lookup(@FieldType(Libiconv, "iconv_close"), "iconv_close") orelse return error.Unavailable,
+        };
+    }
+
+    fn unload(self: *Libiconv) void {
+        self.lib.close();
+    }
+};
 
 /// Compose a decomposed UTF-8 name the way git does on macOS, through the UTF-8-MAC converter of libiconv.
 /// Anything the converter refuses is returned unchanged, which is also what git does.
@@ -340,9 +361,11 @@ pub fn precompose(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     }
     if (ascii) return allocator.dupe(u8, input);
 
-    const cd = iconv_open("UTF-8", "UTF-8-MAC");
+    var libiconv = Libiconv.load() catch return allocator.dupe(u8, input);
+    defer libiconv.unload();
+    const cd = libiconv.iconv_open("UTF-8", "UTF-8-MAC");
     if (cd == null or @intFromPtr(cd) == iconv_failed) return allocator.dupe(u8, input);
-    defer _ = iconv_close(cd);
+    defer _ = libiconv.iconv_close(cd);
 
     const out = try allocator.alloc(u8, input.len * 2 + 16);
     errdefer allocator.free(out);
@@ -350,7 +373,7 @@ pub fn precompose(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var in_left: usize = input.len;
     var out_ptr: ?[*]u8 = out.ptr;
     var out_left: usize = out.len;
-    const rc = iconv(cd, &in_ptr, &in_left, &out_ptr, &out_left);
+    const rc = libiconv.iconv(cd, &in_ptr, &in_left, &out_ptr, &out_left);
     if (rc == iconv_failed or in_left != 0) {
         allocator.free(out);
         return allocator.dupe(u8, input);
