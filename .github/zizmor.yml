@@ -1,0 +1,19 @@
+# Settings for zizmor, the linter for GitHub Actions workflows.
+# Run it from the repository root: zizmor .github/workflows
+
+rules:
+  # Actions are pinned to a major version tag on purpose.
+  # The upstream repositories are trusted, and a tag keeps updates simple.
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin
+
+  # Only the actions in this list may appear in a workflow.
+  # Add a new action here before you use it.
+  forbidden-uses:
+    config:
+      allow:
+        - actions/*
+        - mlugg/setup-zig
+        - goreleaser/goreleaser-action
