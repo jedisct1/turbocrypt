@@ -5,3 +5,4 @@ zig-out
 api-faq.md
 secret.key
 tmp
+zig-pkg/
