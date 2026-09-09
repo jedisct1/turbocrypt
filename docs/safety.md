@@ -3,10 +3,8 @@
 [Back to the main README](../README.md)
 
 Generate keys with `turbocrypt keygen` and keep a backup away from the data it
-protects.
-
-Password protection limits access to a key file at rest. Changing that
-password does not change the encryption key.
+protects. Password protection limits access to a key file at rest; changing
+that password does not change the encryption key.
 
 `keygen`, `change-password` and the configuration commands write a new file
 and rename it into place.

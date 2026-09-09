@@ -20,7 +20,7 @@ wins over values in this file.
 `config set-key` copies the key into the configuration; it does not retain the
 path to the original key file.
 
-If a command supplies one or more `--exclude` patterns, they replace the
+Also, if a command supplies one or more `--exclude` patterns, they replace the
 configured exclusion list for that run.
 
 See the [usage guide](usage.md#defaults) for examples of saving defaults and
