@@ -419,8 +419,8 @@ test "filename encryption length validation" {
     defer allocator.free(encrypted);
     try testing.expect(encrypted.len <= filesystem_filename_limit);
 
-    // Names of up to 191 bytes fit whatever the ciphertext looks like
-    const safe_lengths = [_]usize{ 50, 100, 150, 191 };
+    // Names of up to 197 bytes fit whatever the ciphertext looks like
+    const safe_lengths = [_]usize{ 50, 100, 150, 197 };
     for (safe_lengths) |len| {
         const test_name = try allocator.alloc(u8, len);
         defer allocator.free(test_name);
@@ -432,9 +432,9 @@ test "filename encryption length validation" {
         try testing.expect(enc.len <= filesystem_filename_limit);
     }
 
-    // Names of 208 bytes or more never fit
+    // Names of 205 bytes or more never fit
     // The last length takes the heap path
-    const unsafe_lengths = [_]usize{ 208, 215, 220, max_stack_filename_length + 1 };
+    const unsafe_lengths = [_]usize{ 205, 215, 220, max_stack_filename_length + 1 };
     for (unsafe_lengths) |len| {
         const test_name = try allocator.alloc(u8, len);
         defer allocator.free(test_name);
@@ -475,7 +475,7 @@ test "strict decrypt round trips and rejects garbage" {
     const key: [16]u8 = @splat(0x42);
     const other_key: [16]u8 = @splat(0x43);
 
-    const long_name: [191]u8 = @splat('a');
+    const long_name: [197]u8 = @splat('a');
     const names = [_][]const u8{ "AGENT.md", "r\u{e9}sum\u{e9}.txt", &long_name };
     for (names) |name| {
         const encrypted = try encryptFilename(allocator, name, key);

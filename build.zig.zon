@@ -37,8 +37,8 @@
             .hash = "hctr2-0.1.6-mu7McdIoAwB4BY7OgLazIChsNvSpyMLbTRgx2Et68FYd",
         },
         .base84 = .{
-            .url = "git+https://github.com/jedisct1/zig-base84.git?ref=0.1.0#f54020f3a3d1c1e376a96f8439da294453e95262",
-            .hash = "base84-0.1.0-Pe665iFKAAAgpfQfk_-HWSK6FFjBLFPjcHcl689LRtOj",
+            .url = "git+https://github.com/jedisct1/zig-base84.git?ref=0.2.0#abf64430414ee462fcd2847c7f694151c5e47caf",
+            .hash = "base84-0.2.0-Pe665lpYAADUkY5wwdPFV5ex9oBvE7ZtcileYeWJSA2_",
         },
     },
     .paths = .{
