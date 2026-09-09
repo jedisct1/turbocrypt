@@ -10,7 +10,7 @@ filename component.
 | -------------------------------------- | ------------------------------------------------ |
 | Key derivation and contexts            | TurboSHAKE128                                    |
 | File encryption                        | AEGIS-128X2 with a 128-bit tag                   |
-| Header and Git metadata authentication | AEGIS-128X2-MAC with a 128-bit output            |
+| Header and Git metadata authentication | AEGISMAC-128X2 with a 128-bit output             |
 | Filename encryption                    | HCTR2 with AES-128, followed by base84 encoding  |
 | Password-protected key files           | Argon2id, then an XOR mask and password verifier |
 
@@ -53,14 +53,15 @@ The encrypted file is therefore exactly 48 bytes longer than the plaintext.
 The header MAC is:
 
 ```text
-AEGIS-128X2-MAC(header_mac_key, "TC01" || nonce)
+AEGISMAC-128X2(header_mac_key, zero_nonce, "TC01" || file_nonce)
 ```
 
-`TC01` separates version 1 of this format from other uses of the MAC. The
-header MAC lets TurboCrypt reject a wrong key or context without processing
-the whole file. It does not authenticate the ciphertext body: `verify --quick`
-checks only this MAC, whereas normal decryption and `verify` check the AEGIS
-tag over the complete ciphertext.
+The MAC uses its all-zero 16-byte nonce. `TC01` separates version 1 of this
+format from other uses of the MAC. The header MAC lets TurboCrypt reject a
+wrong key or context without processing the whole file. It does not
+authenticate the ciphertext body: `verify --quick` checks only this MAC,
+whereas normal decryption and `verify` check the AEGIS tag over the complete
+ciphertext.
 
 Ordinary `encrypt` and `decrypt` operations use empty associated data, so an
 encrypted file can be moved or renamed. The Git integration instead supplies
@@ -76,9 +77,9 @@ authentication.
 
 With `--encrypted-filenames`, TurboCrypt handles each path component
 separately. It pads names shorter than 16 bytes with zero bytes, applies HCTR2
-with AES-128 and an empty tweak, and base84-encodes the result. Longer names
-are not padded to a block boundary. Base84 only makes the ciphertext usable as
-a filename on Linux, macOS, and Windows; it adds no cryptographic security.
+with AES-128 and an empty tweak, and base84-encodes the result.
+
+Base84 makes the ciphertext usable as a filename on Linux, macOS, and Windows.
 
 HCTR2 is length-preserving and deterministic for a fixed key and tweak.
 Consequently, equal names under the same key and context have equal encrypted
@@ -89,8 +90,9 @@ counts, and file sizes are not hidden.
 
 Filename ciphertexts have no separate authentication tag. Decryption checks
 that the base84 representation and zero padding are canonical and that the
-result is a safe path component, but those checks are not cryptographic
-authentication. In the Git integration, the path binding on the file contents
+result is a safe path component.
+
+In the Git integration, the path binding on the file contents
 provides authentication against moving or swapping store entries.
 
 ## Password-protected key files
@@ -117,7 +119,8 @@ unique password and protect backups of the key file.
 
 ## Git metadata
 
-The Git integration uses AEGIS-128X2-MAC under three additional derived keys:
+The Git integration uses AEGISMAC-128X2, with its all-zero nonce, under three
+additional derived keys:
 
 - The key identity is the MAC of the string `"key id"`. It names the key's
   public directory under `.enc/` without publishing the master key.
