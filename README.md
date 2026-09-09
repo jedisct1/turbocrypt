@@ -70,6 +70,9 @@ Read [Getting started](docs/getting-started.md) for the full tutorial or the
 - [Configuration](docs/configuration.md): saved settings, precedence,
   environment variables, and file portability
 
+- [Cryptography](docs/cryptography.md): key derivation, file and filename
+  encryption, password protection, and Git metadata authentication
+
 - [Safety](docs/safety.md): key handling, backups, verification, and
   performance considerations
 
