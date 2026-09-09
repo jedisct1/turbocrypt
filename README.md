@@ -50,14 +50,14 @@ The same commands work on individual files. Read
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md) — installation and a first
+- [Getting started](docs/getting-started.md): installation and a first
   encrypted file or directory
-- [Usage guide](docs/usage.md) — password-protected keys, contexts, filenames,
+- [Usage guide](docs/usage.md): password-protected keys, contexts, filenames,
   exclusions, verification, and other common workflows
-- [Private files in Git](docs/git.md) — encrypted files in public repositories,
+- [Private files in Git](docs/git.md): encrypted files in public repositories,
   setup, collaboration, and conflict handling
-- [Command reference](docs/command-reference.md) — commands and processing options at a glance
-- [Configuration](docs/configuration.md) — saved settings, precedence,
+- [Command reference](docs/command-reference.md): commands and processing options at a glance
+- [Configuration](docs/configuration.md): saved settings, precedence,
   environment variables, and file portability
-- [Safety](docs/safety.md) — key handling, backups, verification, and performance considerations
-- [Troubleshooting](docs/troubleshooting.md) — common errors and Git integration problems
+- [Safety](docs/safety.md): key handling, backups, verification, and performance considerations
+- [Troubleshooting](docs/troubleshooting.md): common errors and Git integration problems
