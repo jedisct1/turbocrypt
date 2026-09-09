@@ -1,14 +1,11 @@
 const std = @import("std");
 const hctr2 = @import("hctr2");
 const base84 = @import("base84");
-const path_sep = std.fs.path.sep;
-const path_sep_str = std.fs.path.sep_str;
 
 /// Minimum filename length before encryption (padded with null bytes)
 /// HCTR2 requires minimum 16 bytes (one AES block).
 /// This prevents path length explosion for deeply nested directories.
-/// Sixteen bytes encode to at least 20 characters.
-/// Such a name can never be a reserved Windows device name like CON.
+/// It also keeps every encrypted name longer than any reserved Windows device name, such as CON.
 const min_padded_length = 16;
 
 /// Maximum filename length to use stack buffers (typical filesystem limit is 255)
@@ -17,7 +14,7 @@ const max_stack_filename_length = 256;
 /// Longest encoded name that fits the stack buffers
 const max_stack_encoded_length = base84.standard.calcSizeUpperBound(max_stack_filename_length);
 
-/// Longest decoded name that an encoded name of that size can hold
+/// Decoded size that a name of that length can reach
 const max_stack_decoded_length = base84.standard.calcDecodedSizeUpperBound(max_stack_encoded_length);
 
 /// Filesystem filename length limit (ext4, APFS, NTFS all support 255 bytes)
@@ -78,7 +75,6 @@ pub fn encryptFilename(
 
         try cipher.encrypt(ciphertext, padded, &[_]u8{});
 
-        // Encode with base84
         var encode_buf: [max_stack_encoded_length]u8 = undefined;
         const encoded = try base84.standard.encode(&encode_buf, ciphertext);
 
@@ -107,7 +103,6 @@ pub fn encryptFilename(
 
         try cipher.encrypt(ciphertext, padded, &[_]u8{});
 
-        // Encode with base84
         const upper_bound = base84.standard.calcSizeUpperBound(ciphertext.len);
         const encode_buf = try allocator.alloc(u8, upper_bound);
         errdefer allocator.free(encode_buf);
@@ -146,11 +141,10 @@ pub fn decryptFilename(
 
     // Use stack buffers for typical filenames
     if (encrypted_name.len <= max_stack_encoded_length) {
-        // Try to decode from base84 using stack buffer
         var decode_buf: [max_stack_decoded_length]u8 = undefined;
 
         const ciphertext = base84.standard.decode(&decode_buf, encrypted_name) catch {
-            // Not a valid base84 string - return as-is (was never encrypted)
+            // A name that does not decode was never encrypted
             return allocator.dupe(u8, encrypted_name);
         };
 
@@ -176,7 +170,7 @@ pub fn decryptFilename(
         defer allocator.free(decode_buf);
 
         const ciphertext = base84.standard.decode(decode_buf, encrypted_name) catch {
-            // Not a valid base84 string - return as-is (was never encrypted)
+            // A name that does not decode was never encrypted
             return allocator.dupe(u8, encrypted_name);
         };
 
@@ -253,6 +247,7 @@ pub fn isSafeComponent(name: []const u8) bool {
 
 /// Decrypt a relative path from a git store, one component at a time.
 ///
+/// Git reports paths with '/' on every platform.
 /// Empty components are rejected, so an absolute path or a doubled separator is an error rather than being silently dropped.
 ///
 /// Returns: Owned slice that caller must free
@@ -269,7 +264,7 @@ pub fn decryptPathStrict(
         components.deinit(allocator);
     }
 
-    var it = std.mem.splitScalar(u8, encrypted_path, path_sep);
+    var it = std.mem.splitScalar(u8, encrypted_path, std.fs.path.sep_posix);
     while (it.next()) |component| {
         if (component.len == 0) return StrictError.InvalidEncryptedFilename;
 
@@ -279,13 +274,12 @@ pub fn decryptPathStrict(
     }
     if (components.items.len == 0) return StrictError.InvalidEncryptedFilename;
 
-    return std.mem.join(allocator, path_sep_str, components.items);
+    return std.mem.join(allocator, std.fs.path.sep_str_posix, components.items);
 }
 
 /// Encrypt a full path by encrypting each component separately
 ///
-/// Path components are split by '/', each encrypted independently,
-/// then rejoined with '/' to preserve directory structure.
+/// `sep` separates the components: the native separator for filesystem paths, '/' for paths that git reports.
 ///
 /// Note: The key parameter should be the derived filename_key from DerivedKeys.
 ///
@@ -294,6 +288,7 @@ pub fn encryptPath(
     allocator: std.mem.Allocator,
     path: []const u8,
     filename_key: [16]u8,
+    sep: u8,
 ) ![]u8 {
     // Split path by separator
     var components: std.ArrayList([]const u8) = .empty;
@@ -304,7 +299,7 @@ pub fn encryptPath(
         components.deinit(allocator);
     }
 
-    var it = std.mem.splitScalar(u8, path, path_sep);
+    var it = std.mem.splitScalar(u8, path, sep);
     while (it.next()) |component| {
         if (component.len == 0) continue; // Skip empty components (e.g., leading slash)
 
@@ -312,11 +307,12 @@ pub fn encryptPath(
         try components.append(allocator, encrypted);
     }
 
-    // Join encrypted components with '/'
-    return std.mem.join(allocator, path_sep_str, components.items);
+    return std.mem.join(allocator, &.{sep}, components.items);
 }
 
 /// Decrypt a path encrypted with encryptPath
+///
+/// `sep` is the separator that was given to encryptPath.
 ///
 /// Note: The key parameter should be the derived filename_key from DerivedKeys.
 ///
@@ -325,6 +321,7 @@ pub fn decryptPath(
     allocator: std.mem.Allocator,
     encrypted_path: []const u8,
     filename_key: [16]u8,
+    sep: u8,
 ) ![]u8 {
     // Split path by separator
     var components: std.ArrayList([]const u8) = .empty;
@@ -335,7 +332,7 @@ pub fn decryptPath(
         components.deinit(allocator);
     }
 
-    var it = std.mem.splitScalar(u8, encrypted_path, path_sep);
+    var it = std.mem.splitScalar(u8, encrypted_path, sep);
     while (it.next()) |component| {
         if (component.len == 0) continue; // Skip empty components
 
@@ -343,8 +340,7 @@ pub fn decryptPath(
         try components.append(allocator, decrypted);
     }
 
-    // Join decrypted components with '/'
-    return std.mem.join(allocator, path_sep_str, components.items);
+    return std.mem.join(allocator, &.{sep}, components.items);
 }
 
 // Tests
@@ -386,10 +382,10 @@ test "encrypt and decrypt path" {
     const key: [16]u8 = @splat(0x42);
     const plaintext_path = "dir/subdir/file.txt";
 
-    const encrypted_path = try encryptPath(allocator, plaintext_path, key);
+    const encrypted_path = try encryptPath(allocator, plaintext_path, key, '/');
     defer allocator.free(encrypted_path);
 
-    const decrypted_path = try decryptPath(allocator, encrypted_path, key);
+    const decrypted_path = try decryptPath(allocator, encrypted_path, key, '/');
     defer allocator.free(decrypted_path);
 
     try testing.expectEqualStrings(plaintext_path, decrypted_path);
@@ -436,7 +432,7 @@ test "filename encryption length validation" {
         try testing.expect(enc.len <= filesystem_filename_limit);
     }
 
-    // Names of 208 bytes or more never fit and return EncryptedFilenameTooLong
+    // Names of 208 bytes or more never fit
     // The last length takes the heap path
     const unsafe_lengths = [_]usize{ 208, 215, 220, max_stack_filename_length + 1 };
     for (unsafe_lengths) |len| {
@@ -465,7 +461,7 @@ test "encrypted names are valid file names on Windows" {
         const encrypted = try encryptFilename(allocator, name, key);
         defer allocator.free(encrypted);
 
-        // A reserved device name like CON has at most four characters, and a period is not in the alphabet.
+        // Reserved device names like CON are short, and a period never shows up
         try testing.expect(encrypted.len >= 20);
         try testing.expect(std.mem.findAny(u8, encrypted, " .<>:\"/\\|?*") == null);
         for (encrypted) |c| try testing.expect(c > 0x20 and c < 0x7f);
@@ -530,7 +526,7 @@ test "strict path decrypt" {
     const allocator = testing.allocator;
 
     const key: [16]u8 = @splat(0x42);
-    const encrypted_path = try encryptPath(allocator, "docs/internal.md", key);
+    const encrypted_path = try encryptPath(allocator, "docs/internal.md", key, '/');
     defer allocator.free(encrypted_path);
 
     const decrypted = try decryptPathStrict(allocator, encrypted_path, key);

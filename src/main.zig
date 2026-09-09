@@ -535,9 +535,9 @@ const DirectoryScanContext = struct {
     /// Encrypt or decrypt every component of a path, and explain failures to the user
     fn transformPath(self: *DirectoryScanContext, path: []const u8, what: []const u8) ![]u8 {
         return (if (self.is_encrypt)
-            filename_crypto.encryptPath(self.allocator, path, self.key)
+            filename_crypto.encryptPath(self.allocator, path, self.key, std.fs.path.sep)
         else
-            filename_crypto.decryptPath(self.allocator, path, self.key)) catch |err| {
+            filename_crypto.decryptPath(self.allocator, path, self.key, std.fs.path.sep)) catch |err| {
             std.debug.print("\n[ERROR] Failed to {s} {s}: {s}\n", .{
                 if (self.is_encrypt) "encrypt" else "decrypt",
                 what,
@@ -1063,7 +1063,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     for (list_ctx.file_paths.items, list_ctx.file_sizes.items) |file_path, file_size| {
         // Decrypt filename if needed
         const display_path = if (opts.encrypt_filenames) blk: {
-            const decrypted = filename_crypto.decryptPath(allocator, file_path, filename_key) catch |err| {
+            const decrypted = filename_crypto.decryptPath(allocator, file_path, filename_key, std.fs.path.sep) catch |err| {
                 // If decryption fails, show encrypted name with a marker
                 std.debug.print("  {s} ({s}) [decrypt error: {}]\n", .{ file_path, formatSize(file_size), err });
                 continue;

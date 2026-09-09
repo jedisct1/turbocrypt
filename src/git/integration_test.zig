@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const crypto = @import("../crypto.zig");
 const filename_crypto = @import("../filename_crypto.zig");
 const keygen = @import("../keygen.zig");
@@ -76,7 +75,6 @@ test "git integration: store round trip, clone, tamper" {
     const testing = std.testing;
     const allocator = testing.allocator;
     const io = testing.io;
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
     if (!gitAvailable(allocator, io)) return error.SkipZigTest;
 
     std.Io.Dir.deleteTree(.cwd(), io, base) catch {};
@@ -102,7 +100,11 @@ test "git integration: store round trip, clone, tamper" {
 
     var repo_a = try Repo.openAt(allocator, io, &env.map, a);
     defer repo_a.deinit();
-    try testing.expectEqualStrings(a, repo_a.toplevel);
+    // Git reports the top level with '/' on every platform.
+    const a_as_git = try allocator.dupe(u8, a);
+    defer allocator.free(a_as_git);
+    std.mem.replaceScalar(u8, a_as_git, std.fs.path.sep, '/');
+    try testing.expectEqualStrings(a_as_git, repo_a.toplevel);
 
     const key = keygen.generate(io);
     try repo_a.saveKey(key);
@@ -112,11 +114,13 @@ test "git integration: store round trip, clone, tamper" {
     try writeFile(io, a, "AGENT.md", "agent notes\n", allocator);
     try writeFile(io, a, "docs/internal.md", "internal\n", allocator);
     try writeFile(io, a, "ops/deploy.sh", "#!/bin/sh\n", allocator);
-    const deploy = try std.fs.path.join(allocator, &.{ a, "ops/deploy.sh" });
-    defer allocator.free(deploy);
-    const deploy_file = try std.Io.Dir.openFile(.cwd(), io, deploy, .{ .mode = .read_write });
-    try deploy_file.setPermissions(io, .fromMode(0o755));
-    deploy_file.close(io);
+    if (std.Io.File.Permissions.has_executable_bit) {
+        const deploy = try std.fs.path.join(allocator, &.{ a, "ops/deploy.sh" });
+        defer allocator.free(deploy);
+        const deploy_file = try std.Io.Dir.openFile(.cwd(), io, deploy, .{ .mode = .read_write });
+        try deploy_file.setPermissions(io, .fromMode(0o755));
+        deploy_file.close(io);
+    }
 
     const manifest_text = manifest_mod.default_text ++ "/AGENT.md\n/docs/internal.md\n/ops/\n";
     try writeFile(io, a, manifest_mod.manifest_name, manifest_text, allocator);
@@ -169,10 +173,12 @@ test "git integration: store round trip, clone, tamper" {
     const agent = try readFile(io, b, "AGENT.md", allocator);
     defer allocator.free(agent);
     try testing.expectEqualStrings("agent notes\n", agent);
-    const deploy_b = try std.fs.path.join(allocator, &.{ b, "ops/deploy.sh" });
-    defer allocator.free(deploy_b);
-    const deploy_stat = try std.Io.Dir.statFile(.cwd(), io, deploy_b, .{});
-    try testing.expect(deploy_stat.permissions.toMode() & 0o100 != 0);
+    if (std.Io.File.Permissions.has_executable_bit) {
+        const deploy_b = try std.fs.path.join(allocator, &.{ b, "ops/deploy.sh" });
+        defer allocator.free(deploy_b);
+        const deploy_stat = try std.Io.Dir.statFile(.cwd(), io, deploy_b, .{});
+        try testing.expect(deploy_stat.permissions.toMode() & 0o100 != 0);
+    }
 
     const store_b = try std.fs.path.join(allocator, &.{ b, sync.enc_dir });
     defer allocator.free(store_b);
@@ -184,7 +190,7 @@ test "git integration: store round trip, clone, tamper" {
 
     // The manifest entry is the key check, so corrupting it stops a pass before any row is produced.
     // Tamper with two other entries.
-    const manifest_cipher = try filename_crypto.encryptPath(allocator, manifest_mod.manifest_name, keys.filename_key);
+    const manifest_cipher = try filename_crypto.encryptPath(allocator, manifest_mod.manifest_name, keys.filename_key, '/');
     defer allocator.free(manifest_cipher);
     var picked: [2][]const u8 = undefined;
     var n: usize = 0;

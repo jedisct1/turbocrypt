@@ -32,10 +32,9 @@ pub const Error = error{
     SyncAborted,
     FileTooLarge,
     ChangedDuringSync,
-    ReplaceUnsupported,
 };
 
-const plain_file_permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
+pub const plain_file_permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
 const cipher_file_permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o644);
 const cipher_exec_permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o755);
 
@@ -540,7 +539,7 @@ pub fn readPlainManifest(repo: *const Repo) !?Manifest {
 /// A store entry that exists but does not decrypt means a wrong key or a corrupted file.
 pub fn manifestFromStore(repo: *const Repo, keys: crypto.DerivedKeys) !?[]u8 {
     const allocator = repo.allocator;
-    const cipher_rel = try filename_crypto.encryptPath(allocator, manifest_mod.manifest_name, keys.filename_key);
+    const cipher_rel = try filename_crypto.encryptPath(allocator, manifest_mod.manifest_name, keys.filename_key, '/');
     defer allocator.free(cipher_rel);
     const abs = try std.fs.path.join(allocator, &.{ repo.toplevel, enc_dir, cipher_rel });
     defer allocator.free(abs);
@@ -697,10 +696,12 @@ fn globalExcludesFile(ctx: *const Context) !?[]u8 {
     const allocator = ctx.allocator;
     const env = ctx.repo.environ_map;
     if (try ctx.repo.configGetPath("core.excludesFile")) |configured| return configured;
+    // Git on Windows falls back to the profile directory.
+    const home = env.get("HOME") orelse env.get("USERPROFILE");
     const candidate = if (env.get("XDG_CONFIG_HOME")) |xdg|
         try std.fs.path.join(allocator, &.{ xdg, "git", "ignore" })
-    else if (env.get("HOME")) |home|
-        try std.fs.path.join(allocator, &.{ home, ".config", "git", "ignore" })
+    else if (home) |dir|
+        try std.fs.path.join(allocator, &.{ dir, ".config", "git", "ignore" })
     else
         return null;
     if (!utils.pathExists(candidate, ctx.io)) {
@@ -997,44 +998,37 @@ fn pruneEmptyParents(io: std.Io, root: []const u8, rel: []const u8) void {
     }
 }
 
-const SwapError = error{ Unsupported, NotFound, Exists, Failed };
+const SwapError = error{ Unsupported, NotFound, Failed };
 
-const RenameMode = enum {
-    /// Swap two directory entries in one step, so the displaced file can still be inspected at the source path.
-    exchange,
-    /// Move a file to a name that must not exist yet.
-    no_replace,
-};
+/// Swap two directory entries in one step, so the displaced file can still be inspected at the source path.
+/// The standard library has no portable call for this, and Windows has no such operation.
+fn exchange(allocator: std.mem.Allocator, a_dir: std.Io.Dir, a: []const u8, b_dir: std.Io.Dir, b: []const u8) (SwapError || std.mem.Allocator.Error)!void {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return SwapError.Unsupported;
 
-fn renameAtWith(from_dir: std.Io.Dir, from: [*:0]const u8, to_dir: std.Io.Dir, to: [*:0]const u8, comptime mode: RenameMode) SwapError!void {
+    const a_z = try allocator.dupeSentinel(u8, a, 0);
+    defer allocator.free(a_z);
+    const b_z = try allocator.dupeSentinel(u8, b, 0);
+    defer allocator.free(b_z);
     switch (builtin.os.tag) {
         .linux => {
-            const rc = std.os.linux.renameat2(from_dir.handle, from, to_dir.handle, to, switch (mode) {
-                .exchange => .{ .EXCHANGE = true },
-                .no_replace => .{ .NOREPLACE = true },
-            });
+            const rc = std.os.linux.renameat2(a_dir.handle, a_z, b_dir.handle, b_z, .{ .EXCHANGE = true });
             return switch (std.os.linux.errno(rc)) {
                 .SUCCESS => {},
-                .EXIST => SwapError.Exists,
                 .NOENT => SwapError.NotFound,
                 .INVAL, .OPNOTSUPP, .NOSYS => SwapError.Unsupported,
                 else => SwapError.Failed,
             };
         },
         .macos => {
-            const rc = std.c.renameatx_np(from_dir.handle, from, to_dir.handle, to, switch (mode) {
-                .exchange => .{ .SWAP = true },
-                .no_replace => .{ .EXCL = true },
-            });
+            const rc = std.c.renameatx_np(a_dir.handle, a_z, b_dir.handle, b_z, .{ .SWAP = true });
             return switch (std.c.errno(rc)) {
                 .SUCCESS => {},
-                .EXIST => SwapError.Exists,
                 .NOENT => SwapError.NotFound,
                 .INVAL, .OPNOTSUPP => SwapError.Unsupported,
                 else => SwapError.Failed,
             };
         },
-        else => return SwapError.Unsupported,
+        else => unreachable,
     }
 }
 
@@ -1066,7 +1060,7 @@ fn asidePath(ctx: *const Context, prefix: []const u8, name: []const u8) ![]u8 {
 fn keepSavedCopy(ctx: *const Context, path: []const u8, plain: []const u8) void {
     const saved = asidePath(ctx, "saved", std.fs.path.basename(plain)) catch return;
     defer ctx.allocator.free(saved);
-    std.Io.Dir.rename(.cwd(), path, .cwd(), saved, ctx.io) catch return;
+    std.Io.Dir.renamePreserve(.cwd(), path, .cwd(), saved, ctx.io) catch return;
     std.debug.print("Warning: {s} changed twice while the sync ran. A copy of the newest content is at {s}\n", .{ plain, saved });
 }
 
@@ -1102,43 +1096,29 @@ fn writePlain(ctx: *const Context, info: *PathInfo) !void {
     try atomic.file.writeStreamingAll(ctx.io, info.decrypted.?);
     try atomic.setPermissions(ctx.io, plainPermissions(exec, existing));
 
-    const tmp_z = try allocator.dupeSentinel(u8, atomic.tmp_path, 0);
-    defer allocator.free(tmp_z);
-    const name_z = try allocator.dupeSentinel(u8, name, 0);
-    defer allocator.free(name_z);
-
     if (existing == null) {
-        renameAtWith(.cwd(), tmp_z, dir, name_z, .no_replace) catch |err| switch (err) {
-            SwapError.Exists => return Error.ChangedDuringSync,
-            SwapError.Unsupported => {
-                // A hard link refuses an existing name on every POSIX filesystem, so a new file can still be placed without a window.
-                std.Io.Dir.hardLink(.cwd(), atomic.tmp_path, dir, name, ctx.io, .{}) catch |link_err| switch (link_err) {
-                    error.PathAlreadyExists => return Error.ChangedDuringSync,
-                    else => return Error.ReplaceUnsupported,
-                };
-                return;
-            },
+        std.Io.Dir.renamePreserve(.cwd(), atomic.tmp_path, dir, name, ctx.io) catch |err| switch (err) {
+            error.PathAlreadyExists => return Error.ChangedDuringSync,
             else => return Error.UnsafePath,
         };
         atomic.keep();
         return;
     }
 
-    // Replacing an existing file needs the exchange.
-    // Without it a save made in between cannot be told from the file we checked, so the operation is refused rather than raced.
-    renameAtWith(.cwd(), tmp_z, dir, name_z, .exchange) catch |err| switch (err) {
-        SwapError.NotFound => return Error.ChangedDuringSync,
-        SwapError.Unsupported => return Error.ReplaceUnsupported,
-        else => return Error.UnsafePath,
-    };
+    const old = try takePlace(ctx, &atomic, dir, name, info.plain);
+    defer allocator.free(old.path);
 
-    // From here on the displaced file is at the temporary path and must come back to the user whatever happens.
+    // From here on the old file is out of the tree and must come back to the user whatever happens.
     // A file that cannot even be read counts as changed.
-    const matched = matchesAnalysis(ctx, atomic.tmp_path, info.values.cur) catch false;
-    if (matched) return;
+    const matched = matchesAnalysis(ctx, old.path, info.values.cur) catch false;
+    if (matched) {
+        // An exchanged old file sits at the temporary path and goes away with deinit.
+        if (old.aside) std.Io.Dir.deleteFile(.cwd(), ctx.io, old.path) catch {};
+        return;
+    }
 
-    renameAtWith(.cwd(), tmp_z, dir, name_z, .exchange) catch {
-        keepSavedCopy(ctx, atomic.tmp_path, info.plain);
+    putBack(ctx, &atomic, dir, name, old) catch {
+        keepSavedCopy(ctx, old.path, info.plain);
         atomic.keep();
         return Error.ChangedDuringSync;
     };
@@ -1148,6 +1128,61 @@ fn writePlain(ctx: *const Context, info: *PathInfo) !void {
         atomic.keep();
     }
     return Error.ChangedDuringSync;
+}
+
+/// The old plain file once the new one took its place.
+const OldFile = struct {
+    path: []u8,
+    /// Moved aside rather than exchanged, so the temporary path is free.
+    aside: bool,
+};
+
+/// Put the new file in place and keep the old one where it can be inspected.
+/// Without an exchange, the old file is moved aside first, so a save made in between is never lost.
+fn takePlace(ctx: *const Context, atomic: *const processor.AtomicOutput, dir: std.Io.Dir, name: []const u8, plain: []const u8) !OldFile {
+    const allocator = ctx.allocator;
+    // The copy comes first, since an allocation failure after the exchange would cost the old file.
+    const at_tmp = try allocator.dupe(u8, atomic.tmp_path);
+    var exchanged = false;
+    defer if (!exchanged) allocator.free(at_tmp);
+
+    exchange(allocator, .cwd(), atomic.tmp_path, dir, name) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        SwapError.NotFound => return Error.ChangedDuringSync,
+        SwapError.Unsupported => return moveAside(ctx, atomic, dir, name, plain),
+        SwapError.Failed => return Error.UnsafePath,
+    };
+    exchanged = true;
+    return .{ .path = at_tmp, .aside = false };
+}
+
+fn moveAside(ctx: *const Context, atomic: *const processor.AtomicOutput, dir: std.Io.Dir, name: []const u8, plain: []const u8) !OldFile {
+    const io = ctx.io;
+    const aside = try asidePath(ctx, "old", name);
+    errdefer ctx.allocator.free(aside);
+    std.Io.Dir.renamePreserve(dir, name, .cwd(), aside, io) catch |err| switch (err) {
+        error.FileNotFound => return Error.ChangedDuringSync,
+        else => return Error.UnsafePath,
+    };
+    std.Io.Dir.renamePreserve(.cwd(), atomic.tmp_path, dir, name, io) catch |err| {
+        // The old file goes back, or is kept for the user when a save took its name.
+        std.Io.Dir.renamePreserve(.cwd(), aside, dir, name, io) catch keepSavedCopy(ctx, aside, plain);
+        return if (err == error.PathAlreadyExists) Error.ChangedDuringSync else Error.UnsafePath;
+    };
+    return .{ .path = aside, .aside = true };
+}
+
+/// Undo takePlace: the new file returns to the temporary path and the old file to its name.
+/// On failure the old file stays where it is, for the caller to keep.
+fn putBack(ctx: *const Context, atomic: *const processor.AtomicOutput, dir: std.Io.Dir, name: []const u8, old: OldFile) !void {
+    const io = ctx.io;
+    if (!old.aside) return exchange(ctx.allocator, .cwd(), atomic.tmp_path, dir, name);
+    try std.Io.Dir.renamePreserve(dir, name, .cwd(), atomic.tmp_path, io);
+    std.Io.Dir.renamePreserve(.cwd(), old.path, dir, name, io) catch |err| {
+        // A save took the name again, and the store still holds the new content.
+        std.Io.Dir.deleteFile(.cwd(), io, atomic.tmp_path) catch {};
+        return err;
+    };
 }
 
 /// Delete a plain file that the analysis found unmodified.
@@ -1162,7 +1197,7 @@ fn deletePlain(ctx: *const Context, info: *const PathInfo) !void {
 
     const aside = try asidePath(ctx, "displaced", name);
     defer allocator.free(aside);
-    std.Io.Dir.rename(dir, name, .cwd(), aside, io) catch |err| switch (err) {
+    std.Io.Dir.renamePreserve(dir, name, .cwd(), aside, io) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
@@ -1177,20 +1212,7 @@ fn deletePlain(ctx: *const Context, info: *const PathInfo) !void {
     // The file changed since the analysis.
     // It goes back only into a free name, so a save that landed in the meantime is never overwritten.
     // When the name is taken, the moved file is kept as a copy instead.
-    const aside_z = try allocator.dupeSentinel(u8, aside, 0);
-    defer allocator.free(aside_z);
-    const name_z = try allocator.dupeSentinel(u8, name, 0);
-    defer allocator.free(name_z);
-    renameAtWith(.cwd(), aside_z, dir, name_z, .no_replace) catch |err| switch (err) {
-        SwapError.Unsupported => {
-            if (std.Io.Dir.hardLink(.cwd(), aside, dir, name, io, .{})) {
-                std.Io.Dir.deleteFile(.cwd(), io, aside) catch {};
-            } else |_| {
-                keepSavedCopy(ctx, aside, info.plain);
-            }
-        },
-        else => keepSavedCopy(ctx, aside, info.plain),
-    };
+    std.Io.Dir.renamePreserve(.cwd(), aside, dir, name, io) catch keepSavedCopy(ctx, aside, info.plain);
     return Error.ChangedDuringSync;
 }
 
@@ -1201,7 +1223,7 @@ fn encryptPlain(ctx: *const Context, info: *PathInfo, stage: *std.ArrayList([]u8
     defer allocator.free(plain_bytes.?);
 
     const cipher_rel = info.cipher_rel orelse blk: {
-        info.cipher_rel = try filename_crypto.encryptPath(allocator, info.plain, ctx.keys.filename_key);
+        info.cipher_rel = try filename_crypto.encryptPath(allocator, info.plain, ctx.keys.filename_key, '/');
         break :blk info.cipher_rel.?;
     };
     var dir = (try openParent(ctx.io, ctx.store_abs, cipher_rel, true)) orelse return Error.UnsafePath;
@@ -1468,10 +1490,6 @@ fn applyWritePlain(ctx: *Context, info: *PathInfo, report: *Report) !bool {
             try report.add(allocator, .conflict, info.plain, "changed while the sync ran, run it again");
             return false;
         },
-        Error.ReplaceUnsupported => {
-            try report.add(allocator, .conflict, info.plain, "this filesystem cannot replace a file atomically: delete the plain file, then run turbocrypt git decrypt");
-            return false;
-        },
         else => return err,
     };
     info.values.cur = .{ .plain = crypto.fingerprint(info.decrypted.?, ctx.keys.fingerprint_key), .exec = info.values.new.?.exec };
@@ -1621,27 +1639,88 @@ pub fn collectStatus(repo: *const Repo, keys: crypto.DerivedKeys, report: *Repor
     }
 }
 
-test "exchange and no-replace rename" {
+test "exchange and rename preserve" {
     const testing = std.testing;
     const io = testing.io;
-    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
 
     try std.Io.Dir.createDirPath(.cwd(), io, "tmp/swap");
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/swap") catch {};
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = "tmp/swap/a", .data = "A" });
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = "tmp/swap/b", .data = "B" });
 
-    renameAtWith(.cwd(), "tmp/swap/a", .cwd(), "tmp/swap/b", .exchange) catch |err| switch (err) {
+    try testing.expectError(error.PathAlreadyExists, std.Io.Dir.renamePreserve(.cwd(), "tmp/swap/a", .cwd(), "tmp/swap/b", io));
+    try std.Io.Dir.renamePreserve(.cwd(), "tmp/swap/a", .cwd(), "tmp/swap/c", io);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.renamePreserve(.cwd(), "tmp/swap/a", .cwd(), "tmp/swap/d", io));
+
+    exchange(testing.allocator, .cwd(), "tmp/swap/c", .cwd(), "tmp/swap/b") catch |err| switch (err) {
         SwapError.Unsupported => return error.SkipZigTest,
         else => return err,
     };
-    const a = try std.Io.Dir.readFileAlloc(.cwd(), io, "tmp/swap/a", testing.allocator, .limited(8));
-    defer testing.allocator.free(a);
-    try testing.expectEqualStrings("B", a);
+    const c = try std.Io.Dir.readFileAlloc(.cwd(), io, "tmp/swap/c", testing.allocator, .limited(8));
+    defer testing.allocator.free(c);
+    try testing.expectEqualStrings("B", c);
+}
 
-    try testing.expectError(SwapError.Exists, renameAtWith(.cwd(), "tmp/swap/a", .cwd(), "tmp/swap/b", .no_replace));
-    try renameAtWith(.cwd(), "tmp/swap/a", .cwd(), "tmp/swap/c", .no_replace);
-    try testing.expectError(SwapError.NotFound, renameAtWith(.cwd(), "tmp/swap/a", .cwd(), "tmp/swap/d", .no_replace));
+test "replace without an exchange keeps the old file inspectable" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/aside/tree");
+    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/aside/tmp");
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/aside") catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = "tmp/aside/tree/note.md", .data = "old" });
+
+    var env = try std.process.Environ.createMap(testing.environ, allocator);
+    defer env.deinit();
+    const tmp_dir = try allocator.dupe(u8, "tmp/aside/tmp");
+    defer allocator.free(tmp_dir);
+    const repo = Repo{
+        .allocator = allocator,
+        .io = io,
+        .environ_map = &env,
+        .toplevel = &.{},
+        .git_dir = &.{},
+        .common_dir = &.{},
+        .hooks_dir = &.{},
+        .exclude_path = &.{},
+        .prefix = &.{},
+        .private_dir = &.{},
+        .key_path = &.{},
+        .state_path = &.{},
+        .tmp_dir = tmp_dir,
+        .lock_path = &.{},
+        .pathspec_path = &.{},
+        .precompose = null,
+    };
+    const ctx = Context{
+        .repo = &repo,
+        .keys = undefined,
+        .allocator = allocator,
+        .io = io,
+        .state = .{},
+        .manifest = null,
+        .store_manifest = null,
+        .store_abs = &.{},
+        .tracked = &.{},
+        .unmerged = &.{},
+    };
+
+    var dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/aside/tree", .{});
+    defer dir.close(io);
+    var atomic = try processor.AtomicOutput.create("note.md", .{}, tmp_dir, allocator, io);
+    defer atomic.deinit(io);
+    try atomic.file.writeStreamingAll(io, "new");
+
+    const old = try moveAside(&ctx, &atomic, dir, "note.md", "note.md");
+    defer allocator.free(old.path);
+    try testing.expect(old.aside);
+    try testing.expect(try fileHolds(&ctx, "tmp/aside/tree/note.md", "new"));
+    try testing.expect(try fileHolds(&ctx, old.path, "old"));
+
+    try putBack(&ctx, &atomic, dir, "note.md", old);
+    try testing.expect(try fileHolds(&ctx, "tmp/aside/tree/note.md", "old"));
+    try testing.expect(try fileHolds(&ctx, atomic.tmp_path, "new"));
 }
 
 test "decrypt direction decisions" {

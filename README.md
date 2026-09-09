@@ -451,8 +451,8 @@ same encrypted name. An entry cannot be moved or swapped without detection,
 but a whole commit can be reverted to an older one, which is why signed
 commits still matter.
 
-The feature works on macOS and Linux. Linked worktrees are not supported.
-The hooks are a convenience: `git commit --no-verify` skips them, and
+Linked worktrees are not supported. On Windows, the hooks run through
+the `sh` that comes with Git for Windows. The hooks are a convenience: `git commit --no-verify` skips them, and
 `git add -f` can stage a plain file on purpose.
 
 ## All Commands

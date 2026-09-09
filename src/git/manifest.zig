@@ -173,21 +173,27 @@ pub const Manifest = struct {
 /// `prefix` is the directory the user ran the command from, relative to the top level, as git reports it.
 /// An absolute argument stands on its own.
 /// The top level itself and anything outside it are refused.
+/// The result has '/' between its components, as git reports paths on every platform.
 pub fn relativeToToplevel(
     allocator: std.mem.Allocator,
     toplevel: []const u8,
     prefix: []const u8,
     arg: []const u8,
 ) ![]u8 {
+    // Both sides go through resolve, since git reports the top level with '/'.
+    const root = try std.fs.path.resolve(allocator, &.{toplevel});
+    defer allocator.free(root);
     const absolute = try std.fs.path.resolve(allocator, &.{ toplevel, prefix, arg });
     defer allocator.free(absolute);
-    if (absolute.len <= toplevel.len + 1 or
-        !std.mem.startsWith(u8, absolute, toplevel) or
-        absolute[toplevel.len] != '/')
+    if (absolute.len <= root.len + 1 or
+        !std.mem.startsWith(u8, absolute, root) or
+        !std.fs.path.isSep(absolute[root.len]))
     {
         return Error.OutsideRepository;
     }
-    return allocator.dupe(u8, absolute[toplevel.len + 1 ..]);
+    const relative = try allocator.dupe(u8, absolute[root.len + 1 ..]);
+    std.mem.replaceScalar(u8, relative, std.fs.path.sep, '/');
+    return relative;
 }
 
 /// Turn a user argument into a manifest line.

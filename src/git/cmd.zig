@@ -114,11 +114,6 @@ pub fn run(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
         std.process.exit(hooks.run(rest[0], allocator, io, environ_map));
     }
 
-    if (builtin.os.tag == .windows) {
-        std.debug.print("Error: turbocrypt git is not available on Windows yet.\n", .{});
-        return error.Unsupported;
-    }
-
     if (std.mem.eql(u8, sub, "init")) return cmdInit(rest, allocator, io, environ_map);
     if (std.mem.eql(u8, sub, "unlock")) return cmdUnlock(rest, allocator, io, environ_map);
     if (std.mem.eql(u8, sub, "export-key")) return cmdExportKey(rest, allocator, io, environ_map);
@@ -257,7 +252,7 @@ pub fn setupStore(repo: *const Repo) !void {
     const manifest_path = try repo.absolutePath(manifest_mod.manifest_name);
     defer allocator.free(manifest_path);
     if (!utils.pathExists(manifest_path, repo.io)) {
-        try processor.writeFileAtomic(manifest_path, manifest_mod.default_text, .fromMode(0o600), repo.tmp_dir, allocator, repo.io);
+        try processor.writeFileAtomic(manifest_path, manifest_mod.default_text, sync.plain_file_permissions, repo.tmp_dir, allocator, repo.io);
     }
     try writeStoreFiles(repo);
 }
@@ -265,6 +260,8 @@ pub fn setupStore(repo: *const Repo) !void {
 fn installIntegration(repo: *const Repo) !void {
     const exe = try std.process.executablePathAlloc(repo.io, repo.allocator);
     defer repo.allocator.free(exe);
+    // sh reads a Windows path more easily with forward slashes
+    if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, exe, std.fs.path.sep_windows, std.fs.path.sep_posix);
     try repo.configSetLocal("turbocrypt.path", exe);
     try hooks.install(repo, exe);
 }
@@ -531,7 +528,7 @@ fn checkAddable(repo: *const Repo, keys: crypto.DerivedKeys, plain: []const u8) 
         std.debug.print("Error: {s} is larger than 256 MiB\n", .{plain});
         return sync.Error.FileTooLarge;
     }
-    const cipher_rel = filename_crypto.encryptPath(allocator, plain, keys.filename_key) catch |err| {
+    const cipher_rel = filename_crypto.encryptPath(allocator, plain, keys.filename_key, '/') catch |err| {
         std.debug.print("Error: {s} has a name that is too long once encrypted, keep components under about 200 bytes\n", .{plain});
         return err;
     };

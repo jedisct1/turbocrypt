@@ -12,7 +12,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,6 +29,8 @@ jobs:
         run: zig build test
 
       - name: Git integration scenario
+        # The scenario is a POSIX shell script. The Zig tests cover the git flow on Windows.
+        if: runner.os != 'Windows'
         run: zig build test-git
 
       - name: Build (ReleaseFast)
