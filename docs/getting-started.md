@@ -30,9 +30,10 @@ First, create the key that will encrypt and decrypt your files:
 turbocrypt keygen secret.key
 ```
 
-The file contains a random 128-bit key. Keep a backup somewhere separate,
-because losing it also means losing access to the encrypted files. Anyone who
-gets a copy of it can decrypt them.
+The file contains a random 128-bit key.
+
+Keep a backup somewhere separate, because losing it also means losing access
+to the encrypted files. Anyone who gets a copy of it can decrypt them.
 
 ### Step 2: Set the default key
 
@@ -44,8 +45,9 @@ turbocrypt config set-key secret.key
 ```
 
 From this point on, TurboCrypt will use the stored copy unless a command
-selects another key explicitly. Moving or deleting `secret.key` does not
-change that copy.
+selects another key explicitly.
+
+Moving or deleting `secret.key` does not change that copy.
 
 ### Step 3: Encrypt files
 
@@ -69,8 +71,9 @@ to end:
 turbocrypt verify encrypted-documents/
 ```
 
-For a faster key check, `verify --quick` authenticates only the header. It does
-not detect damage elsewhere in the file.
+For a faster key check, `verify --quick` authenticates only the header.
+
+It does not detect damage elsewhere in the file.
 
 ```bash
 turbocrypt verify --quick encrypted-documents/
