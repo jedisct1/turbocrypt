@@ -207,7 +207,7 @@ pub fn encryptZeroCopy(
     @memcpy(output[header_size + plaintext.len ..][0..tag_length], &tag);
 }
 
-/// A wrong key fails with InvalidHeaderMAC, a damaged body with AuthenticationFailed.
+/// A wrong key fails with InvalidHeaderMac, a damaged body with AuthenticationFailed.
 pub fn decrypt(
     encrypted: []const u8,
     derived_keys: DerivedKeys,
@@ -227,7 +227,7 @@ pub fn decryptBound(
 
     const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
     if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
-        return error.InvalidHeaderMAC;
+        return error.InvalidHeaderMac;
     }
 
     const plaintext = try allocator.alloc(u8, parsed.ciphertext.len);
@@ -257,7 +257,7 @@ pub fn decryptZeroCopy(
 
     const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
     if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
-        return error.InvalidHeaderMAC;
+        return error.InvalidHeaderMac;
     }
 
     try Aegis128X2.decrypt(
@@ -279,7 +279,7 @@ pub fn verifyHeaderOnly(
 
     const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
     if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
-        return error.InvalidHeaderMAC;
+        return error.InvalidHeaderMac;
     }
 }
 
@@ -293,7 +293,7 @@ pub fn verify(
 
     const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
     if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
-        return error.InvalidHeaderMAC;
+        return error.InvalidHeaderMac;
     }
 
     // The AEGIS API cannot check the tag without decryption, so the plaintext goes to a scratch buffer.
@@ -345,7 +345,7 @@ test "decrypt with wrong key fails" {
     defer allocator.free(encrypted);
 
     const result = decrypt(encrypted, derived2, allocator);
-    try testing.expectError(error.InvalidHeaderMAC, result);
+    try testing.expectError(error.InvalidHeaderMac, result);
 }
 
 test "decrypt corrupted ciphertext fails" {
@@ -453,7 +453,7 @@ test "verify with wrong key fails" {
     defer allocator.free(encrypted);
 
     const result = verify(encrypted, derived2, allocator);
-    try testing.expectError(error.InvalidHeaderMAC, result);
+    try testing.expectError(error.InvalidHeaderMac, result);
 }
 
 test "verify corrupted ciphertext fails" {

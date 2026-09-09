@@ -559,7 +559,7 @@ pub const Context = struct {
 
 pub fn readPlainManifest(repo: *const Repo) !?Manifest {
     const allocator = repo.allocator;
-    const path = try repo.absolutePath(manifest_mod.manifest_name);
+    const path = try repo.absolutePath(manifest_mod.filename);
     defer allocator.free(path);
     const text = std.Io.Dir.readFileAlloc(.cwd(), repo.io, path, allocator, .limited(max_file_size)) catch |err| switch (err) {
         error.FileNotFound => return null,
@@ -579,7 +579,7 @@ pub fn manifestFromStore(repo: *const Repo, keys: crypto.DerivedKeys) !?[]u8 {
 
 fn manifestFromDir(repo: *const Repo, store_abs: []const u8, keys: crypto.DerivedKeys) !?[]u8 {
     const allocator = repo.allocator;
-    const cipher_rel = try filename_crypto.encryptPath(allocator, manifest_mod.manifest_name, keys.filename_key, '/');
+    const cipher_rel = try filename_crypto.encryptPath(allocator, manifest_mod.filename, keys.filename_key, '/');
     defer allocator.free(cipher_rel);
     const abs = try std.fs.path.join(allocator, &.{ store_abs, cipher_rel });
     defer allocator.free(abs);
@@ -589,7 +589,7 @@ fn manifestFromDir(repo: *const Repo, store_abs: []const u8, keys: crypto.Derive
         else => return err,
     };
     defer allocator.free(encrypted);
-    return crypto.decryptBound(encrypted, manifest_mod.manifest_name, keys, allocator) catch return Error.WrongKey;
+    return crypto.decryptBound(encrypted, manifest_mod.filename, keys, allocator) catch return Error.WrongKey;
 }
 
 /// Every plain file is written under the git directory and renamed into the working tree, which needs both on one filesystem.
@@ -671,10 +671,10 @@ pub fn collectCandidates(ctx: *const Context, manifest: Manifest) !Candidates {
     const entries = try manifest.entries(allocator);
     defer allocator.free(entries);
 
-    const manifest_abs = try repo.absolutePath(manifest_mod.manifest_name);
+    const manifest_abs = try repo.absolutePath(manifest_mod.filename);
     defer allocator.free(manifest_abs);
     if (utils.pathExists(manifest_abs, repo.io)) {
-        try files.append(allocator, try allocator.dupe(u8, manifest_mod.manifest_name));
+        try files.append(allocator, try allocator.dupe(u8, manifest_mod.filename));
     }
     if (entries.len == 0) return .{ .files = try files.toOwnedSlice(allocator), .ignored = try ignored.toOwnedSlice(allocator) };
 
@@ -937,7 +937,7 @@ fn analyze(ctx: *const Context, only: []const []const u8, report: *Report) ![]Pa
 /// True when every component of the path still fits a file name once encrypted.
 pub fn nameFits(allocator: std.mem.Allocator, keys: crypto.DerivedKeys, plain: []const u8) !bool {
     const cipher = filename_crypto.encryptPath(allocator, plain, keys.filename_key, '/') catch |err| switch (err) {
-        filename_crypto.FilenameError.EncryptedFilenameTooLong => return false,
+        filename_crypto.Error.EncryptedFilenameTooLong => return false,
         else => return err,
     };
     allocator.free(cipher);
@@ -1343,7 +1343,7 @@ pub fn updateExcludeFile(repo: *const Repo, manifests: []const *const Manifest, 
 
     var add: std.ArrayList([]const u8) = .empty;
     defer add.deinit(allocator);
-    try add.append(allocator, "/" ++ manifest_mod.manifest_name);
+    try add.append(allocator, "/" ++ manifest_mod.filename);
     for (manifests) |m| {
         for (m.lines.items) |line| {
             if (manifest_mod.parseLine(line) != null) try add.append(allocator, line);
@@ -1408,7 +1408,7 @@ pub fn excludeLinesCoveredBy(repo: *const Repo, removed: []const manifest_mod.En
     }
     for (lines) |line| {
         const entry = manifest_mod.parseLine(line) orelse continue;
-        if (std.mem.eql(u8, entry.path, manifest_mod.manifest_name)) continue;
+        if (std.mem.eql(u8, entry.path, manifest_mod.filename)) continue;
         var covered = false;
         for (removed) |r| {
             if (r.covers(entry.path) or std.mem.eql(u8, r.path, entry.path)) covered = true;
@@ -1492,7 +1492,7 @@ pub fn violations(ctx: *const Context, infos: []const PathInfo, report: *Report)
     var n: usize = 0;
     for (ctx.tracked) |path| {
         if (manifest_mod.isReservedPath(path)) continue;
-        const covered = std.mem.eql(u8, path, manifest_mod.manifest_name) or
+        const covered = std.mem.eql(u8, path, manifest_mod.filename) or
             manifest_mod.anyCovers(entries, path) or
             stored.contains(path);
         if (covered) {
@@ -1585,7 +1585,7 @@ fn applyWritePlain(ctx: *Context, info: *PathInfo, report: *Report) !bool {
 }
 
 /// The encrypt direction. Plans every path first, then writes, so an abort changes nothing.
-pub fn encryptSync(repo: *const Repo, keys: crypto.DerivedKeys, options: Options, report: *Report) !void {
+pub fn encrypt(repo: *const Repo, keys: crypto.DerivedKeys, options: Options, report: *Report) !void {
     const allocator = repo.allocator;
     var pass = try Pass.init(repo, keys, options.only, report);
     defer pass.deinit();
@@ -1649,7 +1649,7 @@ pub fn encryptSync(repo: *const Repo, keys: crypto.DerivedKeys, options: Options
 }
 
 /// The decrypt direction. The exclude block is written before any plain file, so nothing private is ever unignored.
-pub fn decryptSync(repo: *const Repo, keys: crypto.DerivedKeys, options: Options, report: *Report) !void {
+pub fn decrypt(repo: *const Repo, keys: crypto.DerivedKeys, options: Options, report: *Report) !void {
     const allocator = repo.allocator;
     var pass = try Pass.init(repo, keys, options.only, report);
     defer pass.deinit();

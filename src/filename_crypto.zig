@@ -15,7 +15,7 @@ const max_decoded_length = base84.standard.calcDecodedSizeUpperBound(filesystem_
 /// ext4, APFS and NTFS all stop at 255 bytes.
 const filesystem_filename_limit = 255;
 
-pub const FilenameError = error{
+pub const Error = error{
     EncryptedFilenameTooLong,
 };
 
@@ -59,7 +59,7 @@ pub fn encryptFilename(
         const encoded = try base84.standard.encode(&encode_buf, ciphertext);
 
         if (encoded.len > filesystem_filename_limit) {
-            return FilenameError.EncryptedFilenameTooLong;
+            return Error.EncryptedFilenameTooLong;
         }
 
         return allocator.dupe(u8, encoded);
@@ -85,7 +85,7 @@ pub fn encryptFilename(
         const encoded = try base84.standard.encode(encode_buf, ciphertext);
 
         if (encoded.len > filesystem_filename_limit) {
-            return FilenameError.EncryptedFilenameTooLong;
+            return Error.EncryptedFilenameTooLong;
         }
 
         return allocator.realloc(encode_buf, encoded.len);
@@ -350,7 +350,7 @@ test "filename encryption length validation" {
         @memset(test_name, 'a');
 
         const result = encryptFilename(allocator, test_name, key);
-        try testing.expectError(FilenameError.EncryptedFilenameTooLong, result);
+        try testing.expectError(Error.EncryptedFilenameTooLong, result);
     }
 }
 

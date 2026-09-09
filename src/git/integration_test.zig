@@ -123,14 +123,14 @@ test "git integration: store round trip, clone, tamper" {
     }
 
     const manifest_text = manifest_mod.default_text ++ "/AGENT.md\n/docs/internal.md\n/ops/\n";
-    try writeFile(io, a, manifest_mod.manifest_name, manifest_text, allocator);
+    try writeFile(io, a, manifest_mod.filename, manifest_text, allocator);
     var manifest = try manifest_mod.Manifest.parse(allocator, manifest_text);
     defer manifest.deinit(allocator);
     try sync.updateExcludeFile(&repo_a, &.{&manifest}, &.{}, &.{});
 
     var report = sync.Report{};
     defer report.deinit(allocator);
-    try sync.encryptSync(&repo_a, keys, .{}, &report);
+    try sync.encrypt(&repo_a, keys, .{}, &report);
     try testing.expectEqual(@as(usize, 4), report.count(.encrypted));
     try gitOk(allocator, io, &env, a, &.{ "commit", "-qm", "private" });
 
@@ -150,7 +150,7 @@ test "git integration: store round trip, clone, tamper" {
 
     var again = sync.Report{};
     defer again.deinit(allocator);
-    try sync.encryptSync(&repo_a, keys, .{}, &again);
+    try sync.encrypt(&repo_a, keys, .{}, &again);
     try testing.expectEqual(@as(usize, 0), again.count(.encrypted));
     const status = try git(allocator, io, &env, a, &.{ "status", "--porcelain" });
     defer allocator.free(status);
@@ -168,7 +168,7 @@ test "git integration: store round trip, clone, tamper" {
 
     var decrypted = sync.Report{};
     defer decrypted.deinit(allocator);
-    try sync.decryptSync(&repo_b, keys, .{}, &decrypted);
+    try sync.decrypt(&repo_b, keys, .{}, &decrypted);
     try testing.expectEqual(@as(usize, 4), decrypted.count(.written));
     const agent = try readFile(io, b, "AGENT.md", allocator);
     defer allocator.free(agent);
@@ -190,7 +190,7 @@ test "git integration: store round trip, clone, tamper" {
 
     // The manifest entry is the key check, so corrupting it stops a pass before any row is produced.
     // Tamper with two other entries.
-    const manifest_cipher = try filename_crypto.encryptPath(allocator, manifest_mod.manifest_name, keys.filename_key, '/');
+    const manifest_cipher = try filename_crypto.encryptPath(allocator, manifest_mod.filename, keys.filename_key, '/');
     defer allocator.free(manifest_cipher);
     var picked: [2][]const u8 = undefined;
     var n: usize = 0;
@@ -215,7 +215,7 @@ test "git integration: store round trip, clone, tamper" {
 
     var swapped = sync.Report{};
     defer swapped.deinit(allocator);
-    try sync.decryptSync(&repo_b, keys, .{}, &swapped);
+    try sync.decrypt(&repo_b, keys, .{}, &swapped);
     try testing.expectEqual(@as(usize, 2), swapped.count(.bad));
     try testing.expectEqual(@as(usize, 0), swapped.count(.written));
     const agent_after = try readFile(io, b, "AGENT.md", allocator);
@@ -229,12 +229,12 @@ test "git integration: store round trip, clone, tamper" {
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = second, .data = flipped });
     var corrupted = sync.Report{};
     defer corrupted.deinit(allocator);
-    try sync.decryptSync(&repo_b, keys, .{}, &corrupted);
+    try sync.decrypt(&repo_b, keys, .{}, &corrupted);
     try testing.expectEqual(@as(usize, 1), corrupted.count(.bad));
 
     var refused = sync.Report{};
     defer refused.deinit(allocator);
-    try testing.expectError(sync.Error.SyncAborted, sync.encryptSync(&repo_b, keys, .{}, &refused));
+    try testing.expectError(sync.Error.SyncAborted, sync.encrypt(&repo_b, keys, .{}, &refused));
     try testing.expectEqual(@as(usize, 1), refused.count(.bad));
     const staged = try git(allocator, io, &env, b, &.{ "diff", "--cached", "--name-only" });
     defer allocator.free(staged);
@@ -242,11 +242,11 @@ test "git integration: store round trip, clone, tamper" {
 
     var repaired = sync.Report{};
     defer repaired.deinit(allocator);
-    try sync.encryptSync(&repo_b, keys, .{ .force = true }, &repaired);
+    try sync.encrypt(&repo_b, keys, .{ .force = true }, &repaired);
     try testing.expectEqual(@as(usize, 1), repaired.count(.encrypted));
     var clean = sync.Report{};
     defer clean.deinit(allocator);
-    try sync.decryptSync(&repo_b, keys, .{}, &clean);
+    try sync.decrypt(&repo_b, keys, .{}, &clean);
     try testing.expectEqual(@as(usize, 0), clean.count(.bad));
     try gitOk(allocator, io, &env, b, &.{ "commit", "-qm", "repaired" });
 
@@ -264,10 +264,10 @@ test "git integration: store round trip, clone, tamper" {
 
     try cmd.setupStore(&repo_c);
     try writeFile(io, c, "mine.md", "mine\n", allocator);
-    try writeFile(io, c, manifest_mod.manifest_name, manifest_mod.default_text ++ "/mine.md\n", allocator);
+    try writeFile(io, c, manifest_mod.filename, manifest_mod.default_text ++ "/mine.md\n", allocator);
     var joined = sync.Report{};
     defer joined.deinit(allocator);
-    try sync.encryptSync(&repo_c, keys2, .{}, &joined);
+    try sync.encrypt(&repo_c, keys2, .{}, &joined);
     try testing.expectEqual(@as(usize, 2), joined.count(.encrypted));
     try testing.expectEqual(@as(usize, 0), joined.count(.bad));
     try gitOk(allocator, io, &env, c, &.{ "commit", "-qm", "second key" });
@@ -288,7 +288,7 @@ test "git integration: store round trip, clone, tamper" {
     try testing.expectEqual(@as(usize, 1), try sync.otherKeyCount(&repo_b, keys));
     var after_pull = sync.Report{};
     defer after_pull.deinit(allocator);
-    try sync.decryptSync(&repo_b, keys, .{}, &after_pull);
+    try sync.decrypt(&repo_b, keys, .{}, &after_pull);
     try testing.expectEqual(@as(usize, 0), after_pull.count(.written));
     try testing.expectEqual(@as(usize, 0), after_pull.count(.bad));
     try testing.expectEqual(@as(usize, 4), after_pull.count(.ok));
@@ -330,7 +330,7 @@ test "git integration: an unencryptable private name aborts before writing" {
     defer allocator.free(private_path);
     try writeFile(io, worktree, private_path, "secret", allocator);
     const manifest_text = manifest_mod.default_text ++ "/private/\n";
-    try writeFile(io, worktree, manifest_mod.manifest_name, manifest_text, allocator);
+    try writeFile(io, worktree, manifest_mod.filename, manifest_text, allocator);
     var manifest = try manifest_mod.Manifest.parse(allocator, manifest_text);
     defer manifest.deinit(allocator);
     try sync.updateExcludeFile(&repo, &.{&manifest}, &.{}, &.{});
@@ -339,7 +339,7 @@ test "git integration: an unencryptable private name aborts before writing" {
     defer allocator.free(staged_before);
     var report = sync.Report{};
     defer report.deinit(allocator);
-    try testing.expectError(sync.Error.SyncAborted, sync.encryptSync(&repo, keys, .{}, &report));
+    try testing.expectError(sync.Error.SyncAborted, sync.encrypt(&repo, keys, .{}, &report));
     try testing.expectEqual(@as(usize, 1), report.count(.bad));
     try testing.expectEqual(@as(usize, 0), report.count(.encrypted));
     const staged_after = try git(allocator, io, &env, worktree, &.{ "diff", "--cached", "--name-only" });

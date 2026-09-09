@@ -2,7 +2,7 @@ const std = @import("std");
 const filename_crypto = @import("../filename_crypto.zig");
 const utils = @import("../utils.zig");
 
-pub const manifest_name = ".gitprivate";
+pub const filename = ".gitprivate";
 pub const begin_marker = "# >>> turbocrypt >>>";
 pub const end_marker = "# <<< turbocrypt <<<";
 const block_comment = "# Generated from .gitprivate. Do not edit between the markers.";
@@ -101,7 +101,7 @@ pub const Manifest = struct {
             if (raw.len == 0 and it.peek() == null) break;
             const line = std.mem.trimEnd(u8, raw, "\r");
             checkLine(line) catch |err| {
-                std.debug.print("Error: {s} line {d} is not a plain file or directory path: {s}\n", .{ manifest_name, line_number, line });
+                std.debug.print("Error: {s} line {d} is not a plain file or directory path: {s}\n", .{ filename, line_number, line });
                 return err;
             };
             try manifest.lines.append(allocator, try allocator.dupe(u8, line));

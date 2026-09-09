@@ -4,7 +4,7 @@ const keygen = @import("keygen.zig");
 const processor = @import("processor.zig");
 const utils = @import("utils.zig");
 
-pub const config_filename = "config.json";
+pub const filename = "config.json";
 
 /// AEGIS-128X2 keys are 16 bytes.
 pub const key_length = 16;
@@ -135,16 +135,16 @@ fn getAppDataDir(allocator: std.mem.Allocator, appname: []const u8, environ_map:
     }
 }
 
-pub fn getConfigFilePath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
+pub fn filePath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
     const app_data_dir = try getAppDataDir(allocator, "turbocrypt", environ_map);
     defer allocator.free(app_data_dir);
 
-    return try std.fs.path.join(allocator, &[_][]const u8{ app_data_dir, config_filename });
+    return try std.fs.path.join(allocator, &[_][]const u8{ app_data_dir, filename });
 }
 
 /// A missing config file gives the defaults.
 pub fn load(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !Config {
-    const config_path = try getConfigFilePath(allocator, environ_map);
+    const config_path = try filePath(allocator, environ_map);
     defer allocator.free(config_path);
 
     const max_size = 1024 * 1024;
@@ -174,7 +174,7 @@ pub fn save(config: Config, allocator: std.mem.Allocator, io: std.Io, environ_ma
         else => return err,
     };
 
-    const config_path = try std.Io.Dir.path.join(allocator, &[_][]const u8{ app_data_dir, config_filename });
+    const config_path = try std.Io.Dir.path.join(allocator, &[_][]const u8{ app_data_dir, filename });
     defer allocator.free(config_path);
 
     const json_str = try config.toJson(allocator);
@@ -284,7 +284,7 @@ test "Config - save does not follow a planted temporary-file symlink" {
 
     var environ_map = try testEnviron(allocator, home);
     defer environ_map.deinit();
-    const config_path = try getConfigFilePath(allocator, &environ_map);
+    const config_path = try filePath(allocator, &environ_map);
     defer allocator.free(config_path);
     try std.Io.Dir.createDirPath(.cwd(), io, std.fs.path.dirname(config_path).?);
     const planted_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{config_path});

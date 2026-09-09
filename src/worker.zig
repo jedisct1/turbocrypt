@@ -7,7 +7,7 @@ pub fn printErrorDetails(err: anyerror, is_encrypt: bool) void {
     std.debug.print("        Reason: ", .{});
 
     switch (err) {
-        error.InvalidHeaderMAC => {
+        error.InvalidHeaderMac => {
             std.debug.print("Wrong decryption key, wrong context, or corrupted file header\n", .{});
             std.debug.print("        Suggestion: Verify you're using the correct key file and context (if any)\n", .{});
         },
@@ -55,7 +55,7 @@ pub fn printErrorDetails(err: anyerror, is_encrypt: bool) void {
 }
 
 fn handleJobError(
-    worker: *WorkerPool,
+    worker: *Pool,
     job: FileJob,
     err: anyerror,
     error_prefix: []const u8,
@@ -91,9 +91,7 @@ const WorkQueue = struct {
     done: bool,
     io: std.Io,
 
-    const Self = @This();
-
-    pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) WorkQueue {
         return .{
             .mutex = std.Io.Mutex.init,
             .items = .empty,
@@ -103,7 +101,7 @@ const WorkQueue = struct {
         };
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *WorkQueue) void {
         for (self.items.items) |job| {
             self.allocator.free(job.source_path);
             if (job.dest_path) |dest_path| self.allocator.free(dest_path);
@@ -111,7 +109,7 @@ const WorkQueue = struct {
         self.items.deinit(self.allocator);
     }
 
-    pub fn push(self: *Self, job: FileJob) !void {
+    pub fn push(self: *WorkQueue, job: FileJob) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         try self.items.append(self.allocator, job);
@@ -119,7 +117,7 @@ const WorkQueue = struct {
 
     /// Null means the queue is done. An empty slice means more jobs can still come.
     /// The caller frees the result.
-    pub fn popBatch(self: *Self, max_count: usize) !?[]FileJob {
+    pub fn popBatch(self: *WorkQueue, max_count: usize) !?[]FileJob {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
@@ -142,51 +140,49 @@ const WorkQueue = struct {
         return batch;
     }
 
-    pub fn markDone(self: *Self) void {
+    pub fn markDone(self: *WorkQueue) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.done = true;
     }
 
-    pub fn isEmpty(self: *Self) bool {
+    pub fn isEmpty(self: *WorkQueue) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         return self.items.items.len == 0 and self.done;
     }
 };
 
-const BATCH_SIZE: usize = 16;
-const PROGRESS_UPDATE_INTERVAL: usize = 10;
+const max_batch_size: usize = 16;
+const progress_update_interval: usize = 10;
 
-pub const WorkerPool = struct {
+pub const Pool = struct {
     allocator: std.mem.Allocator,
     work_queue: WorkQueue,
     threads: []std.Thread,
     spawned_count: usize,
     thread_count: u32,
     derived_keys: crypto.DerivedKeys,
-    progress_tracker: *progress.ProgressTracker,
+    progress_tracker: *progress.Tracker,
     error_mutex: std.Io.Mutex,
     has_errors: bool,
     quick_verify: bool,
     dry_run: bool,
     io: std.Io,
 
-    const Self = @This();
-
     pub fn init(
         allocator: std.mem.Allocator,
         thread_count: u32,
         derived_keys: crypto.DerivedKeys,
-        progress_tracker: *progress.ProgressTracker,
+        progress_tracker: *progress.Tracker,
         quick_verify: bool,
         dry_run: bool,
         io: std.Io,
-    ) !Self {
+    ) !Pool {
         const threads = try allocator.alloc(std.Thread, thread_count);
         errdefer allocator.free(threads);
 
-        return Self{
+        return Pool{
             .allocator = allocator,
             .work_queue = WorkQueue.init(allocator, io),
             .threads = threads,
@@ -203,13 +199,13 @@ pub const WorkerPool = struct {
     }
 
     /// Threads still running would touch the queue after it is gone, so they are joined first.
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *Pool) void {
         self.finish();
         self.work_queue.deinit();
         self.allocator.free(self.threads);
     }
 
-    fn workerThread(worker: *WorkerPool) void {
+    fn workerThread(worker: *Pool) void {
         // A thread-local arena keeps the workers from contending on the allocator.
         var thread_arena = std.heap.ArenaAllocator.init(worker.allocator);
         defer thread_arena.deinit();
@@ -220,7 +216,7 @@ pub const WorkerPool = struct {
         var local_bytes_processed: u64 = 0;
 
         while (true) {
-            const maybe_batch = worker.work_queue.popBatch(BATCH_SIZE) catch |err| {
+            const maybe_batch = worker.work_queue.popBatch(max_batch_size) catch |err| {
                 std.debug.print("[ERROR] Failed to pop batch: {}\n", .{err});
                 worker.markError();
                 break;
@@ -290,7 +286,7 @@ pub const WorkerPool = struct {
                 local_files_processed += 1;
                 local_bytes_processed += job.file_size;
 
-                if ((idx + 1) % PROGRESS_UPDATE_INTERVAL == 0 or idx == batch.len - 1) {
+                if ((idx + 1) % progress_update_interval == 0 or idx == batch.len - 1) {
                     if (local_files_processed > 0) {
                         worker.progress_tracker.addFilesProcessed(local_files_processed);
                         worker.progress_tracker.addBytesProcessed(local_bytes_processed);
@@ -309,12 +305,12 @@ pub const WorkerPool = struct {
         }
     }
 
-    pub fn submitJob(self: *Self, job: FileJob) !void {
+    pub fn submitJob(self: *Pool, job: FileJob) !void {
         try self.work_queue.push(job);
     }
 
     /// Fewer threads than asked for is a warning. None at all is an error, since the jobs would never run.
-    pub fn start(self: *Self) !void {
+    pub fn start(self: *Pool) !void {
         for (self.threads[0..self.thread_count]) |*thread| {
             thread.* = std.Thread.spawn(.{}, workerThread, .{self}) catch |err| {
                 if (self.spawned_count == 0) {
@@ -331,7 +327,7 @@ pub const WorkerPool = struct {
         self.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {};
     }
 
-    pub fn finish(self: *Self) void {
+    pub fn finish(self: *Pool) void {
         self.work_queue.markDone();
 
         for (self.threads[0..self.spawned_count]) |thread| {
@@ -341,18 +337,18 @@ pub const WorkerPool = struct {
     }
 
     /// Start the threads and wait for every job, for callers that queue all their jobs first.
-    pub fn waitAll(self: *Self) !void {
+    pub fn waitAll(self: *Pool) !void {
         try self.start();
         self.finish();
     }
 
-    fn markError(self: *Self) void {
+    fn markError(self: *Pool) void {
         self.error_mutex.lockUncancelable(self.io);
         self.has_errors = true;
         self.error_mutex.unlock(self.io);
     }
 
-    pub fn hadErrors(self: *Self) bool {
+    pub fn hadErrors(self: *Pool) bool {
         self.error_mutex.lockUncancelable(self.io);
         defer self.error_mutex.unlock(self.io);
         return self.has_errors;
@@ -366,9 +362,9 @@ test "worker pool initialization" {
 
     const key: [crypto.key_length]u8 = @splat(42);
     const derived = crypto.deriveKeys(key, null);
-    var tracker = progress.ProgressTracker.init(0, 0, io);
+    var tracker = progress.Tracker.init(0, 0, io);
 
-    var pool = try WorkerPool.init(allocator, 4, derived, &tracker, false, false, io);
+    var pool = try Pool.init(allocator, 4, derived, &tracker, false, false, io);
     defer pool.deinit();
 
     try testing.expect(!pool.hadErrors());
@@ -379,8 +375,8 @@ test "worker pool releases jobs that were never started" {
     const allocator = testing.allocator;
     const io = testing.io;
     const derived = crypto.deriveKeys(@splat(42), null);
-    var tracker = progress.ProgressTracker.init(0, 0, io);
-    var pool = try WorkerPool.init(allocator, 1, derived, &tracker, false, false, io);
+    var tracker = progress.Tracker.init(0, 0, io);
+    var pool = try Pool.init(allocator, 1, derived, &tracker, false, false, io);
     defer pool.deinit();
 
     const source = try allocator.dupe(u8, "source");

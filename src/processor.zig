@@ -3,7 +3,7 @@ const crypto = @import("crypto.zig");
 const builtin = @import("builtin");
 const io_hints = @import("io_hints.zig");
 
-const MMAP_THRESHOLD: u64 = 1024 * 1024;
+const mmap_threshold: u64 = 1024 * 1024;
 
 fn readAll(file: std.Io.File, io: std.Io, buffer: []u8) !usize {
     var file_reader = file.reader(io, &.{});
@@ -155,7 +155,7 @@ pub fn encryptFile(
     const input_stat = try input_file.stat(io);
     const file_size = input_stat.size;
 
-    if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
+    if (file_size >= mmap_threshold and builtin.os.tag != .windows) {
         try encryptFileZeroCopy(input_file, file_size, output_path, derived_keys, allocator, input_stat.permissions, io);
     } else {
         try encryptFileBuffered(input_file, file_size, output_path, derived_keys, allocator, input_stat.permissions, io);
@@ -253,7 +253,7 @@ pub fn decryptFile(
     const input_stat = try input_file.stat(io);
     const file_size = input_stat.size;
 
-    if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
+    if (file_size >= mmap_threshold and builtin.os.tag != .windows) {
         try decryptFileZeroCopy(input_file, file_size, output_path, derived_keys, allocator, input_stat.permissions, io);
     } else {
         try decryptFileBuffered(input_file, file_size, output_path, derived_keys, allocator, input_stat.permissions, io);
@@ -354,7 +354,7 @@ pub fn verifyFile(
     const input_stat = try input_file.stat(io);
     const file_size = input_stat.size;
 
-    if (file_size >= MMAP_THRESHOLD and builtin.os.tag != .windows) {
+    if (file_size >= mmap_threshold and builtin.os.tag != .windows) {
         try verifyFileZeroCopy(input_file, file_size, derived_keys, allocator, quick, io);
     } else {
         try verifyFileBuffered(input_file, file_size, derived_keys, allocator, quick, io);
@@ -489,7 +489,7 @@ test "decrypt with wrong key fails" {
     defer std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
 
     const result = decryptFile(encrypted_path, decrypted_path, derived2, allocator, io);
-    try testing.expectError(error.InvalidHeaderMAC, result);
+    try testing.expectError(error.InvalidHeaderMac, result);
 
     const file_result = std.Io.Dir.openFile(.cwd(), io, decrypted_path, .{});
     try testing.expectError(error.FileNotFound, file_result);

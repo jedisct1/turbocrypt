@@ -1,6 +1,6 @@
 const std = @import("std");
 const keygen = @import("keygen.zig");
-const keyloader = @import("keyloader.zig");
+const key_loader = @import("key_loader.zig");
 const config_mod = @import("config.zig");
 const crypto = @import("crypto.zig");
 const processor = @import("processor.zig");
@@ -305,7 +305,7 @@ fn getThreadCount(opts: Options) !u32 {
 }
 
 fn explainConfigError(action: []const u8, err: anyerror, allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) void {
-    const config_path = config_mod.getConfigFilePath(allocator, environ_map) catch {
+    const config_path = config_mod.filePath(allocator, environ_map) catch {
         std.debug.print("Error: Cannot {s} the config file: {}\n", .{ action, err });
         return;
     };
@@ -397,8 +397,8 @@ const ScanResult = struct {
 const ProcessingMode = union(enum) {
     scan_only: ScanResult,
     scan_and_process: struct {
-        worker_pool: *worker.WorkerPool,
-        progress_tracker: *progress.ProgressTracker,
+        worker_pool: *worker.Pool,
+        progress_tracker: *progress.Tracker,
     },
 };
 
@@ -516,7 +516,7 @@ const DirectoryScanContext = struct {
                 path,
             });
             std.debug.print("        Reason: {}\n", .{err});
-            if (err == filename_crypto.FilenameError.EncryptedFilenameTooLong) {
+            if (err == filename_crypto.Error.EncryptedFilenameTooLong) {
                 std.debug.print("        Suggestion: The {s} is too long. Encrypted names must fit within 255 bytes.\n", .{what});
                 std.debug.print("                   Consider shortening it (names of up to 197 bytes always fit).\n", .{});
             } else if (!self.is_encrypt) {
@@ -531,8 +531,8 @@ const DirectoryScanContext = struct {
         full_path: []const u8,
         dest_relative_path: []const u8,
         file_size: u64,
-        worker_pool: *worker.WorkerPool,
-        progress_tracker: *progress.ProgressTracker,
+        worker_pool: *worker.Pool,
+        progress_tracker: *progress.Tracker,
     ) !void {
         progress_tracker.addTotalFile();
         progress_tracker.addTotalBytes(file_size);
@@ -635,8 +635,8 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         return error.InvalidArguments;
     }
 
-    const key = keyloader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
-        return keyloader.explainLoadError(allocator, err, opts.key, environ_map);
+    const key = key_loader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
+        return key_loader.explainLoadError(allocator, err, opts.key, environ_map);
     };
 
     const derived_keys = crypto.deriveKeys(key, opts.context);
@@ -680,8 +680,8 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 std.debug.print("{s} {d} files...\n", .{ op_name_cap, scanned.files.items.len });
             }
 
-            var tracker = progress.ProgressTracker.init(scanned.files.items.len, scanned.total_bytes, io);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
+            var tracker = progress.Tracker.init(scanned.files.items.len, scanned.total_bytes, io);
+            var pool = try worker.Pool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
             defer pool.deinit();
 
             try tracker.startDisplay();
@@ -712,8 +712,8 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 std.debug.print("Scanning and {s}...\n", .{if (is_encrypt) "encrypting" else "decrypting"});
             }
 
-            var tracker = progress.ProgressTracker.init(0, 0, io);
-            var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
+            var tracker = progress.Tracker.init(0, 0, io);
+            var pool = try worker.Pool.init(allocator, thread_count, derived_keys, &tracker, false, opts.dry_run, io);
             defer pool.deinit();
 
             try tracker.startDisplay();
@@ -816,8 +816,8 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 
     const source_path = parsed.positional[0];
 
-    const key = keyloader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
-        return keyloader.explainLoadError(allocator, err, opts.key, environ_map);
+    const key = key_loader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
+        return key_loader.explainLoadError(allocator, err, opts.key, environ_map);
     };
 
     const derived_keys = crypto.deriveKeys(key, opts.context);
@@ -860,8 +860,8 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             std.debug.print("Verifying {d} files...\n", .{scanned.files.items.len});
         }
 
-        var tracker = progress.ProgressTracker.init(scanned.files.items.len, scanned.total_bytes, io);
-        var pool = try worker.WorkerPool.init(allocator, thread_count, derived_keys, &tracker, opts.quick, opts.dry_run, io);
+        var tracker = progress.Tracker.init(scanned.files.items.len, scanned.total_bytes, io);
+        var pool = try worker.Pool.init(allocator, thread_count, derived_keys, &tracker, opts.quick, opts.dry_run, io);
         defer pool.deinit();
 
         try tracker.startDisplay();
@@ -978,8 +978,8 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     // Only encrypted names need the key.
     var filename_key: [16]u8 = undefined;
     if (opts.encrypt_filenames) {
-        const key = keyloader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
-            return keyloader.explainLoadError(allocator, err, opts.key, environ_map);
+        const key = key_loader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
+            return key_loader.explainLoadError(allocator, err, opts.key, environ_map);
         };
 
         const derived_keys = crypto.deriveKeys(key, opts.context);
@@ -1303,7 +1303,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         cfg.key = new_key;
         try saveConfig(cfg, allocator, io, environ_map);
 
-        const config_path = try keyloader.getConfigFilePath(allocator, environ_map);
+        const config_path = try config_mod.filePath(allocator, environ_map);
         defer allocator.free(config_path);
 
         std.debug.print("Default key has been stored in config\n", .{});
@@ -1445,7 +1445,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
-        const config_path = try config_mod.getConfigFilePath(allocator, environ_map);
+        const config_path = try config_mod.filePath(allocator, environ_map);
         defer allocator.free(config_path);
 
         std.debug.print("Current configuration:\n", .{});
@@ -1494,8 +1494,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 
         std.debug.print("\nKey resolution priority:\n", .{});
         std.debug.print("  1. --key flag (if provided)\n", .{});
-        std.debug.print("  2. {s} environment variable", .{keyloader.env_var_name});
-        if (environ_map.get(keyloader.env_var_name)) |env_val| {
+        std.debug.print("  2. {s} environment variable", .{key_loader.env_var_name});
+        if (environ_map.get(key_loader.env_var_name)) |env_val| {
             std.debug.print(" (currently: {s})", .{env_val});
         } else {
             std.debug.print(" (not set)", .{});
@@ -1729,7 +1729,7 @@ test "directory destination cannot be inside the source" {
 // Pull in the tests of the imported modules.
 test {
     _ = @import("keygen.zig");
-    _ = @import("keyloader.zig");
+    _ = @import("key_loader.zig");
     _ = @import("config.zig");
     _ = @import("crypto.zig");
     _ = @import("processor.zig");

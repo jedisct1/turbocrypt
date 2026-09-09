@@ -7,7 +7,7 @@ const manifest_mod = @import("manifest.zig");
 
 const Repo = repo_mod.Repo;
 
-pub const hook_names = [_][]const u8{ "pre-commit", "pre-merge-commit", "post-commit", "post-checkout", "post-merge", "post-rewrite" };
+pub const names = [_][]const u8{ "pre-commit", "pre-merge-commit", "post-commit", "post-checkout", "post-merge", "post-rewrite" };
 
 const first_line = "#!/bin/sh";
 const second_line = "# Installed by turbocrypt git init. Do not edit.";
@@ -60,14 +60,14 @@ pub fn install(repo: *const Repo, exe_path: []const u8) !void {
     if (try repo.configGet("core.hooksPath")) |hooks_path| {
         defer allocator.free(hooks_path);
         std.debug.print("core.hooksPath is set to {s}, so the hooks were not installed.\nAdd these calls to your hook manager:\n", .{hooks_path});
-        for (hook_names) |name| {
+        for (names) |name| {
             std.debug.print("  {s}: {s} git hook {s} \"$@\"\n", .{ name, exe_path, name });
         }
         return;
     }
 
     try utils.ensureDirectory(repo.hooks_dir, io);
-    for (hook_names) |name| {
+    for (names) |name| {
         const path = try std.fs.path.join(allocator, &.{ repo.hooks_dir, name });
         defer allocator.free(path);
 
@@ -89,9 +89,9 @@ pub fn install(repo: *const Repo, exe_path: []const u8) !void {
 }
 
 /// Which hooks carry our script.
-pub fn installed(repo: *const Repo) ![hook_names.len]bool {
-    var result: [hook_names.len]bool = @splat(false);
-    for (hook_names, 0..) |name, i| {
+pub fn installed(repo: *const Repo) ![names.len]bool {
+    var result: [names.len]bool = @splat(false);
+    for (names, 0..) |name, i| {
         const path = try std.fs.path.join(repo.allocator, &.{ repo.hooks_dir, name });
         defer repo.allocator.free(path);
         const text = std.Io.Dir.readFileAlloc(.cwd(), repo.io, path, repo.allocator, .limited(1024 * 1024)) catch continue;
@@ -139,7 +139,7 @@ pub fn run(name: []const u8, allocator: std.mem.Allocator, io: std.Io, environ_m
 }
 
 fn plainManifestExists(repo: *const Repo) bool {
-    const path = repo.absolutePath(manifest_mod.manifest_name) catch return false;
+    const path = repo.absolutePath(manifest_mod.filename) catch return false;
     defer repo.allocator.free(path);
     return utils.pathExists(path, repo.io);
 }
@@ -154,12 +154,12 @@ fn runPre(repo: *const Repo, keys: crypto.DerivedKeys, environ_map: *const std.p
     const temp_index = std.mem.endsWith(u8, index_file, ".lock");
     const index_was_clean = !partial and indexIsClean(repo);
 
-    sync.encryptSync(repo, keys, .{ .validate_only = partial }, &report) catch |err| {
+    sync.encrypt(repo, keys, .{ .validate_only = partial }, &report) catch |err| {
         printRows(&report);
         switch (err) {
             sync.Error.PrivateFileTracked => std.debug.print("turbocrypt: commit refused, private files are tracked by git\n", .{}),
             sync.Error.SyncAborted => std.debug.print("turbocrypt: commit refused, see the lines above\n", .{}),
-            sync.Error.NoManifest => std.debug.print("turbocrypt: no {s} found, run: turbocrypt git decrypt\n", .{manifest_mod.manifest_name}),
+            sync.Error.NoManifest => std.debug.print("turbocrypt: no {s} found, run: turbocrypt git decrypt\n", .{manifest_mod.filename}),
             else => std.debug.print("turbocrypt: cannot encrypt private files: {}\n", .{err}),
         }
         return 1;
@@ -183,7 +183,7 @@ fn runPost(repo: *const Repo, keys: crypto.DerivedKeys, name: []const u8) u8 {
     var report = sync.Report{};
     defer report.deinit(allocator);
 
-    sync.decryptSync(repo, keys, .{}, &report) catch |err| {
+    sync.decrypt(repo, keys, .{}, &report) catch |err| {
         printRows(&report);
         std.debug.print("turbocrypt: private files were not synced: {}\n", .{err});
         return 0;
@@ -193,7 +193,7 @@ fn runPost(repo: *const Repo, keys: crypto.DerivedKeys, name: []const u8) u8 {
     if (std.mem.eql(u8, name, "post-commit")) {
         var check = sync.Report{};
         defer check.deinit(allocator);
-        sync.encryptSync(repo, keys, .{ .validate_only = true }, &check) catch return 0;
+        sync.encrypt(repo, keys, .{ .validate_only = true }, &check) catch return 0;
         if (check.pending > 0) {
             std.debug.print("turbocrypt: {d} private change(s) are not in this commit\n", .{check.pending});
         }

@@ -2,7 +2,7 @@ const std = @import("std");
 const keygen = @import("keygen.zig");
 const builtin = @import("builtin");
 
-const MAX_PASSWORD_LENGTH = 1024;
+const max_password_length = 1024;
 
 /// Raw mode needs a Windows console or termios
 const supports_raw_mode = builtin.os.tag != .wasi;
@@ -57,14 +57,14 @@ pub fn promptPassword(
     try stdout.writeStreamingAll(io, prompt_text);
     try stdout.writeStreamingAll(io, ": ");
 
-    var buffer: [MAX_PASSWORD_LENGTH]u8 = undefined;
+    var buffer: [max_password_length]u8 = undefined;
     defer std.crypto.secureZero(u8, &buffer);
     const password1 = buffer[0..try readLine(stdin_file, &buffer, raw_input, io)];
 
     if (confirm) {
         try stdout.writeStreamingAll(io, "Confirm password: ");
 
-        var buffer2: [MAX_PASSWORD_LENGTH]u8 = undefined;
+        var buffer2: [max_password_length]u8 = undefined;
         defer std.crypto.secureZero(u8, &buffer2);
         const password2 = buffer2[0..try readLine(stdin_file, &buffer2, raw_input, io)];
 

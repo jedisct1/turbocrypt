@@ -1,8 +1,8 @@
 const std = @import("std");
 
-pub const SALT = "turbocrypt";
+pub const salt = "turbocrypt";
 
-const Argon2 = std.crypto.pwhash.argon2;
+const argon2 = std.crypto.pwhash.argon2;
 
 /// Derive 20 bytes from a password with Argon2id.
 /// The first 16 bytes mask the key and the last 4 bytes are a checksum.
@@ -12,12 +12,12 @@ pub fn deriveKey(password: []const u8) ![20]u8 {
     var threaded_io = std.Io.Threaded.init(std.heap.page_allocator, .{ .environ = .empty });
     defer threaded_io.deinit();
 
-    try Argon2.kdf(
+    try argon2.kdf(
         std.heap.page_allocator,
         &key,
         password,
-        SALT,
-        Argon2.Params.interactive_2id,
+        salt,
+        argon2.Params.interactive_2id,
         .argon2id,
         threaded_io.io(),
     );

@@ -121,13 +121,9 @@ pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]con
     if (environ_map.get(env_var_name)) |env_path| {
         if (env_path.len > 0) return std.fmt.allocPrint(allocator, "key file {s} ({s})", .{ env_path, env_var_name });
     }
-    const config_path = try config.getConfigFilePath(allocator, environ_map);
+    const config_path = try config.filePath(allocator, environ_map);
     defer allocator.free(config_path);
     return std.fmt.allocPrint(allocator, "the default key in {s}", .{config_path});
-}
-
-pub fn getConfigFilePath(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
-    return try config.getConfigFilePath(allocator, environ_map);
 }
 
 test "resolveKeyPath - CLI argument takes priority" {
@@ -173,7 +169,7 @@ test "resolveKey - precedence between file sources and the config" {
     const testing = std.testing;
     const allocator = testing.allocator;
     const io = testing.io;
-    const home = "tmp/keyloader_precedence";
+    const home = "tmp/key_loader_precedence";
     std.Io.Dir.deleteTree(.cwd(), io, home) catch {};
     try std.Io.Dir.createDirPath(.cwd(), io, home);
     defer std.Io.Dir.deleteTree(.cwd(), io, home) catch {};
@@ -211,7 +207,7 @@ test "resolveKey - password-protected config key" {
     const testing = std.testing;
     const allocator = testing.allocator;
     const io = testing.io;
-    const home = "tmp/keyloader_protected";
+    const home = "tmp/key_loader_protected";
     std.Io.Dir.deleteTree(.cwd(), io, home) catch {};
     try std.Io.Dir.createDirPath(.cwd(), io, home);
     defer std.Io.Dir.deleteTree(.cwd(), io, home) catch {};

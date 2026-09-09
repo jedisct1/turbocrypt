@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const crypto = @import("../crypto.zig");
 const filename_crypto = @import("../filename_crypto.zig");
 const keygen = @import("../keygen.zig");
-const keyloader = @import("../keyloader.zig");
+const key_loader = @import("../key_loader.zig");
 const prompt = @import("../prompt.zig");
 const processor = @import("../processor.zig");
 const utils = @import("../utils.zig");
@@ -182,8 +182,8 @@ fn selectKey(repo: *const Repo, flags: Flags) !Selected {
     };
     if (bound != null and flags.key == null) return .{ .key = bound.?, .source = null };
 
-    const key = keyloader.loadKey(allocator, flags.key, flags.password, repo.io, repo.environ_map) catch |err| {
-        return keyloader.explainLoadError(allocator, err, flags.key, repo.environ_map);
+    const key = key_loader.loadKey(allocator, flags.key, flags.password, repo.io, repo.environ_map) catch |err| {
+        return key_loader.explainLoadError(allocator, err, flags.key, repo.environ_map);
     };
     if (bound) |current| {
         if (std.mem.eql(u8, &current, &key)) return .{ .key = key, .source = null };
@@ -192,7 +192,7 @@ fn selectKey(repo: *const Repo, flags: Flags) !Selected {
             return error.InvalidArguments;
         }
     }
-    return .{ .key = key, .source = try keyloader.describeKeySource(allocator, flags.key, repo.environ_map) };
+    return .{ .key = key, .source = try key_loader.describeKeySource(allocator, flags.key, repo.environ_map) };
 }
 
 fn printReport(report: *const sync.Report) void {
@@ -215,8 +215,8 @@ fn explainSyncError(err: anyerror) void {
     switch (err) {
         sync.Error.PrivateFileTracked => std.debug.print("Error: private files are tracked by git, see the lines above\n", .{}),
         sync.Error.SyncAborted => std.debug.print("Error: nothing was changed, see the lines above\n", .{}),
-        sync.Error.NoManifest => std.debug.print("Error: no {s} found. Run turbocrypt git init in a new repository, or unlock in a clone\n", .{manifest_mod.manifest_name}),
-        sync.Error.WrongKey => std.debug.print("Error: the {s} entry of this key in {s}/ does not decrypt: the store is corrupted\n", .{ manifest_mod.manifest_name, sync.enc_dir }),
+        sync.Error.NoManifest => std.debug.print("Error: no {s} found. Run turbocrypt git init in a new repository, or unlock in a clone\n", .{manifest_mod.filename}),
+        sync.Error.WrongKey => std.debug.print("Error: the {s} entry of this key in {s}/ does not decrypt: the store is corrupted\n", .{ manifest_mod.filename, sync.enc_dir }),
         error.CrossDevice => std.debug.print("Error: the git directory and the working tree must be on the same filesystem\n", .{}),
         repo_mod.Error.Locked => {},
         else => std.debug.print("Error: {}\n", .{err}),
@@ -249,7 +249,7 @@ pub fn setupStore(repo: *const Repo) !void {
     try repo.ensureDirs();
     try sync.updateExcludeFile(repo, &.{}, &.{}, &.{});
 
-    const manifest_path = try repo.absolutePath(manifest_mod.manifest_name);
+    const manifest_path = try repo.absolutePath(manifest_mod.filename);
     defer allocator.free(manifest_path);
     if (!utils.pathExists(manifest_path, repo.io)) {
         try processor.writeFileAtomic(manifest_path, manifest_mod.default_text, sync.plain_file_permissions, repo.tmp_dir, allocator, repo.io);
@@ -357,7 +357,7 @@ fn setUp(repo: *const Repo, flags: Flags, command: Command) !void {
 
     var report = sync.Report{};
     defer report.deinit(allocator);
-    sync.encryptSync(repo, keys, .{}, &report) catch |err| return failSync(&report, err);
+    sync.encrypt(repo, keys, .{}, &report) catch |err| return failSync(&report, err);
 
     const others = try sync.otherKeyCount(repo, keys);
     if (others > 0) {
@@ -375,14 +375,14 @@ fn setUp(repo: *const Repo, flags: Flags, command: Command) !void {
         \\  git commit
         \\  turbocrypt git export-key --password team.key   # to share the key
         \\
-    , .{ key_line, sync.enc_dir, manifest_mod.manifest_name });
+    , .{ key_line, sync.enc_dir, manifest_mod.filename });
 }
 
 fn decryptAll(repo: *const Repo, keys: crypto.DerivedKeys, force: bool) !void {
     const allocator = repo.allocator;
     var report = sync.Report{};
     defer report.deinit(allocator);
-    sync.decryptSync(repo, keys, .{ .force = force }, &report) catch |err| return failSync(&report, err);
+    sync.decrypt(repo, keys, .{ .force = force }, &report) catch |err| return failSync(&report, err);
     printReport(&report);
 }
 
@@ -428,14 +428,14 @@ fn cmdExportKey(args: []const []const u8, allocator: std.mem.Allocator, io: std.
 
 fn loadPlainManifest(repo: *const Repo) !Manifest {
     return (try sync.readPlainManifest(repo)) orelse {
-        std.debug.print("Error: no {s} in the working tree. Run: turbocrypt git decrypt\n", .{manifest_mod.manifest_name});
+        std.debug.print("Error: no {s} in the working tree. Run: turbocrypt git decrypt\n", .{manifest_mod.filename});
         return sync.Error.NoManifest;
     };
 }
 
 fn savePlainManifest(repo: *const Repo, manifest: Manifest) !void {
     const allocator = repo.allocator;
-    const path = try repo.absolutePath(manifest_mod.manifest_name);
+    const path = try repo.absolutePath(manifest_mod.filename);
     defer allocator.free(path);
     const text = try manifest.render(allocator);
     defer allocator.free(text);
@@ -523,7 +523,7 @@ fn cmdAdd(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, en
 
     var report = sync.Report{};
     defer report.deinit(allocator);
-    sync.encryptSync(&repo, keys, .{}, &report) catch |err| return failSync(&report, err);
+    sync.encrypt(&repo, keys, .{}, &report) catch |err| return failSync(&report, err);
     printReport(&report);
     std.debug.print("{d} entr{s} added, {d} file(s) encrypted and staged\n", .{ added, if (added == 1) "y" else "ies", report.count(.encrypted) });
 }
@@ -541,7 +541,7 @@ fn checkAddable(repo: *const Repo, keys: crypto.DerivedKeys, plain: []const u8) 
     }
     if (!try sync.nameFits(allocator, keys, plain)) {
         std.debug.print("Error: {s}: {s}\n", .{ plain, sync.long_name_detail });
-        return filename_crypto.FilenameError.EncryptedFilenameTooLong;
+        return filename_crypto.Error.EncryptedFilenameTooLong;
     }
 }
 
@@ -598,7 +598,7 @@ fn cmdRm(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, env
 
     var report = sync.Report{};
     defer report.deinit(allocator);
-    sync.encryptSync(&repo, keys, .{}, &report) catch |err| return failSync(&report, err);
+    sync.encrypt(&repo, keys, .{}, &report) catch |err| return failSync(&report, err);
 
     var removed_entries: std.ArrayList(manifest_mod.Entry) = .empty;
     defer removed_entries.deinit(allocator);
@@ -616,7 +616,7 @@ fn cmdRm(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, env
     for (forget.items) |entry| {
         std.debug.print("  public     {s}  (still on disk, now an ordinary untracked file)\n", .{entry.plain});
     }
-    std.debug.print("{d} entr{s} removed from {s}\n", .{ removed_lines.items.len, if (removed_lines.items.len == 1) "y" else "ies", manifest_mod.manifest_name });
+    std.debug.print("{d} entr{s} removed from {s}\n", .{ removed_lines.items.len, if (removed_lines.items.len == 1) "y" else "ies", manifest_mod.filename });
 }
 
 /// The manifest line for an rm argument.
@@ -742,7 +742,7 @@ fn showPath(ctx: *const sync.Context, plain: []const u8) !void {
     const private = printPrivate(ctx.manifest, plain);
 
     const cipher_rel = filename_crypto.encryptPath(allocator, plain, ctx.keys.filename_key, '/') catch |err| switch (err) {
-        filename_crypto.FilenameError.EncryptedFilenameTooLong => {
+        filename_crypto.Error.EncryptedFilenameTooLong => {
             std.debug.print("Entry      : none{s}\n", .{if (private) ", " ++ sync.long_name_detail else ""});
             return;
         },
@@ -785,7 +785,7 @@ fn showPath(ctx: *const sync.Context, plain: []const u8) !void {
 /// Whether the manifest makes the path private, and through which line.
 fn printPrivate(manifest: ?Manifest, plain: []const u8) bool {
     const m = manifest orelse {
-        std.debug.print("Private    : unknown, no {s} found\n", .{manifest_mod.manifest_name});
+        std.debug.print("Private    : unknown, no {s} found\n", .{manifest_mod.filename});
         return false;
     };
     if (m.ownLine(plain) != null) {
@@ -793,7 +793,7 @@ fn printPrivate(manifest: ?Manifest, plain: []const u8) bool {
     } else if (m.covering(plain)) |line| {
         std.debug.print("Private    : yes, through {s}\n", .{line});
     } else {
-        std.debug.print("Private    : no, not in {s}\n", .{manifest_mod.manifest_name});
+        std.debug.print("Private    : no, not in {s}\n", .{manifest_mod.filename});
         return false;
     }
     return true;
@@ -836,8 +836,8 @@ fn cmdSync(direction: sync.Direction, args: []const []const u8, allocator: std.m
     defer report.deinit(allocator);
     const options = sync.Options{ .force = flags.force, .only = only };
     switch (direction) {
-        .encrypt => sync.encryptSync(&repo, keys, options, &report) catch |err| return failSync(&report, err),
-        .decrypt => sync.decryptSync(&repo, keys, options, &report) catch |err| return failSync(&report, err),
+        .encrypt => sync.encrypt(&repo, keys, options, &report) catch |err| return failSync(&report, err),
+        .decrypt => sync.decrypt(&repo, keys, options, &report) catch |err| return failSync(&report, err),
     }
     printReport(&report);
     switch (direction) {

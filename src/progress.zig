@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// Thread-safe progress counters with a background display.
-pub const ProgressTracker = struct {
+pub const Tracker = struct {
     files_processed: std.atomic.Value(u64),
     files_failed: std.atomic.Value(u64),
     bytes_processed: std.atomic.Value(u64),
@@ -13,10 +13,8 @@ pub const ProgressTracker = struct {
     mutex: std.Io.Mutex,
     io: std.Io,
 
-    const Self = @This();
-
-    pub fn init(total_files: u64, total_bytes: u64, io: std.Io) Self {
-        return Self{
+    pub fn init(total_files: u64, total_bytes: u64, io: std.Io) Tracker {
+        return Tracker{
             .files_processed = std.atomic.Value(u64).init(0),
             .files_failed = std.atomic.Value(u64).init(0),
             .bytes_processed = std.atomic.Value(u64).init(0),
@@ -30,52 +28,52 @@ pub const ProgressTracker = struct {
         };
     }
 
-    pub fn addFileProcessed(self: *Self) void {
+    pub fn addFileProcessed(self: *Tracker) void {
         _ = self.files_processed.fetchAdd(1, .monotonic);
     }
 
-    pub fn addFilesProcessed(self: *Self, count: u64) void {
+    pub fn addFilesProcessed(self: *Tracker, count: u64) void {
         _ = self.files_processed.fetchAdd(count, .monotonic);
     }
 
-    pub fn addFileFailed(self: *Self) void {
+    pub fn addFileFailed(self: *Tracker) void {
         _ = self.files_failed.fetchAdd(1, .monotonic);
     }
 
-    pub fn addBytesProcessed(self: *Self, bytes: u64) void {
+    pub fn addBytesProcessed(self: *Tracker, bytes: u64) void {
         _ = self.bytes_processed.fetchAdd(bytes, .monotonic);
     }
 
-    pub fn addTotalFile(self: *Self) void {
+    pub fn addTotalFile(self: *Tracker) void {
         _ = self.total_files.fetchAdd(1, .monotonic);
     }
 
-    pub fn addTotalBytes(self: *Self, bytes: u64) void {
+    pub fn addTotalBytes(self: *Tracker, bytes: u64) void {
         _ = self.total_bytes.fetchAdd(bytes, .monotonic);
     }
 
-    pub fn getTotalFiles(self: *Self) u64 {
+    pub fn getTotalFiles(self: *Tracker) u64 {
         return self.total_files.load(.monotonic);
     }
 
-    pub fn getTotalBytes(self: *Self) u64 {
+    pub fn getTotalBytes(self: *Tracker) u64 {
         return self.total_bytes.load(.monotonic);
     }
 
-    pub fn getFilesProcessed(self: *Self) u64 {
+    pub fn getFilesProcessed(self: *Tracker) u64 {
         return self.files_processed.load(.monotonic);
     }
 
-    pub fn getFilesFailed(self: *Self) u64 {
+    pub fn getFilesFailed(self: *Tracker) u64 {
         return self.files_failed.load(.monotonic);
     }
 
-    pub fn getBytesProcessed(self: *Self) u64 {
+    pub fn getBytesProcessed(self: *Tracker) u64 {
         return self.bytes_processed.load(.monotonic);
     }
 
     /// Throughput since the start, in megabits per second.
-    pub fn getThroughput(self: *Self) f64 {
+    pub fn getThroughput(self: *Tracker) f64 {
         const elapsed = self.start_time.untilNow(self.io);
         const elapsed_ns = elapsed.raw.nanoseconds;
         if (elapsed_ns <= 0) return 0.0;
@@ -101,7 +99,7 @@ pub const ProgressTracker = struct {
         }
     }
 
-    pub fn display(self: *Self) void {
+    pub fn display(self: *Tracker) void {
         const files_done = self.getFilesProcessed();
         const files_failed = self.getFilesFailed();
         const bytes_done = self.getBytesProcessed();
@@ -138,7 +136,7 @@ pub const ProgressTracker = struct {
         }
     }
 
-    pub fn displayFinal(self: *Self) void {
+    pub fn displayFinal(self: *Tracker) void {
         const files_done = self.getFilesProcessed();
         const files_failed = self.getFilesFailed();
         const bytes_done = self.getBytesProcessed();
@@ -173,19 +171,19 @@ pub const ProgressTracker = struct {
         }
     }
 
-    fn displayUpdateThread(self: *Self) void {
+    fn displayUpdateThread(self: *Tracker) void {
         while (!self.should_stop.load(.acquire)) {
             self.display();
             self.io.sleep(std.Io.Duration.fromMilliseconds(100), .awake) catch {};
         }
     }
 
-    pub fn startDisplay(self: *Self) !void {
+    pub fn startDisplay(self: *Tracker) !void {
         self.should_stop.store(false, .release);
         self.display_thread = try std.Thread.spawn(.{}, displayUpdateThread, .{self});
     }
 
-    pub fn stopDisplay(self: *Self) void {
+    pub fn stopDisplay(self: *Tracker) void {
         self.should_stop.store(true, .release);
         if (self.display_thread) |thread| {
             thread.join();
@@ -198,7 +196,7 @@ test "progress tracker basic operations" {
     const testing = std.testing;
     const io = testing.io;
 
-    var tracker = ProgressTracker.init(100, 1024 * 1024 * 100, io);
+    var tracker = Tracker.init(100, 1024 * 1024 * 100, io);
 
     try testing.expectEqual(@as(u64, 0), tracker.getFilesProcessed());
     try testing.expectEqual(@as(u64, 0), tracker.getFilesFailed());
