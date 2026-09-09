@@ -29,7 +29,7 @@ expect_file() { [ -f "$1" ] || fail "missing file $1"; }
 expect_no_file() { [ ! -e "$1" ] || fail "unexpected file $1"; }
 expect_content() { expect_file "$1"; expect_eq "$(cat "$1")" "$2"; }
 expect_clean() { [ -z "$(git status --short)" ] || fail "working tree not clean: $(git status --short)"; }
-mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
+mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 # git commit -a decides "nothing to commit" before the hook stages private
 # changes, and cannot stage a new store entry on a retry. The documented
 # way is to refresh the store first.
