@@ -546,7 +546,7 @@ const DirectoryScanContext = struct {
             std.debug.print("        Reason: {}\n", .{err});
             if (err == filename_crypto.FilenameError.EncryptedFilenameTooLong) {
                 std.debug.print("        Suggestion: The {s} is too long. Encrypted names must fit within 255 bytes.\n", .{what});
-                std.debug.print("                   Consider shortening it (max ~205 bytes for encryption).\n", .{});
+                std.debug.print("                   Consider shortening it (names of up to 197 bytes always fit).\n", .{});
             } else if (!self.is_encrypt) {
                 std.debug.print("        Suggestion: Ensure the {s} was encrypted with --encrypted-filenames using the same key\n", .{what});
             }
