@@ -139,6 +139,9 @@ turbocrypt git rm INTERNAL-DOC.md
 # Compare the working files with the encrypted store
 turbocrypt git status
 
+# Find the entry of a file in .enc/ and the last commit that changed it
+turbocrypt git show docs/internal.md
+
 # Refresh one side from the other
 turbocrypt git encrypt
 turbocrypt git decrypt

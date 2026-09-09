@@ -166,6 +166,15 @@ pub const Manifest = struct {
         }
         return null;
     }
+
+    /// The line of the path itself, in its file or its directory form.
+    pub fn ownLine(self: Manifest, plain: []const u8) ?[]const u8 {
+        for (self.lines.items) |line| {
+            const entry = parseLine(line) orelse continue;
+            if (std.mem.eql(u8, entry.path, plain)) return line;
+        }
+        return null;
+    }
 };
 
 /// A user argument as a path relative to the top level.

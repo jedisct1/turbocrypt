@@ -27,6 +27,7 @@ pub const usage_text =
     \\  add <path>...                  Make files or directories private
     \\  rm <path>...                   Make files or directories public again
     \\  status                         Show private files and what is out of sync
+    \\  show <path>...                 Show where a file lives in .enc/ and its last commit
     \\  encrypt [--force] [<path>...]  Refresh .enc/ from the plain files and stage it
     \\  decrypt [--force] [<path>...]  Refresh the plain files from .enc/
     \\
@@ -124,6 +125,7 @@ pub fn run(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     if (std.mem.eql(u8, sub, "add")) return cmdAdd(rest, allocator, io, environ_map);
     if (std.mem.eql(u8, sub, "rm")) return cmdRm(rest, allocator, io, environ_map);
     if (std.mem.eql(u8, sub, "status")) return cmdStatus(rest, allocator, io, environ_map);
+    if (std.mem.eql(u8, sub, "show")) return cmdShow(rest, allocator, io, environ_map);
     if (std.mem.eql(u8, sub, "encrypt")) return cmdSync(.encrypt, rest, allocator, io, environ_map);
     if (std.mem.eql(u8, sub, "decrypt")) return cmdSync(.decrypt, rest, allocator, io, environ_map);
 
@@ -629,9 +631,7 @@ fn lineForArg(repo: *const Repo, manifest: *const Manifest, arg: []const u8) ![]
     }
     const relative = try manifest_mod.relativeToToplevel(allocator, repo.toplevel, repo.prefix, arg);
     defer allocator.free(relative);
-    const as_dir = try std.fmt.allocPrint(allocator, "/{s}/", .{relative});
-    if (manifest.contains(as_dir)) return as_dir;
-    allocator.free(as_dir);
+    if (manifest.ownLine(relative)) |line| return allocator.dupe(u8, line);
     return std.fmt.allocPrint(allocator, "/{s}", .{relative});
 }
 
@@ -697,6 +697,125 @@ fn cmdStatus(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     if (report.count(.tracked) > 0 or report.count(.conflict) > 0 or report.count(.bad) > 0) {
         std.process.exit(1);
     }
+}
+
+fn cmdShow(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
+    const flags = try parseFlags(args, allocator, .{});
+    defer allocator.free(flags.positional);
+    if (flags.positional.len == 0) {
+        std.debug.print("Usage: turbocrypt git show <path>...\n", .{});
+        return error.InvalidArguments;
+    }
+    var repo = try openRepo(allocator, io, environ_map);
+    defer repo.deinit();
+    const keys = try loadKeys(&repo);
+
+    const paths = try relativePaths(&repo, flags.positional);
+    defer utils.freeList(allocator, paths);
+
+    var ctx = sync.Context.init(&repo, keys) catch |err| {
+        explainSyncError(err);
+        return err;
+    };
+    defer ctx.deinit();
+
+    for (paths, 0..) |plain, i| {
+        if (i > 0) std.debug.print("\n", .{});
+        try showPath(&ctx, plain);
+    }
+}
+
+/// Where a path lives in the store and what git knows about it.
+/// The store path only appears when the store, the index or the history has the entry.
+fn showPath(ctx: *const sync.Context, plain: []const u8) !void {
+    const allocator = ctx.allocator;
+    const abs = try ctx.repo.absolutePath(plain);
+    defer allocator.free(abs);
+    const on_disk = try diskKind(ctx.io, abs);
+    const kind: []const u8 = if (on_disk) |k| switch (k) {
+        .file => "file",
+        .directory => "directory",
+        .sym_link => "symbolic link",
+        else => "special file",
+    } else "not on disk";
+    std.debug.print("Path       : {s} ({s})\n", .{ plain, kind });
+    const private = printPrivate(ctx.manifest, plain);
+
+    const cipher_rel = filename_crypto.encryptPath(allocator, plain, ctx.keys.filename_key, '/') catch |err| switch (err) {
+        filename_crypto.FilenameError.EncryptedFilenameTooLong => {
+            std.debug.print("Entry      : none{s}\n", .{if (private) ", " ++ sync.long_name_detail else ""});
+            return;
+        },
+        else => return err,
+    };
+    defer allocator.free(cipher_rel);
+    const store_path = try sync.storePath(allocator, &ctx.store_rel, cipher_rel);
+    defer allocator.free(store_path);
+    const store_abs = try std.fs.path.join(allocator, &.{ ctx.store_abs, cipher_rel });
+    defer allocator.free(store_abs);
+
+    const entry = try diskKind(ctx.io, store_abs);
+    const tracked = trackedAt(ctx, store_path);
+    // A failed git log counts as no history, as in a repository without commits.
+    const log = try ctx.repo.run(&.{ "log", "-1", "--format=%h %cs %s", "--", store_path });
+    defer log.deinit(allocator);
+    const last = std.mem.trim(u8, log.stdout, " \r\n");
+
+    if (entry == null and tracked == 0 and last.len == 0) {
+        const pending = private and on_disk == .file;
+        std.debug.print("Entry      : none{s}\n", .{if (pending) ", " ++ sync.pending_detail else ""});
+        return;
+    }
+    std.debug.print("Store path : {s}\n", .{store_path});
+    if (entry) |k| {
+        switch (k) {
+            .directory => std.debug.print("Entry      : directory, {d} tracked file(s)\n", .{tracked}),
+            else => std.debug.print("Entry      : on disk, {s}\n", .{if (tracked > 0) "tracked" else "not tracked"}),
+        }
+    } else {
+        std.debug.print("Entry      : {s}\n", .{if (tracked > 0) "tracked, gone from disk" else "removed"});
+    }
+    std.debug.print("Commit     : {s}\n", .{if (last.len > 0) last else "none"});
+
+    const quoted = try hooks.shellQuote(allocator, store_path);
+    defer allocator.free(quoted);
+    std.debug.print("History    : git --literal-pathspecs log -- {s}\n", .{quoted});
+}
+
+/// Whether the manifest makes the path private, and through which line.
+fn printPrivate(manifest: ?Manifest, plain: []const u8) bool {
+    const m = manifest orelse {
+        std.debug.print("Private    : unknown, no {s} found\n", .{manifest_mod.manifest_name});
+        return false;
+    };
+    if (m.ownLine(plain) != null) {
+        std.debug.print("Private    : yes\n", .{});
+    } else if (m.covering(plain)) |line| {
+        std.debug.print("Private    : yes, through {s}\n", .{line});
+    } else {
+        std.debug.print("Private    : no, not in {s}\n", .{manifest_mod.manifest_name});
+        return false;
+    }
+    return true;
+}
+
+/// Index entries at a store path, or under it when it names a directory.
+fn trackedAt(ctx: *const sync.Context, store_path: []const u8) usize {
+    const as_dir = manifest_mod.Entry{ .path = store_path, .is_dir = true };
+    var n: usize = 0;
+    for (ctx.tracked) |path| {
+        if (std.mem.eql(u8, path, store_path) or as_dir.covers(path)) n += 1;
+    }
+    return n;
+}
+
+/// The kind of what sits at a path, or null when nothing does.
+fn diskKind(io: std.Io, abs: []const u8) !?std.Io.File.Kind {
+    const stat = std.Io.Dir.statFile(.cwd(), io, abs, .{ .follow_symlinks = false }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return null,
+        else => return err,
+    };
+    return stat.kind;
 }
 
 /// The encrypt and decrypt commands: one pass in the given direction, limited to the paths given as arguments.

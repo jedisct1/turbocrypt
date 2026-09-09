@@ -21,6 +21,7 @@ pub const attributes_text = "* binary -filter -ident -working-tree-encoding -exp
 pub const max_file_size: u64 = 256 * 1024 * 1024;
 
 pub const long_name_detail = "name too long once encrypted, keep components under about 200 bytes";
+pub const pending_detail = "encrypted at the next commit";
 
 const state_version = 1;
 const max_state_size = 64 * 1024 * 1024;
@@ -1708,9 +1709,9 @@ pub fn collectStatus(repo: *const Repo, keys: crypto.DerivedKeys, report: *Repor
         switch (info.decision) {
             .none => if (v.cur != null) try report.add(allocator, .ok, info.plain, ""),
             .encrypt => if (v.old == null and v.new == null)
-                try report.add(allocator, .new, info.plain, "no entry yet, encrypted at the next commit")
+                try report.add(allocator, .new, info.plain, "no entry yet, " ++ pending_detail)
             else
-                try report.add(allocator, .modified, info.plain, "encrypted at the next commit"),
+                try report.add(allocator, .modified, info.plain, pending_detail),
             .write_plain => try report.add(allocator, .incoming, info.plain, "entry changed, run: turbocrypt git decrypt"),
             .record => try report.add(allocator, .ok, info.plain, "same content on both sides"),
             else => {},

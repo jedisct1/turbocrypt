@@ -98,6 +98,13 @@ knowing:
 - `turbocrypt git rm docs/internal.md` makes a file public again. The plain
   file stays on disk as an ordinary untracked file.
 
+- `turbocrypt git show docs/internal.md` prints the path of its entry under
+  `.enc/`. It also tells whether git tracks the entry and which commit
+  changed it last. The last line is a `git log` command ready to paste.
+  Encrypted names contain characters that a shell and git would otherwise
+  interpret. A removed entry keeps its store path as long as git has its
+  history.
+
 - A private file that you edited is never overwritten by a pull. You get a
   `conflict` line instead. `turbocrypt git decrypt --force <path>` takes the
   upstream version, `turbocrypt git encrypt --force <path>` keeps yours.

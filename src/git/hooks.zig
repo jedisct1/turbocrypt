@@ -36,7 +36,7 @@ pub fn scriptFor(allocator: std.mem.Allocator, name: []const u8, exe_path: []con
     , .{ first_line, second_line, quoted, @intFromBool(isPreHook(name)), name });
 }
 
-fn shellQuote(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+pub fn shellQuote(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.append(allocator, '\'');

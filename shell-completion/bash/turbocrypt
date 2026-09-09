@@ -11,7 +11,7 @@ _turbocrypt() {
 
     local subcommands=(keygen change-password encrypt decrypt verify list config git bench version)
     local config_subs=(show set-key set-threads set-buffer-size add-exclude remove-exclude set-ignore-symlinks set-encrypted-filenames)
-    local git_subs=(init unlock export-key add rm status encrypt decrypt help)
+    local git_subs=(init unlock export-key add rm status show encrypt decrypt help)
 
     local i token subcmd=""
     for (( i = 1; i < COMP_CWORD; i++ )); do
@@ -126,7 +126,7 @@ _turbocrypt() {
                         COMPREPLY=( $(compgen -f -- "$cur") )
                     fi
                     return 0 ;;
-                add|rm)
+                add|rm|show)
                     COMPREPLY=( $(compgen -f -- "$cur") )
                     return 0 ;;
                 *)

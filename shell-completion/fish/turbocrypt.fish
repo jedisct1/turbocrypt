@@ -72,13 +72,14 @@ complete -c turbocrypt -n '__fish_seen_subcommand_from config; and __fish_seen_s
 complete -c turbocrypt -n '__fish_seen_subcommand_from encrypt; or __fish_seen_subcommand_from decrypt; or __fish_seen_subcommand_from verify' -a '(__fish_complete_path)' -d "File or directory"
 complete -c turbocrypt -n '__fish_seen_subcommand_from list' -a '(__fish_complete_directories)' -d "Directory to list"
 
-set -l git_subs init unlock export-key add rm status encrypt decrypt help
+set -l git_subs init unlock export-key add rm status show encrypt decrypt help
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a init -d "Set up this repository"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a unlock -d "Set up a clone with the shared key"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a export-key -d "Write the repository key to a file"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a add -d "Make files or directories private"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a rm -d "Make files or directories public again"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a status -d "Show private files and what is out of sync"
+complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a show -d "Show where a file lives in .enc/ and its last commit"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a encrypt -d "Refresh .enc/ from the plain files"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a decrypt -d "Refresh the plain files from .enc/"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from init unlock' -l key -r -d "Key file, instead of TURBOCRYPT_KEY_FILE or the default key"
@@ -87,4 +88,4 @@ complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subc
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from export-key' -l password -d "Protect the exported key with a password"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from export-key' -a '(__fish_complete_path)' -d "Output key file"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from encrypt decrypt' -l force -d "Take this side where both sides changed"
-complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from add rm encrypt decrypt' -a '(__fish_complete_path)' -d "Path"
+complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from add rm show encrypt decrypt' -a '(__fish_complete_path)' -d "Path"

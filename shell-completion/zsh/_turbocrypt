@@ -103,7 +103,7 @@ case $subcmd in
     ;;
   git)
     local -a gsubs
-    gsubs=( init unlock export-key add rm status encrypt decrypt help )
+    gsubs=( init unlock export-key add rm status show encrypt decrypt help )
     if (( CURRENT == 3 )); then
       compadd -a gsubs
       return 0
@@ -115,7 +115,7 @@ case $subcmd in
         return 0 ;;
       export-key) compadd -- --password; _files; return 0 ;;
       encrypt|decrypt) compadd -- --force; _files; return 0 ;;
-      add|rm) _files; return 0 ;;
+      add|rm|show) _files; return 0 ;;
       *) return 0 ;;
     esac
     ;;

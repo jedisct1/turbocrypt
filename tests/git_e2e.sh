@@ -102,6 +102,28 @@ step "no-op encrypt leaves no diff"
 quiet turbocrypt git encrypt || fail "encrypt"
 expect_clean
 
+step "show names the store entry"
+turbocrypt git show docs/internal.md > "$work/show.log" 2>&1 || fail "show"
+grep -q '^Path       : docs/internal.md (file)$' "$work/show.log" || fail "show did not name the file"
+grep -q '^Private    : yes$' "$work/show.log" || fail "show did not report the file as private"
+entry=$(sed -n 's/^Store path : //p' "$work/show.log")
+expect_file "$entry"
+grep -q '^Entry      : on disk, tracked$' "$work/show.log" || fail "show did not report the entry as tracked"
+grep -q '^Commit     : [0-9a-f]* [0-9-]* private$' "$work/show.log" || fail "show did not find the commit"
+hint=$(sed -n 's/^History    : //p' "$work/show.log")
+sh -c "$hint" | grep -q '^    private$' || fail "the history hint does not run"
+expect_eq "$(cd docs && turbocrypt git show internal.md 2>&1 | sed -n 's/^Store path : //p')" "$entry"
+turbocrypt git show ops/deploy.sh 2>&1 | grep -q '^Private    : yes, through /ops/$' || fail "show did not name the directory line"
+turbocrypt git show ops 2>&1 | grep -q '^Entry      : directory, 1 tracked file(s)$' || fail "show did not count the directory entries"
+turbocrypt git show README.md > "$work/show.log" 2>&1 || fail "show on a public file"
+grep -q '^Private    : no, not in .gitprivate$' "$work/show.log" || fail "show reported a public file as private"
+grep -q '^Entry      : none$' "$work/show.log" || fail "show did not report a missing entry"
+grep -q '^Store path' "$work/show.log" && fail "show printed a store path for a public file"
+echo "pending" > ops/pending.txt
+turbocrypt git show ops/pending.txt 2>&1 | grep -q '^Entry      : none, encrypted at the next commit$' || fail "show did not announce the pending entry"
+rm ops/pending.txt
+quiet turbocrypt git show && fail "show without a path succeeded"
+
 step "clone and unlock"
 git clone -q "$A" "$B" || fail "clone"
 quiet turbocrypt git export-key "$work/team.key" || fail "export-key"
@@ -185,6 +207,10 @@ expect_file docs/internal.md
 expect_eq "$(git status --short docs)" "?? docs/"
 git commit -qm "internal removed from the store" || fail "commit"
 rm -r docs
+turbocrypt git show docs/internal.md > "$work/show.log" 2>&1 || fail "show after rm"
+grep -q '^Path       : docs/internal.md (not on disk)$' "$work/show.log" || fail "show still sees the plain file"
+grep -q '^Entry      : removed$' "$work/show.log" || fail "show did not report the removed entry"
+grep -q '^Commit     : .* internal removed from the store$' "$work/show.log" || fail "show lost the history of a removed file"
 
 step "rm of a file under a directory line keeps its entry"
 turbocrypt git rm ops/deploy.sh > "$work/rm.log" 2>&1 || fail "rm failed"
