@@ -4,7 +4,7 @@
 
 # TurboCrypt
 
-A fast, easy-to-use, and secure command-line tool for encrypting and decrypting files or entire directory trees.
+A fast, easy-to-use, and secure command-line tool for encrypting and decrypting files, git repositories and directory trees.
 
 - [TurboCrypt](#turbocrypt)
   - [Installation](#installation)
