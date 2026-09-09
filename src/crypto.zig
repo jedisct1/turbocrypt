@@ -22,13 +22,14 @@ pub const DerivedKeys = struct {
     filename_key: [16]u8,
     fingerprint_key: [16]u8,
     cipher_id_key: [16]u8,
+    key_id_key: [16]u8,
 };
 
-/// Derive five separate keys from the master key using TurboSHAKE128
+/// Derive six separate keys from the master key using TurboSHAKE128
 /// Input: master_key || "turbocrypt" || ("-" || context if provided)
-/// Output: 80 bytes split into five 16-byte keys
+/// Output: 96 bytes split into six 16-byte keys
 ///
-/// The last two keys came later than the first three.
+/// The last three keys came later than the first three.
 /// TurboSHAKE is an XOF, so squeezing more bytes leaves the first 48 unchanged and every file encrypted before that addition still decrypts.
 ///
 /// The optional context parameter allows deriving different keys from the same master key.
@@ -49,7 +50,7 @@ pub fn deriveKeys(master_key: [key_length]u8, context: ?[]const u8) DerivedKeys 
         }
     }
 
-    var output: [80]u8 = undefined;
+    var output: [96]u8 = undefined;
     shake.squeeze(&output);
 
     return DerivedKeys{
@@ -58,7 +59,13 @@ pub fn deriveKeys(master_key: [key_length]u8, context: ?[]const u8) DerivedKeys 
         .filename_key = output[32..48].*,
         .fingerprint_key = output[48..64].*,
         .cipher_id_key = output[64..80].*,
+        .key_id_key = output[80..96].*,
     };
+}
+
+/// Public name of a key. It appears in commits, so it is a MAC under a key of its own and reveals nothing.
+pub fn keyId(key_id_key: [key_length]u8) [mac_length]u8 {
+    return keyedMac("key id", key_id_key);
 }
 
 /// Keyed fingerprint of a plaintext.
@@ -562,6 +569,17 @@ test "derived keys keep their first 48 bytes" {
     try testing.expectEqualSlices(u8, expected[0..16], &derived.header_mac_key);
     try testing.expectEqualSlices(u8, expected[16..32], &derived.encryption_key);
     try testing.expectEqualSlices(u8, expected[32..48], &derived.filename_key);
+}
+
+test "key id is stable and key dependent" {
+    const testing = std.testing;
+
+    const a = deriveKeys(@splat(1), null);
+    const b = deriveKeys(@splat(2), null);
+
+    try testing.expectEqualSlices(u8, &keyId(a.key_id_key), &keyId(a.key_id_key));
+    try testing.expect(!std.mem.eql(u8, &keyId(a.key_id_key), &keyId(b.key_id_key)));
+    try testing.expect(!std.mem.eql(u8, &a.key_id_key, &a.cipher_id_key));
 }
 
 test "fingerprint is stable and key dependent" {

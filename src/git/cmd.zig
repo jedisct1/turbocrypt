@@ -21,7 +21,7 @@ pub const usage_text =
     \\Keep private files in a public git repository. They live encrypted
     \\under .enc/ and appear in clear in your working tree.
     \\
-    \\  init [--key <key-file>]        Set up this repository: hooks, .enc/ and .gitprivate
+    \\  init [--key <key-file>]        Set up this repository for a key: hooks, .enc/ and .gitprivate
     \\  unlock [--key <key-file>]      Set up a clone: hooks and the plain files from .enc/
     \\  export-key <out> [--password]  Write the repository key to a file to share it
     \\  add <path>...                  Make files or directories private
@@ -33,7 +33,11 @@ pub const usage_text =
     \\init and unlock take the key from --key, then TURBOCRYPT_KEY_FILE, then
     \\the config, like every other command, and ask for its password once.
     \\--password forces that prompt. The repository keeps the key it was
-    \\given. unlock --force replaces it with a different one.
+    \\given. --force replaces it with a different one.
+    \\
+    \\Several keys can share a repository. Each one sees its own files and
+    \\ignores the others. A key that has no files yet joins with init.
+    \\unlock refuses such a key, since it is more likely a wrong one.
     \\
     \\Examples:
     \\  turbocrypt keygen secret.key
@@ -165,7 +169,7 @@ const Selected = struct {
 /// The key of a setup command.
 /// A key bound to the repository is kept unless --key names another one, and a different key needs --force.
 /// The environment and the config only apply while the repository has no key.
-fn selectKey(repo: *const Repo, flags: Flags, force: bool) !Selected {
+fn selectKey(repo: *const Repo, flags: Flags) !Selected {
     const allocator = repo.allocator;
     const bound: ?[16]u8 = repo.loadKey() catch |err| switch (err) {
         repo_mod.Error.RepoLocked => null,
@@ -181,13 +185,8 @@ fn selectKey(repo: *const Repo, flags: Flags, force: bool) !Selected {
     };
     if (bound) |current| {
         if (std.mem.eql(u8, &current, &key)) return .{ .key = key, .source = null };
-        if (!force) {
-            std.debug.print("Error: this repository already has a different key\n", .{});
-            if (sync.storeExists(repo)) {
-                std.debug.print("Run: turbocrypt git unlock --key <key-file> --force\n", .{});
-            } else {
-                std.debug.print("Remove {s} to start over\n", .{repo.key_path});
-            }
+        if (!flags.force) {
+            std.debug.print("Error: this repository already has a different key. Add --force to replace it\n", .{});
             return error.InvalidArguments;
         }
     }
@@ -216,7 +215,7 @@ fn explainSyncError(err: anyerror) void {
         sync.Error.PrivateFileTracked => std.debug.print("Error: private files are tracked by git, see the lines above\n", .{}),
         sync.Error.SyncAborted => std.debug.print("Error: nothing was changed, see the lines above\n", .{}),
         sync.Error.NoManifest => std.debug.print("Error: no {s} found. Run turbocrypt git init in a new repository, or unlock in a clone\n", .{manifest_mod.manifest_name}),
-        sync.Error.WrongKey => std.debug.print("Error: the store does not decrypt with this key: wrong key or corrupted\n", .{}),
+        sync.Error.WrongKey => std.debug.print("Error: the {s} entry of this key in {s}/ does not decrypt: the store is corrupted\n", .{ manifest_mod.manifest_name, sync.enc_dir }),
         error.CrossDevice => std.debug.print("Error: the git directory and the working tree must be on the same filesystem\n", .{}),
         repo_mod.Error.Locked => {},
         else => std.debug.print("Error: {}\n", .{err}),
@@ -267,10 +266,10 @@ fn installIntegration(repo: *const Repo) !void {
 }
 
 fn cmdInit(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
-    const flags = try parseFlags(args, allocator, .{ .key = true, .password = true });
+    const flags = try parseFlags(args, allocator, .{ .key = true, .password = true, .force = true });
     defer allocator.free(flags.positional);
     if (flags.positional.len != 0) {
-        std.debug.print("Usage: turbocrypt git init [--key <key-file>] [--password]\n", .{});
+        std.debug.print("Usage: turbocrypt git init [--key <key-file>] [--password] [--force]\n", .{});
         return error.InvalidArguments;
     }
 
@@ -279,8 +278,14 @@ fn cmdInit(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     const lock = try repo.lock();
     defer lock.release();
 
-    if (sync.storeExists(&repo)) return unlockWith(&repo, flags);
+    if (!sync.storeExists(&repo)) try checkStoreLocation(&repo);
+    try setUp(&repo, flags, .init);
+}
 
+/// A store can only be created where nothing else lives and where git will see it.
+fn checkStoreLocation(repo: *const Repo) !void {
+    const allocator = repo.allocator;
+    const io = repo.io;
     const store = try repo.absolutePath(sync.enc_dir);
     defer allocator.free(store);
     if (std.Io.Dir.statFile(.cwd(), io, store, .{ .follow_symlinks = false })) |stat| {
@@ -303,25 +308,60 @@ fn cmdInit(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
         std.debug.print("Error: {s}/ is ignored by a gitignore rule. Run: git check-ignore -v {s}\n", .{ sync.enc_dir, sync.enc_dir });
         return error.InvalidArguments;
     }
+}
 
-    const selected = try selectKey(&repo, flags, false);
+const Command = enum { init, unlock };
+
+/// What init and unlock share once the lock is held.
+/// unlock refuses a key without files, since a wrong key looks the same. init sets it up.
+fn setUp(repo: *const Repo, flags: Flags, command: Command) !void {
+    const allocator = repo.allocator;
+    const selected = try selectKey(repo, flags);
     defer if (selected.source) |source| allocator.free(source);
-    try sync.checkSameFilesystem(&repo);
-    if (selected.source != null) try repo.saveKey(selected.key);
+    try sync.checkSameFilesystem(repo);
     const keys = crypto.deriveKeys(selected.key, null);
 
-    try setupStore(&repo);
-    try installIntegration(&repo);
+    const manifest_text = sync.manifestFromStore(repo, keys) catch |err| {
+        explainSyncError(err);
+        return err;
+    };
+    const has_files = manifest_text != null;
+    if (manifest_text) |text| allocator.free(text);
 
-    var report = sync.Report{};
-    defer report.deinit(allocator);
-    sync.encryptSync(&repo, keys, .{}, &report) catch |err| return failSync(&report, err);
+    if (!has_files and command == .unlock) {
+        const what: []const u8 = selected.source orelse "the repository key";
+        std.debug.print("Error: the store has no files for {s}: wrong key, or a key that is new to this repository\n", .{what});
+        std.debug.print("A new key joins with: turbocrypt git init [--key <key-file>]\n", .{});
+        return error.InvalidArguments;
+    }
 
+    if (selected.source != null) try repo.saveKey(selected.key);
     const key_line = if (selected.source) |source|
         try std.fmt.allocPrint(allocator, "{s}, copied to {s}", .{ source, repo.key_path })
     else
         try allocator.dupe(u8, repo.key_path);
     defer allocator.free(key_line);
+
+    if (has_files) {
+        if (selected.source != null) std.debug.print("Key: {s}\n", .{key_line});
+        try installIntegration(repo);
+        try decryptAll(repo, keys, flags.force);
+        const outcome: []const u8 = if (selected.source == null) "Refreshed" else "Unlocked";
+        std.debug.print("{s}. Hooks are installed and private files are in place.\n", .{outcome});
+        return;
+    }
+
+    try setupStore(repo);
+    try installIntegration(repo);
+
+    var report = sync.Report{};
+    defer report.deinit(allocator);
+    sync.encryptSync(repo, keys, .{}, &report) catch |err| return failSync(&report, err);
+
+    const others = try sync.otherKeyCount(repo, keys);
+    if (others > 0) {
+        std.debug.print("This key is new to the repository. The files of the {d} other key(s) stay encrypted.\n\n", .{others});
+    }
     std.debug.print(
         \\Private files are set up.
         \\
@@ -337,43 +377,8 @@ fn cmdInit(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     , .{ key_line, sync.enc_dir, manifest_mod.manifest_name });
 }
 
-/// Bind the selected key once the store confirms it, then install the hooks and decrypt.
-/// The caller holds the repository lock.
-fn unlockWith(repo: *const Repo, flags: Flags) !void {
+fn decryptAll(repo: *const Repo, keys: crypto.DerivedKeys, force: bool) !void {
     const allocator = repo.allocator;
-    if (!sync.storeExists(repo)) {
-        std.debug.print("Error: no {s}/ store in this repository. Run: turbocrypt git init\n", .{sync.enc_dir});
-        return error.InvalidArguments;
-    }
-    try sync.checkSameFilesystem(repo);
-    const selected = try selectKey(repo, flags, flags.force);
-    defer if (selected.source) |source| allocator.free(source);
-
-    const keys = crypto.deriveKeys(selected.key, null);
-    const manifest_text = sync.manifestFromStore(repo, keys) catch |err| {
-        explainSyncError(err);
-        return err;
-    };
-    if (manifest_text) |text| allocator.free(text) else {
-        const what: []const u8 = selected.source orelse "the repository key";
-        std.debug.print("Error: the store has no manifest entry for {s}: wrong key\n", .{what});
-        return sync.Error.WrongKey;
-    }
-
-    if (selected.source) |source| {
-        try repo.saveKey(selected.key);
-        std.debug.print("Key: {s}, copied to {s}\n", .{ source, repo.key_path });
-    }
-    try installIntegration(repo);
-    try decryptAll(repo, flags.force);
-    const outcome: []const u8 = if (selected.source == null) "Refreshed" else "Unlocked";
-    std.debug.print("{s}. Hooks are installed and private files are in place.\n", .{outcome});
-}
-
-fn decryptAll(repo: *const Repo, force: bool) !void {
-    const allocator = repo.allocator;
-    const keys = try loadKeys(repo);
-
     var report = sync.Report{};
     defer report.deinit(allocator);
     sync.decryptSync(repo, keys, .{ .force = force }, &report) catch |err| return failSync(&report, err);
@@ -391,7 +396,11 @@ fn cmdUnlock(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     defer repo.deinit();
     const lock = try repo.lock();
     defer lock.release();
-    try unlockWith(&repo, flags);
+    if (!sync.storeExists(&repo)) {
+        std.debug.print("Error: no {s}/ store in this repository. Run: turbocrypt git init\n", .{sync.enc_dir});
+        return error.InvalidArguments;
+    }
+    try setUp(&repo, flags, .unlock);
 }
 
 fn cmdExportKey(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
@@ -583,7 +592,7 @@ fn cmdRm(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, env
         }
     }
 
-    try sync.removeEntries(&repo, forget.items);
+    try sync.removeEntries(&repo, keys, forget.items);
     try savePlainManifest(&repo, manifest);
 
     var report = sync.Report{};
@@ -664,6 +673,11 @@ fn cmdStatus(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     }
 
     const keys = crypto.deriveKeys(key, null);
+    const others = try sync.otherKeyCount(&repo, keys);
+    if (others > 0) {
+        std.debug.print("Other keys : {d}, their files stay encrypted\n", .{others});
+    }
+
     var report = sync.Report{};
     defer report.deinit(allocator);
     sync.collectStatus(&repo, keys, &report) catch |err| return failSync(&report, err);

@@ -56,6 +56,7 @@ A fast, easy-to-use, and secure command-line tool for encrypting and decrypting 
     - ["commit refused, private files are tracked by git"](#commit-refused-private-files-are-tracked-by-git)
     - [A merge conflict on a private file](#a-merge-conflict-on-a-private-file)
     - ["this repository already has a different key"](#this-repository-already-has-a-different-key)
+    - ["the store has no files for" a key](#the-store-has-no-files-for-a-key)
     - [Hooks do not run from a GUI client](#hooks-do-not-run-from-a-gui-client)
   - [Environment Variables](#environment-variables)
 
@@ -416,8 +417,21 @@ turbocrypt git unlock --key team.key # binds the key, installs the hooks and dec
 ```
 
 `unlock` picks the key like `init` does. A maintainer whose default key
-is the team key runs `turbocrypt git unlock` alone. A key that does not
-open the store is refused, and the message says where it came from.
+is the team key runs `turbocrypt git unlock` alone. A key that has no
+files in the store is refused, and the message says where it came from.
+
+Several keys can share one repository. Each key keeps its files in a
+directory of its own under `.enc/`, and a key holder sees only those.
+A maintainer whose key is new to the repository joins with `init`
+instead of `unlock`:
+
+```bash
+turbocrypt git init --key my.key     # joins the repository with a key of its own
+```
+
+The files of the other keys stay encrypted and are never touched. Keys
+do not see each other's file lists, so a path that is private for one
+key is an ordinary file for the others.
 
 From then on, daily work is plain git. Edit a private file and commit. Pull
 and switch branches. The hooks keep both sides in sync. A few things are
@@ -444,9 +458,9 @@ worth knowing:
 - The `.gitprivate` list accepts one path per line, `/path/to/file` for a
   file and `/path/to/dir/` for a directory. No wildcards, no negation.
 
-What the public can see: how many private files exist, the shape of the
-directory tree, the size of each file, which ones are executable, and when
-they change. Two files with the same name in different directories get the
+What the public can see: how many keys there are, how many private files
+each one has, the shape of the directory tree, the size of each file,
+which ones are executable, and when they change. Two files with the same name in different directories get the
 same encrypted name. An entry cannot be moved or swapped without detection,
 but a whole commit can be reverted to an older one, which is why signed
 commits still matter.
@@ -585,6 +599,9 @@ turbocrypt git init
 
 # Set up a clone with the shared key
 turbocrypt git unlock --key team.key
+
+# Join a repository with a key that has no files in it yet
+turbocrypt git init --key my.key
 
 # Share the key
 turbocrypt git export-key --password team.key
@@ -747,9 +764,18 @@ entry from it. Otherwise `turbocrypt git rm <path>` drops the entry.
 ### "this repository already has a different key"
 
 `init` and `unlock` keep the key bound to the repository, whatever the
-default key or `TURBOCRYPT_KEY_FILE` says. To replace it, run
-`turbocrypt git unlock --key <key-file> --force`. The new key must open
-the store, so this is not a way to rotate keys.
+default key or `TURBOCRYPT_KEY_FILE` says. To replace it, run the same
+command again with `--force`. `unlock` needs a key that already has
+files in the store. `init` also takes a key that is new to the
+repository. The `.gitprivate` list stays, so the files it names become
+that key's private files at the next commit. Neither command rotates a
+key.
+
+### "the store has no files for" a key
+
+`unlock` only takes a key that already has files in the store, since a
+wrong key looks the same as a new one. A key that is new to the
+repository joins with `turbocrypt git init --key <key-file>`.
 
 ### Hooks do not run from a GUI client
 

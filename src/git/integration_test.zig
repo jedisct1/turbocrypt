@@ -180,7 +180,7 @@ test "git integration: store round trip, clone, tamper" {
         try testing.expect(deploy_stat.permissions.toMode() & 0o100 != 0);
     }
 
-    const store_b = try std.fs.path.join(allocator, &.{ b, sync.enc_dir });
+    const store_b = try sync.keyDirAbs(&repo_b, keys);
     defer allocator.free(store_b);
     var bad: std.ArrayList([]u8) = .empty;
     defer bad.deinit(allocator);
@@ -248,4 +248,51 @@ test "git integration: store round trip, clone, tamper" {
     defer clean.deinit(allocator);
     try sync.decryptSync(&repo_b, keys, .{}, &clean);
     try testing.expectEqual(@as(usize, 0), clean.count(.bad));
+    try gitOk(allocator, io, &env, b, &.{ "commit", "-qm", "repaired" });
+
+    // A second key joins from another clone and sees none of the first key's files.
+    const c = try std.fs.path.join(allocator, &.{ base_abs, "c" });
+    defer allocator.free(c);
+    try gitOk(allocator, io, &env, base_abs, &.{ "clone", "-q", "a", "c" });
+    var repo_c = try Repo.openAt(allocator, io, &env.map, c);
+    defer repo_c.deinit();
+    const key2 = keygen.generate(io);
+    const keys2 = crypto.deriveKeys(key2, null);
+    try repo_c.saveKey(key2);
+    try testing.expect(try sync.manifestFromStore(&repo_c, keys2) == null);
+    try testing.expectEqual(@as(usize, 1), try sync.otherKeyCount(&repo_c, keys2));
+
+    try cmd.setupStore(&repo_c);
+    try writeFile(io, c, "mine.md", "mine\n", allocator);
+    try writeFile(io, c, manifest_mod.manifest_name, manifest_mod.default_text ++ "/mine.md\n", allocator);
+    var joined = sync.Report{};
+    defer joined.deinit(allocator);
+    try sync.encryptSync(&repo_c, keys2, .{}, &joined);
+    try testing.expectEqual(@as(usize, 2), joined.count(.encrypted));
+    try testing.expectEqual(@as(usize, 0), joined.count(.bad));
+    try gitOk(allocator, io, &env, c, &.{ "commit", "-qm", "second key" });
+    const c_tracked = try git(allocator, io, &env, c, &.{ "ls-files", "-z" });
+    defer allocator.free(c_tracked);
+    try testing.expect(std.mem.indexOf(u8, c_tracked, "AGENT") == null);
+    try testing.expect(std.mem.indexOf(u8, c_tracked, "mine") == null);
+
+    const ours = try sync.storeEntries(&repo_c, keys2);
+    defer sync.freeEntries(allocator, ours);
+    try testing.expectEqual(@as(usize, 2), ours.len);
+    const theirs = try sync.storeEntries(&repo_c, keys);
+    defer sync.freeEntries(allocator, theirs);
+    try testing.expectEqual(@as(usize, 4), theirs.len);
+
+    // The first key pulls that commit and nothing changes for it.
+    try gitOk(allocator, io, &env, b, &.{ "pull", "-q", "--no-rebase", c, "main" });
+    try testing.expectEqual(@as(usize, 1), try sync.otherKeyCount(&repo_b, keys));
+    var after_pull = sync.Report{};
+    defer after_pull.deinit(allocator);
+    try sync.decryptSync(&repo_b, keys, .{}, &after_pull);
+    try testing.expectEqual(@as(usize, 0), after_pull.count(.written));
+    try testing.expectEqual(@as(usize, 0), after_pull.count(.bad));
+    try testing.expectEqual(@as(usize, 4), after_pull.count(.ok));
+    const mine_b = try std.fs.path.join(allocator, &.{ b, "mine.md" });
+    defer allocator.free(mine_b);
+    try testing.expect(!utils.pathExists(mine_b, io));
 }

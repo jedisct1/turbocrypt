@@ -109,14 +109,7 @@ _turbocrypt() {
                 return 0
             fi
             case "$gitsub" in
-                init)
-                    if [[ "$cur" == -* ]]; then
-                        COMPREPLY=( $(compgen -W "--key --password" -- "$cur") )
-                    elif [[ "$prev" == "--key" ]]; then
-                        COMPREPLY=( $(compgen -f -- "$cur") )
-                    fi
-                    return 0 ;;
-                unlock)
+                init|unlock)
                     if [[ "$cur" == -* ]]; then
                         COMPREPLY=( $(compgen -W "--key --password --force" -- "$cur") )
                     elif [[ "$prev" == "--key" ]]; then

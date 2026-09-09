@@ -118,7 +118,7 @@ complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and not __fish_seen_subcommand_from $git_subs' --no-files -a decrypt -d "Refresh the plain files from .enc/"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from init unlock' -l key -r -d "Key file, instead of TURBOCRYPT_KEY_FILE or the default key"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from init unlock' -l password -d "Ask for the key password"
-complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from unlock' -l force -d "Replace a different existing key"
+complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from init unlock' -l force -d "Replace a different existing key"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from export-key' -l password -d "Protect the exported key with a password"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from export-key' -a '(__fish_complete_path)' -d "Output key file"
 complete -c turbocrypt -n '__fish_seen_subcommand_from git; and __fish_seen_subcommand_from encrypt decrypt' -l force -d "Take this side where both sides changed"

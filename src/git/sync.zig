@@ -136,7 +136,9 @@ fn decideFor(v: Values, direction: Direction, force: bool) Decision {
 }
 
 /// The baselines of every synced path, kept under the git directory.
+/// They are keyed, so a file written under another key reads as empty.
 pub const State = struct {
+    key_id: [crypto.mac_length]u8,
     map: std.StringArrayHashMapUnmanaged(Baseline) = .empty,
 
     const JsonEntry = struct {
@@ -147,27 +149,31 @@ pub const State = struct {
     };
     const JsonState = struct {
         version: u32,
+        key: [2 * crypto.mac_length]u8,
         entries: []JsonEntry,
     };
 
-    pub fn load(allocator: std.mem.Allocator, path: []const u8, io: std.Io) !State {
+    pub fn load(allocator: std.mem.Allocator, path: []const u8, key_id: [crypto.mac_length]u8, io: std.Io) !State {
         const text = std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(max_state_size)) catch |err| switch (err) {
-            error.FileNotFound => return .{},
+            error.FileNotFound => return .{ .key_id = key_id },
             else => return err,
         };
         defer allocator.free(text);
-        return parse(allocator, text);
+        return parse(allocator, text, key_id);
     }
 
-    pub fn parse(allocator: std.mem.Allocator, text: []const u8) !State {
+    pub fn parse(allocator: std.mem.Allocator, text: []const u8, key_id: [crypto.mac_length]u8) !State {
         const parsed = std.json.parseFromSlice(JsonState, allocator, text, .{ .ignore_unknown_fields = true }) catch {
             return Error.InvalidState;
         };
         defer parsed.deinit();
         if (parsed.value.version != state_version) return Error.InvalidState;
 
-        var state = State{};
+        var state = State{ .key_id = key_id };
         errdefer state.deinit(allocator);
+        var stored: [crypto.mac_length]u8 = undefined;
+        _ = std.fmt.hexToBytes(&stored, &parsed.value.key) catch return Error.InvalidState;
+        if (!std.mem.eql(u8, &stored, &key_id)) return state;
         for (parsed.value.entries) |entry| {
             var baseline = Baseline{ .plain = undefined, .exec = entry.exec, .id = undefined };
             _ = std.fmt.hexToBytes(&baseline.plain, &entry.plain) catch return Error.InvalidState;
@@ -194,7 +200,8 @@ pub const State = struct {
                 return std.mem.lessThan(u8, a.path, b.path);
             }
         }.lessThan);
-        return std.json.Stringify.valueAlloc(allocator, JsonState{ .version = state_version, .entries = entries.items }, .{ .whitespace = .indent_2 });
+        const json = JsonState{ .version = state_version, .key = std.fmt.bytesToHex(self.key_id, .lower), .entries = entries.items };
+        return std.json.Stringify.valueAlloc(allocator, json, .{ .whitespace = .indent_2 });
     }
 
     pub fn save(self: State, allocator: std.mem.Allocator, path: []const u8, tmp_dir: []const u8, io: std.Io) !void {
@@ -227,9 +234,29 @@ pub const State = struct {
     }
 };
 
+pub fn keyDirName(keys: crypto.DerivedKeys) [2 * crypto.mac_length]u8 {
+    return std.fmt.bytesToHex(crypto.keyId(keys.key_id_key), .lower);
+}
+
+pub const key_dir_len = enc_dir.len + 1 + 2 * crypto.mac_length;
+
+/// The directory of one key inside the store, relative to the top level.
+/// A key keeps its entries and its manifest there and never looks into the other directories, which lets people with different keys share a repository.
+pub fn keyDirRel(keys: crypto.DerivedKeys) [key_dir_len]u8 {
+    var out: [key_dir_len]u8 = undefined;
+    @memcpy(out[0 .. enc_dir.len + 1], enc_dir ++ "/");
+    @memcpy(out[enc_dir.len + 1 ..], &keyDirName(keys));
+    return out;
+}
+
+pub fn keyDirAbs(repo: *const Repo, keys: crypto.DerivedKeys) ![]u8 {
+    const rel = keyDirRel(keys);
+    return repo.absolutePath(&rel);
+}
+
 /// Path of a store entry relative to the top level.
-pub fn storePath(allocator: std.mem.Allocator, cipher_rel: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ enc_dir, cipher_rel });
+pub fn storePath(allocator: std.mem.Allocator, key_dir: []const u8, cipher_rel: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ key_dir, cipher_rel });
 }
 
 /// A plain path may only name a regular file inside the working tree, reached through real directories.
@@ -268,7 +295,7 @@ pub fn validateDestination(
     if (stat.kind != .file) return Error.UnsafePath;
 }
 
-/// Store entries on disk, as paths relative to the store directory.
+/// Store entries on disk, as paths relative to the key directory.
 /// Anything that is not a regular file with a valid name ends up in `bad`.
 pub fn listStore(
     allocator: std.mem.Allocator,
@@ -306,7 +333,6 @@ fn listStoreDir(
 
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        if (rel.len == 0 and (std.mem.eql(u8, entry.name, marker_name) or std.mem.eql(u8, entry.name, attributes_name))) continue;
         const child = if (rel.len == 0) try allocator.dupe(u8, entry.name) else try std.fmt.allocPrint(allocator, "{s}/{s}", .{ rel, entry.name });
         errdefer allocator.free(child);
         switch (entry.kind) {
@@ -321,7 +347,7 @@ fn listStoreDir(
 }
 
 /// One store entry with its plain path.
-/// The store path is relative to the store directory.
+/// The store path is relative to the key directory.
 pub const Entry = struct {
     plain: []u8,
     cipher_rel: []u8,
@@ -418,30 +444,34 @@ pub const Context = struct {
     /// The store copy, kept apart because it can be newer than the plain one after a pull.
     /// The exclude block takes both.
     store_manifest: ?Manifest,
+    /// The key directory, relative to the top level and absolute.
+    store_rel: [key_dir_len]u8,
     store_abs: []u8,
     /// Every path in the index, unmerged ones included.
     tracked: [][]u8,
-    /// Store entries git holds unmerged, relative to the store directory.
+    /// Store entries git holds unmerged, relative to the key directory.
     unmerged: [][]u8,
 
     pub fn init(repo: *const Repo, keys: crypto.DerivedKeys) !Context {
         const allocator = repo.allocator;
+        const key_id = crypto.keyId(keys.key_id_key);
         var ctx = Context{
             .repo = repo,
             .keys = keys,
             .allocator = allocator,
             .io = repo.io,
-            .state = .{},
+            .state = .{ .key_id = key_id },
             .manifest = null,
             .store_manifest = null,
+            .store_rel = keyDirRel(keys),
             .store_abs = &.{},
             .tracked = &.{},
             .unmerged = &.{},
         };
         errdefer ctx.deinit();
 
-        ctx.store_abs = try repo.absolutePath(enc_dir);
-        ctx.state = try State.load(allocator, repo.state_path, repo.io);
+        ctx.store_abs = try repo.absolutePath(&ctx.store_rel);
+        ctx.state = try State.load(allocator, repo.state_path, key_id, repo.io);
         try ctx.loadIndex();
         try ctx.loadManifest();
         return ctx;
@@ -472,15 +502,15 @@ pub const Context = struct {
             for (unmerged.items) |u| allocator.free(u);
             unmerged.deinit(allocator);
         }
-        const prefix = enc_dir ++ "/";
         for (lines) |line| {
             const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
             const path = line[tab + 1 ..];
             if (tracked.items.len == 0 or !std.mem.eql(u8, tracked.items[tracked.items.len - 1], path)) {
                 try tracked.append(allocator, try allocator.dupe(u8, path));
             }
-            if (tab == 0 or line[tab - 1] == '0' or !std.mem.startsWith(u8, path, prefix)) continue;
-            const rel = path[prefix.len..];
+            if (tab == 0 or line[tab - 1] == '0') continue;
+            if (!std.mem.startsWith(u8, path, &self.store_rel) or path.len <= key_dir_len or path[key_dir_len] != '/') continue;
+            const rel = path[key_dir_len + 1 ..];
             if (unmerged.items.len == 0 or !std.mem.eql(u8, unmerged.items[unmerged.items.len - 1], rel)) {
                 try unmerged.append(allocator, try allocator.dupe(u8, rel));
             }
@@ -492,7 +522,7 @@ pub const Context = struct {
     /// The plain manifest when it exists, else the one in the store.
     /// Reading the store copy is also the key check: a wrong key cannot name the entry, and a corrupted one fails to decrypt.
     fn loadManifest(self: *Context) !void {
-        const store_text = try manifestFromStore(self.repo, self.keys);
+        const store_text = try manifestFromDir(self.repo, self.store_abs, self.keys);
         defer if (store_text) |text| self.allocator.free(text);
         if (store_text) |text| self.store_manifest = try Manifest.parse(self.allocator, text);
 
@@ -535,13 +565,19 @@ pub fn readPlainManifest(repo: *const Repo) !?Manifest {
     return try Manifest.parse(allocator, text);
 }
 
-/// Decrypted manifest text from the store, or null when the store has no manifest entry.
-/// A store entry that exists but does not decrypt means a wrong key or a corrupted file.
+/// Decrypted manifest text from the key directory, or null when the key has no manifest entry.
+/// An entry that does not decrypt means a corrupted store, since only the key can name its directory.
 pub fn manifestFromStore(repo: *const Repo, keys: crypto.DerivedKeys) !?[]u8 {
+    const store_abs = try keyDirAbs(repo, keys);
+    defer repo.allocator.free(store_abs);
+    return manifestFromDir(repo, store_abs, keys);
+}
+
+fn manifestFromDir(repo: *const Repo, store_abs: []const u8, keys: crypto.DerivedKeys) !?[]u8 {
     const allocator = repo.allocator;
     const cipher_rel = try filename_crypto.encryptPath(allocator, manifest_mod.manifest_name, keys.filename_key, '/');
     defer allocator.free(cipher_rel);
-    const abs = try std.fs.path.join(allocator, &.{ repo.toplevel, enc_dir, cipher_rel });
+    const abs = try std.fs.path.join(allocator, &.{ store_abs, cipher_rel });
     defer allocator.free(abs);
 
     const encrypted = std.Io.Dir.readFileAlloc(.cwd(), repo.io, abs, allocator, .limited(max_file_size)) catch |err| switch (err) {
@@ -577,6 +613,27 @@ pub fn storeExists(repo: *const Repo) bool {
     const path = std.fs.path.join(repo.allocator, &.{ repo.toplevel, enc_dir, marker_name }) catch return false;
     defer repo.allocator.free(path);
     return utils.pathExists(path, repo.io);
+}
+
+/// How many other keys have a directory in the store, which is all a key holder learns about them.
+pub fn otherKeyCount(repo: *const Repo, keys: crypto.DerivedKeys) !usize {
+    const allocator = repo.allocator;
+    const store = try repo.absolutePath(enc_dir);
+    defer allocator.free(store);
+    const our_name = keyDirName(keys);
+
+    var dir = std.Io.Dir.openDir(.cwd(), repo.io, store, .{ .iterate = true, .follow_symlinks = false }) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => return err,
+    };
+    defer dir.close(repo.io);
+
+    var n: usize = 0;
+    var it = dir.iterate();
+    while (try it.next(repo.io)) |entry| {
+        if (entry.kind == .directory and !std.mem.eql(u8, entry.name, &our_name)) n += 1;
+    }
+    return n;
 }
 
 /// Plain files in the working tree that the manifest makes private.
@@ -807,7 +864,7 @@ fn analyze(ctx: *const Context, only: []const []const u8, report: *Report) ![]Pa
         }
     }
     for (bad.items) |b| {
-        const shown = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ enc_dir, b });
+        const shown = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ &ctx.store_rel, b });
         defer allocator.free(shown);
         try report.add(allocator, .bad, shown, "cannot decrypt the name");
     }
@@ -948,10 +1005,17 @@ fn decide(ctx: *const Context, info: *PathInfo, direction: Direction, force: boo
 }
 
 /// Open the directory that holds `rel` under `root`, one component at a time and without following symbolic links, so a link planted in the tree cannot redirect a write or a delete.
-/// Missing directories are created when asked, otherwise null is returned.
+/// Missing directories are created when asked, the root included, otherwise null is returned.
 /// The caller closes the handle.
 fn openParent(io: std.Io, root: []const u8, rel: []const u8, create: bool) !?std.Io.Dir {
-    var dir = try std.Io.Dir.openDir(.cwd(), io, root, .{});
+    var dir = std.Io.Dir.openDir(.cwd(), io, root, .{}) catch |err| switch (err) {
+        error.FileNotFound => blk: {
+            if (!create) return err;
+            try utils.ensureDirectory(root, io);
+            break :blk try std.Io.Dir.openDir(.cwd(), io, root, .{});
+        },
+        else => return err,
+    };
     errdefer dir.close(io);
 
     var it = std.mem.splitScalar(u8, rel, '/');
@@ -1236,7 +1300,7 @@ fn encryptPlain(ctx: *const Context, info: *PathInfo, stage: *std.ArrayList([]u8
 
     info.values.new = .{ .id = crypto.ciphertextId(encrypted, ctx.keys.cipher_id_key), .exec = cur.exec };
     info.values.cur = cur;
-    try stage.append(allocator, try storePath(allocator, cipher_rel));
+    try stage.append(allocator, try storePath(allocator, &ctx.store_rel, cipher_rel));
 }
 
 fn recordBaseline(ctx: *Context, info: *const PathInfo) !void {
@@ -1337,11 +1401,12 @@ pub fn excludeLinesCoveredBy(repo: *const Repo, removed: []const manifest_mod.En
 
 /// Forget store entries: delete them, drop them from the index and from the state.
 /// Used by `rm`. The plain files are left alone.
-pub fn removeEntries(repo: *const Repo, entries: []const Entry) !void {
+pub fn removeEntries(repo: *const Repo, keys: crypto.DerivedKeys, entries: []const Entry) !void {
     const allocator = repo.allocator;
-    var state = try State.load(allocator, repo.state_path, repo.io);
+    var state = try State.load(allocator, repo.state_path, crypto.keyId(keys.key_id_key), repo.io);
     defer state.deinit(allocator);
-    const store_abs = try repo.absolutePath(enc_dir);
+    const key_dir = keyDirRel(keys);
+    const store_abs = try repo.absolutePath(&key_dir);
     defer allocator.free(store_abs);
 
     var staged: std.ArrayList([]u8) = .empty;
@@ -1352,18 +1417,18 @@ pub fn removeEntries(repo: *const Repo, entries: []const Entry) !void {
     for (entries) |entry| {
         try deleteThroughHandles(repo.io, store_abs, entry.cipher_rel);
         state.remove(allocator, entry.plain);
-        try staged.append(allocator, try storePath(allocator, entry.cipher_rel));
+        try staged.append(allocator, try storePath(allocator, &key_dir, entry.cipher_rel));
     }
     try repo.rmCached(staged.items);
     try repo.ensureDirs();
     try state.save(allocator, repo.state_path, repo.tmp_dir, repo.io);
 }
 
-/// Every entry in the store with its plain path.
+/// Every entry of the key with its plain path.
 /// Entries whose name does not decrypt are skipped.
 pub fn storeEntries(repo: *const Repo, keys: crypto.DerivedKeys) ![]Entry {
     const allocator = repo.allocator;
-    const store_abs = try repo.absolutePath(enc_dir);
+    const store_abs = try keyDirAbs(repo, keys);
     defer allocator.free(store_abs);
     if (!utils.pathExists(store_abs, repo.io)) return allocator.alloc(Entry, 0);
 
@@ -1559,7 +1624,7 @@ pub fn encryptSync(repo: *const Repo, keys: crypto.DerivedKeys, options: Options
             else => {},
         }
         if (info.cipher_rel != null and info.values.new != null and info.decision != .encrypt and !info.bad) {
-            try stage.append(allocator, try storePath(allocator, info.cipher_rel.?));
+            try stage.append(allocator, try storePath(allocator, &ctx.store_rel, info.cipher_rel.?));
         }
     }
 
@@ -1698,9 +1763,10 @@ test "replace without an exchange keeps the old file inspectable" {
         .keys = undefined,
         .allocator = allocator,
         .io = io,
-        .state = .{},
+        .state = .{ .key_id = @splat(0) },
         .manifest = null,
         .store_manifest = null,
+        .store_rel = undefined,
         .store_abs = &.{},
         .tracked = &.{},
         .unmerged = &.{},
@@ -1721,6 +1787,19 @@ test "replace without an exchange keeps the old file inspectable" {
     try putBack(&ctx, &atomic, dir, "note.md", old);
     try testing.expect(try fileHolds(&ctx, "tmp/aside/tree/note.md", "old"));
     try testing.expect(try fileHolds(&ctx, atomic.tmp_path, "new"));
+}
+
+test "key directory names" {
+    const testing = std.testing;
+
+    const a = keyDirRel(crypto.deriveKeys(@splat(1), null));
+    const again = keyDirRel(crypto.deriveKeys(@splat(1), null));
+    const b = keyDirRel(crypto.deriveKeys(@splat(2), null));
+
+    try testing.expectEqualStrings(&a, &again);
+    try testing.expect(!std.mem.eql(u8, &a, &b));
+    try testing.expect(std.mem.startsWith(u8, &a, enc_dir ++ "/"));
+    for (a[enc_dir.len + 1 ..]) |c| try testing.expect(std.ascii.isHex(c) and !std.ascii.isUpper(c));
 }
 
 test "decrypt direction decisions" {
@@ -1788,7 +1867,8 @@ test "state round trip" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var state = State{};
+    const key_id: [crypto.mac_length]u8 = @splat(5);
+    var state = State{ .key_id = key_id };
     defer state.deinit(allocator);
     try state.put(allocator, "docs/internal.md", .{ .plain = @splat(0xab), .exec = true, .id = @splat(0xcd) });
     try state.put(allocator, "AGENT.md", .{ .plain = @splat(1), .exec = false, .id = @splat(2) });
@@ -1797,7 +1877,7 @@ test "state round trip" {
     const text = try state.render(allocator);
     defer allocator.free(text);
 
-    var loaded = try State.parse(allocator, text);
+    var loaded = try State.parse(allocator, text, key_id);
     defer loaded.deinit(allocator);
     try testing.expectEqual(@as(usize, 2), loaded.map.count());
     const doc = loaded.get("docs/internal.md").?;
@@ -1809,8 +1889,12 @@ test "state round trip" {
     loaded.remove(allocator, "AGENT.md");
     try testing.expect(loaded.get("AGENT.md") == null);
 
-    try testing.expectError(Error.InvalidState, State.parse(allocator, "{\"version\": 2, \"entries\": []}"));
-    try testing.expectError(Error.InvalidState, State.parse(allocator, "not json"));
+    var other = try State.parse(allocator, text, @splat(6));
+    defer other.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), other.map.count());
+
+    try testing.expectError(Error.InvalidState, State.parse(allocator, "{\"version\": 2, \"entries\": []}", key_id));
+    try testing.expectError(Error.InvalidState, State.parse(allocator, "not json", key_id));
 }
 
 test "destination validation" {

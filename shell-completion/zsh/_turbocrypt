@@ -121,7 +121,7 @@ case $subcmd in
     case ${words[3]} in
       init|unlock)
         if [[ ${words[CURRENT-1]} == --key ]]; then _files; return 0; fi
-        if [[ ${words[3]} == init ]]; then compadd -- --key --password; else compadd -- --key --password --force; fi
+        compadd -- --key --password --force
         return 0 ;;
       export-key) compadd -- --password; _files; return 0 ;;
       encrypt|decrypt) compadd -- --force; _files; return 0 ;;
