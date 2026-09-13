@@ -61,8 +61,8 @@ Read [Getting started](docs/getting-started.md) for the full tutorial or the
 - [Usage guide](docs/usage.md): password-protected keys, contexts, filenames,
   exclusions, verification, and other common workflows
 
-- [Private files in Git](docs/git.md): encrypted files in public repositories,
-  setup, collaboration, and conflict handling
+- [Private files in Git](docs/git.md): keep notes, scripts, and unfinished
+  work in the same repository as public code, with shared or separate keys
 
 - [Command reference](docs/command-reference.md): commands and processing
   options at a glance

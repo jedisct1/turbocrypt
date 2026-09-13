@@ -119,22 +119,28 @@ turbocrypt config set-encrypted-filenames true
 
 ## Git
 
+See [Private files in Git](git.md) for a walkthrough from adding maintainer
+files to restoring them in another clone.
+
 ```bash
 # Set up this repository with the selected key
 turbocrypt git init
 
 # Set up a clone with a key already represented in .enc/
-turbocrypt git unlock --key team.key
+turbocrypt git unlock --key ~/.config/turbocrypt/team.key
 
 # Join with a key that has no files in the repository yet
-turbocrypt git init --key my.key
+turbocrypt git init --key ~/.config/turbocrypt/my.key
 
-# Write a password-protected copy of the repository key
-turbocrypt git export-key --password team.key
+# Write a password-protected copy of the repository key outside the checkout
+turbocrypt git export-key --password ~/.config/turbocrypt/team.key
 
-# Make paths private or public again
-turbocrypt git add INTERNAL-DOC.md ops/
-turbocrypt git rm INTERNAL-DOC.md
+# Encrypt and stage private files or directory trees
+turbocrypt git add NOTES.md ops/
+
+# Stop managing a path privately; its readable copy stays on disk
+turbocrypt git rm NOTES.md
+git add NOTES.md  # explicitly stage the readable file for a public commit
 
 # Compare the working files with the encrypted store
 turbocrypt git status

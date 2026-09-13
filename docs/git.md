@@ -2,143 +2,356 @@
 
 [Back to the main README](../README.md)
 
-A public repository shows every tracked file to everyone.
+Maintainer notes, deployment scripts, and unfinished experiments belong with
+the project, even when they aren't ready to publish.
 
-Sometimes a few files should stay readable by the maintainers only, such as an
-`INTERNAL-DOC.md` with internal instructions or deployment notes in `docs/`.
-TurboCrypt can keep those files encrypted in the repository while you edit them
-in clear.
+Leaving them untracked means they stay behind when you clone the repository on another machine.
+Adding them to `.git/info/exclude` quiets `git status`, but doesn't give them
+a history or a backup.
 
-The encrypted copies live in a committed `.enc/` directory. Their names and
-their contents look random.
+TurboCrypt lets you commit encrypted copies of those files alongside the
+public code. Their contents, names, and the list of private paths are
+encrypted.
 
-Git hooks refresh `.enc/` before every commit and refresh the plain files after
-a checkout, a merge or a rebase. The plain files are kept out of commits by a
-local exclude rule.
+Anyone with the key can restore them in a fresh clone through the same remote and history as the rest of the project.
 
-The list of private files is encrypted too.
+The readable files stay at their original paths. Notes open in an editor,
+scripts run as usual, and private source files can sit next to public ones.
 
-## Set up a repository
+There's no filesystem to mount or separate private directory to work in.
 
-Set it up once, in the repository. The key comes from `--key`, then
-`TURBOCRYPT_KEY_FILE`, then the default key in your config, exactly like
-`turbocrypt encrypt`. Nothing generates a key for you:
+## Add your first private files
+
+Start from an existing checkout with an untracked `NOTES.md` and an `ops/`
+directory containing your deployment scripts.
+
+First, generate a key outside the repository and save it as your default:
 
 ```bash
-turbocrypt keygen secret.key         # once, when you have no key yet
-turbocrypt config set-key secret.key
-turbocrypt git init                  # binds the key, creates .enc/, .gitprivate and the hooks
-turbocrypt git add INTERNAL-DOC.md   # one file
-turbocrypt git add docs/internal.md
-turbocrypt git add ops/              # a whole directory, including future files
-git commit -m "Add private notes"    # the hook encrypts and stages .enc/
+mkdir -p ~/.config/turbocrypt
+turbocrypt keygen --password ~/.config/turbocrypt/secret.key
+turbocrypt config set-key ~/.config/turbocrypt/secret.key
+```
+
+If you already have a key, use it instead. Keep a backup somewhere separate;
+losing the key means losing access to the encrypted files.
+
+Then set up the checkout and select the paths that should stay private:
+
+```bash
+turbocrypt git init                  # use the default key and install hooks
+turbocrypt git add NOTES.md ops/     # encrypt and stage a file and a directory
+git commit -m "Add maintainer files"
 git push
 ```
 
-The hooks run without a terminal, so `init` copies the key to
-`.git/turbocrypt/key` in clear. The file has mode 0600 and its directory has
-mode 0700.
+`init` asks for the key's password once and keeps an unlocked copy in
+`.git/turbocrypt/key`, so the hooks can run without prompting.
 
-A password-protected key is asked for once, at that moment. From then on the
-repository uses that copy.
+The original key file stays password-protected. See [The checkout's key](#the-checkouts-key)
+for how that copy is used.
 
-A new default key or a new `TURBOCRYPT_KEY_FILE` does not change it, and the
-daily commands refuse `--key`.
+After the push, `NOTES.md` and `ops/deploy.sh` are still on disk. Git tracks
+their encrypted copies under `.enc/`, with encrypted file and directory
+names.
 
-## Share access with maintainers
+TurboCrypt also creates a local `.gitprivate` file listing the paths you selected, and stores an encrypted copy of that list in `.enc/`.
 
-Share the key with the other maintainers, outside of Git. When the key came
-from a file, a copy of that file does the same job:
+Local rules in `.git/info/exclude` keep the readable files and `.gitprivate`
+out of ordinary `git add` operations. Their names don't have to appear in a
+public `.gitignore` file.
+
+The commit hook also refuses private paths that are tracked in clear.
+
+## Work with private files
+
+Edit the files where they are. The hooks update and stage their encrypted
+copies before ordinary commits, and refresh the readable files after
+checkouts, merges, and rebases.
+
+When only private files have changed, explicitly update the store before
+committing:
 
 ```bash
-turbocrypt git export-key --password team.key
+turbocrypt git status               # see which private files changed
+turbocrypt git encrypt              # update and stage their encrypted copies
+git commit -m "Update maintainer files"
+git push
 ```
 
-On another clone:
+Git can decide there's "nothing to commit" before the pre-commit hook stages
+anything. Running `turbocrypt git encrypt` first also handles new private
+files with `git commit -a`.
+
+For partial commits such as `git commit <path>`, the hook leaves pending private changes out and reports them.
+
+### Choose files and directories
+
+Privacy applies to individual paths. You can keep a private `AGENTS.md` at
+the repository root or add a single document inside an otherwise public
+directory:
 
 ```bash
-git clone git@github.com:acme/my-project
+turbocrypt git add AGENTS.md docs/internal.md
+```
+
+A directory rule such as `ops/` covers its subdirectories and future files,
+so new helpers are picked up at the next sync.
+
+Existing Git ignore rules still apply: an ignored build log inside `ops/` isn't encrypted or backed up.
+`turbocrypt git status` reports those files as `ignored`.
+
+The selection lives in `.gitprivate`, which you can also edit directly:
+
+```text
+/NOTES.md
+/ops/
+/AGENTS.md
+/docs/internal.md
+```
+
+Paths are relative to the repository root, one per line. A trailing `/`
+selects a directory tree. Wildcards and negation aren't supported.
+
+Keep Git's control files, including `.gitignore`, `.gitattributes`, and `.gitmodules`,
+public; they can't be made private.
+
+If Git already tracks a file in clear, remove it from the index before
+adding it to private management:
+
+```bash
+git rm --cached -- docs/internal.md # leave the readable copy on disk
+turbocrypt git add docs/internal.md
+git commit -m "Keep internal notes private from now on"
+```
+
+Earlier commits still contain the readable file. This changes future commits
+and doesn't erase anything already published.
+
+### Find a file's history
+
+```bash
+turbocrypt git show NOTES.md
+```
+
+This prints the file's path under `.enc/`, whether Git tracks that entry,
+and the last commit that changed it. It ends with a `git log` command you can
+paste.
+
+Use that command's quoting: encrypted names can contain characters
+that the shell or Git would otherwise interpret.
+
+A removed entry can still be found while Git retains its history.
+
+## Restore files in another clone
+
+Clone normally, and copy your key to the other machine separately. With the
+key saved at the path used above, run:
+
+```bash
+git clone git@github.com:acme/my-project.git
 cd my-project
-turbocrypt git unlock --key team.key # binds the key, installs the hooks and decrypts .enc/
+turbocrypt git unlock --key ~/.config/turbocrypt/secret.key
 ```
 
-`unlock` picks the key like `init` does. A maintainer whose default key is the
-team key runs `turbocrypt git unlock` alone.
+`unlock` binds the key to this checkout, installs the hooks, and restores
+`NOTES.md`, `ops/`, and the other private files at their original paths.
 
-A key that has no files in the store is refused, and the message says where it
-came from.
+If this machine already has the right default key configured, just run
+`turbocrypt git unlock`.
 
-Several keys can share one repository. Each key keeps its files in a directory
-of its own under `.enc/`, and a key holder sees only those. A maintainer whose
-key is new to the repository joins with `init` instead of `unlock`:
+Someone cloning without the key gets the public project and the encrypted
+store. The private files don't appear at their readable paths.
+
+They can work on the public code without installing TurboCrypt, as long as that code
+doesn't depend on private files.
+
+## Share access or keep separate maintainer files
+
+To work on the same private files, share the key outside of Git. You can
+copy the original key file or export a password-protected copy of the key
+bound to this checkout:
 
 ```bash
-turbocrypt git init --key my.key     # joins the repository with a key of its own
+turbocrypt git export-key --password ~/.config/turbocrypt/team.key
 ```
 
-The files of the other keys stay encrypted and are never touched.
+The other maintainer saves it outside their checkout and runs
+`turbocrypt git unlock --key <key-file>`.
 
-Keys do not see each other's file lists, so a path that is private for one key
-is an ordinary file for the others.
+Everyone with that key can decrypt
+the files protected by it, including their earlier versions in Git history.
 
-## Daily use and recovery
+Maintainers can also keep their own notes and scripts with separate keys.
+Each key gets its own directory under `.enc/` and its own encrypted path
+list.
 
-From then on, daily work is plain Git. Edit a private file and commit. Pull and
-switch branches. The hooks keep both sides in sync. A few things are worth
-knowing:
+TurboCrypt syncs the files belonging to the checkout's key and leaves the other stores encrypted and untouched.
 
-- `git commit -a` decides "nothing to commit" before the hook runs. When only
-  private files changed, run `turbocrypt git encrypt` first, or run
-  `git commit` again. `turbocrypt git status` shows what is pending.
+From a fresh clone, generate your own key outside the repository and create
+the notes and scripts you want to keep. A key that's new to the repository
+starts with `init`:
 
-- A new file inside a private directory is encrypted at the next commit. Run
-  `turbocrypt git encrypt` when you use `git commit -a`, because it cannot
-  stage a new store entry on its own.
+```bash
+turbocrypt keygen --password ~/.config/turbocrypt/my.key
+turbocrypt git init --key ~/.config/turbocrypt/my.key
+turbocrypt git add NOTES.md ops/
+git commit -m "Add personal maintainer files"
+git push
+```
 
-- `turbocrypt git rm docs/internal.md` makes a file public again. The plain
-  file stays on disk as an ordinary untracked file.
+On later clones, use `unlock` with that key to get the files back. `unlock`
+refuses a key with no store of its own, since that could mean the wrong key
+was selected.
 
-- `turbocrypt git show docs/internal.md` prints the path of its entry under
-  `.enc/`. It also tells whether git tracks the entry and which commit
-  changed it last. The last line is a `git log` command ready to paste.
-  Encrypted names contain characters that a shell and git would otherwise
-  interpret. A removed entry keeps its store path as long as git has its
-  history.
+Each checkout uses one key. Separate keys don't share their path lists, so
+a path marked private by one maintainer isn't automatically private for
+another.
 
-- A private file that you edited is never overwritten by a pull. You get a
-  `conflict` line instead. `turbocrypt git decrypt --force <path>` takes the
-  upstream version, `turbocrypt git encrypt --force <path>` keeps yours.
+Agree separately on any paths that everyone should keep out of public commits.
 
-- `git clean -x` deletes the plain files, including edits made since the last
-  commit. `turbocrypt git decrypt` brings back the committed version.
+## Develop a feature before publishing it
 
-- `git stash --all` writes the plain files into local Git objects. Avoid it in
-  a repository with private files.
+A branch can carry private source files and documentation for an unfinished
+feature. Select those paths with `turbocrypt git add`, then commit and push
+as usual.
 
-- Do not keep a private file on one branch and a tracked public file at the
-  same path on another. Switching to the branch that tracks it overwrites the
-  plain file, and no hook can bring an edit back.
+Teammates with the key can work on the feature while it depends on an unreleased API or is still an experiment.
 
-- The `.gitprivate` list accepts one path per line, `/path/to/file` for a file
-  and `/path/to/dir/` for a directory. No wildcards, no negation.
+When a file is ready to publish, take it out of private management and add
+the readable copy to Git:
+
+```bash
+turbocrypt git rm NOTES.md          # keep the readable file on disk
+git add NOTES.md                    # explicitly stage it for publication
+git commit -m "Publish maintainer notes"
+git push
+```
+
+`turbocrypt git rm` stages removal of the encrypted entry and updates the
+private path list. The file stays on disk as an ordinary untracked file
+until you add it. Earlier encrypted versions remain in Git history.
+
+A file covered by a directory rule stays private until you remove that rule
+or move the file outside the directory.
+
+For example, `turbocrypt git rm ops/`
+stops managing the directory's files privately, while
+`turbocrypt git rm ops/deploy.sh` alone can't override the `ops/` rule.
+
+Avoid keeping a private file on one branch and a tracked public file at the
+same path on another. Switching to the branch that tracks it can overwrite
+the readable file before a hook runs, losing private edits.
+
+Take particular care when returning to an older private branch after publishing its files.
+
+## Conflicts and recovery
+
+When both a private file and its encrypted copy have changed, TurboCrypt
+reports a `conflict` and keeps the local edits. Choose which version to use:
+
+```bash
+turbocrypt git decrypt --force NOTES.md  # replace local edits with the store version
+```
+
+Or keep your working copy, editing it first if needed:
+
+```bash
+turbocrypt git encrypt --force NOTES.md  # replace and stage the encrypted version
+git commit -m "Resolve private notes conflict"
+```
+
+Git can't merge encrypted contents itself. If it leaves an entry under
+`.enc/` unmerged, follow the
+[merge conflict steps](troubleshooting.md#a-merge-conflict-on-a-private-file).
+
+Commands that include ignored files also include the readable private files:
+
+- `git clean -xfd` deletes them, including edits that haven't been encrypted.
+  `turbocrypt git decrypt` restores files from the current `.enc/` store, but
+  can't recover edits that never reached it.
+
+- `git stash --all` writes readable private files into local Git objects.
+  Avoid it in a checkout with private files.
+
+See [Troubleshooting](troubleshooting.md#git-integration) for damaged entries,
+key errors, and other recovery steps.
+
+## The checkout's key
+
+On initial setup, `init` and `unlock` choose the key from `--key`, then
+`TURBOCRYPT_KEY_FILE`, then your saved default. Neither command generates a
+key.
+
+Once bound, the checkout keeps using `.git/turbocrypt/key`; changing the default or environment variable doesn't change that binding. Daily Git
+commands don't accept `--key`.
+
+The local copy is unencrypted so hooks can use it without a password prompt.
+On Unix, its file has mode 0600 and its directory has mode 0700.
+
+The password protects the original key file, but anyone who can read the unlocked checkout
+can read its private files, and access to the local key lets them decrypt
+its store.
+
+Replacing the bound key requires an explicit `--key` and `--force`. That
+doesn't rotate the encryption key of existing history. See
+[key replacement](troubleshooting.md#this-repository-already-has-a-different-key)
+before changing an existing checkout's binding.
+
+## How this compares to git-crypt
+
+[git-crypt](https://github.com/AGWA/git-crypt#using-git-crypt) uses Git filters
+to encrypt contents at their original tracked paths, selected through
+committed `.gitattributes` rules. Those rules must be in place before a
+sensitive file is added.
+
+TurboCrypt tracks separate encrypted copies under
+`.enc/`, excludes the readable paths locally, and checks for private files
+tracked in clear before allowing a commit.
+
+git-crypt leaves names visible and uses deterministic encryption, which
+reveals identical file contents, as its
+[security and limitations sections](https://github.com/AGWA/git-crypt#security)
+describe.
+
+TurboCrypt encrypts names and the private path list, and uses a
+fresh random nonce whenever it encrypts contents. Unchanged files keep their
+existing encrypted copies.
+
+Contents are also authenticated with their
+relative path, so moving or swapping encrypted entries is detected. The
+[cryptography guide](cryptography.md) explains these constructions.
 
 ## Metadata and limitations
 
-The public can see how many keys there are, how many private files each one
-has, the shape of the directory tree, the size of each file, which ones are
-executable, and when they change.
+Encryption doesn't hide the repository's activity. Branch names, commit
+messages, authors, and timestamps stay public, so choose them with that in
+mind when pushing unfinished work.
 
-Two files with the same name in different directories get the same encrypted
-name.
+The encrypted store also reveals how many keys and files there are, the
+directory structure, file sizes, executable bits, and when entries change.
 
-An entry cannot be moved or swapped without detection, but a whole commit can
-be reverted to an older one, which is why signed commits still matter.
+Under the same key, equal file or directory names have equal encrypted
+names, even in different directories. Encoded names reveal their padded
+lengths; see [filename encryption](cryptography.md#filename-encryption).
 
-Linked worktrees are not supported. On Windows, the hooks run through the `sh`
-that comes with Git for Windows.
+Path authentication detects moved or swapped entries. It doesn't establish
+that a commit is the latest one or prevent replay of older valid data, so
+verify Git history and use signed commits where that matters.
 
-The hooks are a convenience: `git commit --no-verify` skips them, and
-`git add -f` can stage a plain file on purpose.
+Git mode handles regular files up to 256 MiB each. Symbolic links aren't
+supported, and long filename components can exceed the filesystem limit
+after encryption.
 
-See [Troubleshooting](troubleshooting.md#git-integration) for common Git
-integration errors and recovery steps.
+Linked worktrees aren't supported. On Windows, hooks use the `sh` supplied
+by Git for Windows.
+
+Existing hooks are left in place. If you use a hook manager or have set
+`core.hooksPath`, follow the calls printed by `init` or `unlock` to connect
+TurboCrypt to it.
+
+If the binary moves, rerun `turbocrypt git init` to refresh its location in the installed hooks.
+
+The hooks and exclude rules help prevent mistakes, but `git add -f` can
+deliberately stage readable files and `git commit --no-verify` skips the
+commit hook's checks.

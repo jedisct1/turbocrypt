@@ -43,8 +43,15 @@ Reduce the per-file buffer, for example with `--buffer-size 1048576`.
 Git decides whether there is something to commit before it runs the pre-commit
 hook, and the hook is what stages the encrypted file.
 
-Run `git commit` again. With `git commit -a`, run `turbocrypt git encrypt`
-first.
+Update and stage the encrypted copies, then commit:
+
+```bash
+turbocrypt git encrypt
+git commit -m "Update private files"
+```
+
+This also works with `git commit -a`, including when you've added new files
+inside a private directory.
 
 ### "commit refused, private files are tracked by git"
 
