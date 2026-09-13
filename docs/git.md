@@ -284,6 +284,7 @@ On initial setup, `init` and `unlock` choose the key from `--key`, then
 
 ## Limitations
 
-Encryption doesn't hide the repository's activity. Branch names, commit
-messages, authors, and timestamps stay public, so choose them with that in
+Encryption doesn't hide the repository's activity.
+
+Branch names, commit messages, authors, and timestamps stay public, so choose them with that in
 mind when pushing unfinished work.
