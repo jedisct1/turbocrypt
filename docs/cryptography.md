@@ -2,9 +2,8 @@
 
 [Back to the main README](../README.md)
 
-TurboCrypt uses a random 128-bit master key. It derives a separate key for
-each purpose, encrypts every file independently, and optionally encrypts each
-filename component.
+TurboCrypt uses a random 128-bit master key.
+It derives a separate key for each purpose, encrypts every file independently, and optionally encrypts each filename component.
 
 | Purpose                                | Construction                                     |
 | -------------------------------------- | ------------------------------------------------ |
@@ -16,9 +15,9 @@ filename component.
 
 ## Keys and contexts
 
-`keygen` obtains 16 random bytes from the operating system. This master key is
-expanded into six 16-byte keys with TurboSHAKE128. Using `||` for
-concatenation, the input is:
+`keygen` obtains 16 random bytes from the operating system.
+This master key is expanded into six 16-byte keys with TurboSHAKE128.
+Using `||` for concatenation, the input is:
 
 ```text
 master_key || "turbocrypt" || ("-" || context, when context is non-empty)
@@ -31,10 +30,10 @@ header MAC key || file encryption key || filename key ||
 plaintext fingerprint key || ciphertext identity key || key identity key
 ```
 
-An absent context and an empty context are equivalent. Any other context
-produces a different set of derived keys, so the same master key and the exact
-same context are required for decryption. A context is domain separation, not
-a password-strengthening function or an additional authentication factor.
+An absent context and an empty context are equivalent.
+Any other context produces a different set of derived keys, so the same master key and the exact same context are required for decryption.
+
+A context is domain separation, not a password-strengthening function or an additional authentication factor.
 
 ## File contents
 
@@ -56,85 +55,73 @@ The header MAC is:
 AEGISMAC-128X2(header_mac_key, zero_nonce, "TC01" || file_nonce)
 ```
 
-The MAC uses its all-zero 16-byte nonce. `TC01` separates version 1 of this
-format from other uses of the MAC. The header MAC lets TurboCrypt reject a
-wrong key or context without processing the whole file. It does not
-authenticate the ciphertext body: `verify --quick` checks only this MAC,
-whereas normal decryption and `verify` check the AEGIS tag over the complete
-ciphertext.
+The MAC uses its all-zero 16-byte nonce.
+`TC01` separates version 1 of this format from other uses of the MAC.
 
-Ordinary `encrypt` and `decrypt` operations use empty associated data, so an
-encrypted file can be moved or renamed. The Git integration instead supplies
-the plaintext-relative path as AEGIS associated data. This binds a Git store
-entry to its path and detects moved or swapped ciphertexts.
+The header MAC lets TurboCrypt reject a wrong key or context without processing the whole file.
+It does not authenticate the ciphertext body: `verify --quick` checks only this MAC, whereas normal decryption and `verify` check the AEGIS tag over the complete ciphertext.
 
-Because encryption uses a fresh nonce, encrypting the same contents twice
-normally produces different files. Authentication is whole-file rather than
-chunked: changing the ciphertext or tag makes the entire file fail
-authentication.
+Ordinary `encrypt` and `decrypt` operations use empty associated data, so an encrypted file can be moved or renamed.
+
+The Git integration instead supplies the plaintext-relative path as AEGIS associated data.
+This binds a Git store entry to its path and detects moved or swapped ciphertexts.
+
+Because encryption uses a fresh nonce, encrypting the same contents twice normally produces different files.
+Authentication is whole-file rather than chunked: changing the ciphertext or tag makes the entire file fail authentication.
 
 ## Filename encryption
 
-With `--encrypted-filenames`, TurboCrypt handles each path component
-separately. It pads names shorter than 16 bytes with zero bytes, applies HCTR2
-with AES-128 and an empty tweak, and base84-encodes the result.
+With `--encrypted-filenames`, TurboCrypt handles each path component separately.
+It pads names shorter than 16 bytes with zero bytes, applies HCTR2 with AES-128 and an empty tweak, and base84-encodes the result.
 
 Base84 makes the ciphertext usable as a filename on Linux, macOS, and Windows.
 
 HCTR2 is length-preserving and deterministic for a fixed key and tweak.
-Consequently, equal names under the same key and context have equal encrypted
-names, including when they occur in different directories. The encoded name
-also reveals the padded name length: names up to 16 bytes are indistinguishable
-by length, while longer lengths remain visible. Directory structure, entry
-counts, and file sizes are not hidden.
+Consequently, equal names under the same key and context have equal encrypted names, including when they occur in different directories.
 
-Filename ciphertexts have no separate authentication tag. Decryption checks
-that the base84 representation and zero padding are canonical and that the
-result is a safe path component.
+The encoded name also reveals the padded name length: names up to 16 bytes are indistinguishable by length, while longer lengths remain visible.
+Directory structure, entry counts, and file sizes are not hidden.
 
-In the Git integration, the path binding on the file contents
-provides authentication against moving or swapping store entries.
+Filename ciphertexts have no separate authentication tag.
+Decryption checks that the base84 representation and zero padding are canonical and that the result is a safe path component.
+
+In the Git integration, the path binding on the file contents provides authentication against moving or swapping store entries.
 
 ## Password-protected key files
 
-A plain key file contains the raw 16-byte master key. Password protection does
-not change that key or re-encrypt any data. It changes the key-file encoding to
-21 bytes.
+A plain key file contains the raw 16-byte master key.
+Password protection does not change that key or re-encrypt any data.
+It changes the key-file encoding to 21 bytes.
 
-TurboCrypt derives 20 bytes `D` with Argon2id using the password, the fixed
-salt `"turbocrypt"`, two passes, 64 MiB of memory, and one lane. It then stores:
+TurboCrypt derives 20 bytes `D` with Argon2id using the password, the fixed salt `"turbocrypt"`, two passes, 64 MiB of memory, and one lane.
+It then stores:
 
 ```text
 0x01 || (master_key XOR D[0..16]) || D[16..20]
 ```
 
-The final four bytes are a password verifier. They allow TurboCrypt to reject
-a wrong password before using the recovered master key.
+The final four bytes are a password verifier.
+They allow TurboCrypt to reject a wrong password before using the recovered master key.
 
-The fixed salt means that the password-derived value and verifier are the same
-whenever the same password is reused. Anyone who obtains a protected key file
-can test password guesses offline. Argon2id makes each guess more expensive,
-but protection still depends on the strength of the password. Use a long,
-unique password and protect backups of the key file.
+The fixed salt means that the password-derived value and verifier are the same whenever the same password is reused.
+Anyone who obtains a protected key file can test password guesses offline.
+
+Argon2id makes each guess more expensive, but protection still depends on the strength of the password.
+Use a long, unique password and protect backups of the key file.
 
 ## Git metadata
 
-The Git integration uses AEGISMAC-128X2, with its all-zero nonce, under three
-additional derived keys:
+The Git integration uses AEGISMAC-128X2, with its all-zero nonce, under three additional derived keys:
 
-- The key identity is the MAC of the string `"key id"`. It names the key's
-  public directory under `.enc/` without publishing the master key.
+- The key identity is the MAC of the string `"key id"`.
+  It names the key's public directory under `.enc/` without publishing the master key.
 
-- A keyed fingerprint of each plaintext lets the local sync state detect
-  changes without storing an unkeyed hash that could confirm guesses about
-  the file.
+- A keyed fingerprint of each plaintext lets the local sync state detect changes without storing an unkeyed hash that could confirm guesses about the file.
 
-- A keyed identity of the complete encrypted file detects any ciphertext
-  change when comparing the store with the local sync state.
+- A keyed identity of the complete encrypted file detects any ciphertext change when comparing the store with the local sync state.
 
-These values are each 16 bytes. They support synchronization; they do not hide
-the Git metadata described in [Private files in Git](git.md#metadata-and-limitations),
-and they do not prevent rollback of a complete repository state.
+These values are each 16 bytes.
+They support synchronization; they do not hide the Git metadata described in [Private files in Git](git.md#metadata-and-limitations), and they do not prevent rollback of a complete repository state.
 
 ## Specifications
 

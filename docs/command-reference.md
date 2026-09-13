@@ -2,8 +2,8 @@
 
 [Back to the main README](../README.md)
 
-These examples cover the current command set. For the exact usage accepted by
-the installed version, run `turbocrypt --help` or `turbocrypt git help`.
+These examples cover the current command set.
+For the exact usage accepted by the installed version, run `turbocrypt --help` or `turbocrypt git help`.
 
 ## Key management
 
@@ -119,8 +119,7 @@ turbocrypt config set-encrypted-filenames true
 
 ## Git
 
-See [Private files in Git](git.md) for a walkthrough from adding maintainer
-files to restoring them in another clone.
+See [Private files in Git](git.md) for a walkthrough from adding maintainer files to restoring them in another clone.
 
 ```bash
 # Set up this repository with the selected key

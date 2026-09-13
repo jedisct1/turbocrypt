@@ -4,13 +4,11 @@
 
 ## Installation
 
-Linux, macOS and Windows binaries are available from the
-[releases page](https://github.com/jedisct1/turbocrypt/releases), so the
-quickest installation is to download the archive for your system.
+Linux, macOS and Windows binaries are available from the [releases page](https://github.com/jedisct1/turbocrypt/releases), so the quickest installation is to download the archive for your system.
 
-For the best performance, build locally instead. Zig can then optimize the
-binary for the machine it will run on. You will need the master version of
-[Zig](https://ziglang.org/download/):
+For the best performance, build locally instead.
+Zig can then optimize the binary for the machine it will run on.
+You will need the master version of [Zig](https://ziglang.org/download/):
 
 ```bash
 git clone https://github.com/jedisct1/turbocrypt.git
@@ -32,27 +30,24 @@ turbocrypt keygen secret.key
 
 The file contains a random 128-bit key.
 
-Keep a backup somewhere separate, because losing it also means losing access
-to the encrypted files. Anyone who gets a copy of it can decrypt them.
+Keep a backup somewhere separate, because losing it also means losing access to the encrypted files.
+Anyone who gets a copy of it can decrypt them.
 
 ### Step 2: Set the default key
 
-Next, copy the key into the configuration so that you do not need to pass
-`--key` to every command:
+Next, copy the key into the configuration so that you do not need to pass `--key` to every command:
 
 ```bash
 turbocrypt config set-key secret.key
 ```
 
-From this point on, TurboCrypt will use the stored copy unless a command
-selects another key explicitly.
+From this point on, TurboCrypt will use the stored copy unless a command selects another key explicitly.
 
 Moving or deleting `secret.key` does not change that copy.
 
 ### Step 3: Encrypt files
 
-Once the key is configured, the same command works on a file or a whole
-directory:
+Once the key is configured, the same command works on a file or a whole directory:
 
 ```bash
 # A single file
@@ -64,8 +59,7 @@ turbocrypt encrypt my-documents/ encrypted-documents/
 
 ### Step 4: Verify the result
 
-Before deleting the original, authenticate the encrypted copy from beginning
-to end:
+Before deleting the original, authenticate the encrypted copy from beginning to end:
 
 ```bash
 turbocrypt verify encrypted-documents/
