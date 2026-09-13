@@ -235,11 +235,27 @@ pub fn writeStoreFiles(repo: *const Repo) !void {
 
     const attributes = try std.fs.path.join(allocator, &.{ store, sync.attributes_name });
     defer allocator.free(attributes);
+    // Refresh the generated attributes on init so Git cannot transform ciphertext.
     try std.Io.Dir.writeFile(.cwd(), repo.io, .{ .sub_path = attributes, .data = sync.attributes_text });
 
     const rel_marker = sync.enc_dir ++ "/" ++ sync.marker_name;
     const rel_attributes = sync.enc_dir ++ "/" ++ sync.attributes_name;
     try repo.addForce(&.{ rel_marker, rel_attributes });
+
+    const rel_readme = sync.enc_dir ++ "/" ++ sync.readme_name;
+    const readme = try repo.absolutePath(rel_readme);
+    defer allocator.free(readme);
+    std.Io.Dir.writeFile(.cwd(), repo.io, .{
+        .sub_path = readme,
+        .data = sync.readme_text,
+        .flags = .{ .exclusive = true },
+    }) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    const tracked = try repo.lsFilesZ(&.{ "--", rel_readme });
+    defer utils.freeList(allocator, tracked);
+    if (tracked.len == 0) try repo.addForce(&.{rel_readme});
 }
 
 /// The exclude block, the manifest and the store files of a new repository.
@@ -347,6 +363,7 @@ fn setUp(repo: *const Repo, flags: Flags, command: Command) !void {
         if (selected.source != null) std.debug.print("Key: {s}\n", .{key_line});
         try installIntegration(repo);
         try decryptAll(repo, keys, flags.force);
+        if (command == .init) try writeStoreFiles(repo);
         const outcome: []const u8 = if (selected.source == null) "Refreshed" else "Unlocked";
         std.debug.print("{s}. Hooks are installed and private files are in place.\n", .{outcome});
         return;

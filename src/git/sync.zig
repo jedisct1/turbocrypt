@@ -14,7 +14,13 @@ pub const enc_dir = ".enc";
 pub const marker_name = ".turbocrypt";
 pub const marker_text = "turbocrypt-git 1\n";
 pub const attributes_name = ".gitattributes";
-pub const attributes_text = "* binary -filter -ident -working-tree-encoding -export-subst\n";
+pub const attributes_text =
+    \\* binary -filter -ident -working-tree-encoding -export-subst
+    \\/README.txt text diff merge
+    \\
+;
+pub const readme_name = "README.txt";
+pub const readme_text = @embedFile("store-readme.txt");
 
 /// Private files are documents, so they are processed whole.
 /// This bound keeps memory use in check.

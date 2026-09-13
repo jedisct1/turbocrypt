@@ -55,6 +55,11 @@ quiet turbocrypt config set-key "$work/secret.key" || fail "set-key"
 quiet turbocrypt git init || fail "init"
 expect_file .enc/.turbocrypt
 expect_file .enc/.gitattributes
+expect_file .enc/README.txt
+grep -Fq 'turbocrypt git unlock' .enc/README.txt || fail "store README is missing the unlock command"
+git ls-files --error-unmatch .enc/README.txt >/dev/null 2>&1 || fail "store README is not staged"
+expect_eq "$(git check-attr text -- .enc/README.txt)" ".enc/README.txt: text: set"
+expect_eq "$(git check-attr text -- .enc/nested/README.txt)" ".enc/nested/README.txt: text: unset"
 expect_file .gitprivate
 expect_file .git/turbocrypt/key
 cmp -s .git/turbocrypt/key "$work/secret.key" || fail "the bound key is not the default key"
@@ -102,6 +107,41 @@ step "no-op encrypt leaves no diff"
 quiet turbocrypt git encrypt || fail "encrypt"
 expect_clean
 
+step "init adds the README to an existing store and preserves custom text"
+git rm -q .enc/README.txt || fail "remove store README"
+quiet turbocrypt git init || fail "init without a README"
+expect_file .enc/README.txt
+expect_clean
+echo "Project-specific maintainer instructions" > .enc/README.txt
+quiet turbocrypt git init || fail "init with a custom README"
+expect_content .enc/README.txt "Project-specific maintainer instructions"
+git diff --cached --quiet || fail "init staged a custom README edit"
+git restore .enc/README.txt || fail "restore store README"
+
+step "init stages an existing untracked README without overwriting it"
+git rm -q --cached .enc/README.txt || fail "untrack store README"
+echo "Project-specific maintainer instructions" > .enc/README.txt
+quiet turbocrypt git init || fail "init with an untracked README"
+expect_content .enc/README.txt "Project-specific maintainer instructions"
+expect_eq "$(git show :.enc/README.txt)" "Project-specific maintainer instructions"
+git restore --source=HEAD --staged --worktree .enc/README.txt || fail "restore store README"
+expect_clean
+
+step "init preserves a README symlink and leaves its target alone"
+rm .enc/README.txt || fail "remove store README"
+ln -s "$work/readme-target" .enc/README.txt || fail "create README symlink"
+quiet turbocrypt git init || fail "init with a dangling README symlink"
+[ -L .enc/README.txt ] || fail "init replaced the README symlink"
+expect_eq "$(readlink .enc/README.txt)" "$work/readme-target"
+expect_no_file "$work/readme-target"
+echo "Outside the repository" > "$work/readme-target"
+quiet turbocrypt git init || fail "init with a resolved README symlink"
+[ -L .enc/README.txt ] || fail "init replaced the README symlink"
+expect_content "$work/readme-target" "Outside the repository"
+git diff --cached --quiet || fail "init staged the README symlink"
+git restore .enc/README.txt || fail "restore store README"
+expect_clean
+
 step "show names the store entry"
 turbocrypt git show docs/internal.md > "$work/show.log" 2>&1 || fail "show"
 grep -q '^Path       : docs/internal.md (file)$' "$work/show.log" || fail "show did not name the file"
@@ -129,6 +169,7 @@ git clone -q "$A" "$B" || fail "clone"
 quiet turbocrypt git export-key "$work/team.key" || fail "export-key"
 cmp -s "$work/team.key" "$work/secret.key" || fail "export-key wrote another key"
 cd "$B" || fail "cd b"
+cmp -s .enc/README.txt "$A/.enc/README.txt" || fail "store README is not readable in a clone without a key"
 expect_no_file AGENT.md
 turbocrypt git unlock 2>&1 | grep -q 'the default key in' || fail "a wrong default key was not named"
 (export TURBOCRYPT_KEY_FILE="$work/other.key"; turbocrypt git unlock 2>&1) | grep -q 'other.key (TURBOCRYPT_KEY_FILE)' || fail "a wrong environment key was not named"
@@ -292,14 +333,14 @@ expect_content ops/hosts.txt "merged"
 
 step "swapped entries are refused"
 cd "$B" && cp -R .enc "$work/enc-good"
-files=$(find .enc -type f ! -name '.*' | head -2)
+files=$(find .enc -mindepth 2 -type f ! -name '.*' | head -2)
 f1=$(printf '%s\n' "$files" | sed -n 1p); f2=$(printf '%s\n' "$files" | sed -n 2p)
 mv "$f1" "$work/tmpswap" && mv "$f2" "$f1" && mv "$work/tmpswap" "$f2"
 turbocrypt git decrypt 2>&1 | grep -q 'bad\|corrupted' || fail "swap not reported"
 rm -rf .enc && cp -R "$work/enc-good" .enc
 
 step "a flipped byte is refused"
-entry=$(find .enc -type f ! -name '.*' | head -1)
+entry=$(find .enc -mindepth 2 -type f ! -name '.*' | head -1)
 printf '\000' | dd of="$entry" bs=1 seek=40 conv=notrunc 2>/dev/null
 turbocrypt git decrypt 2>&1 | grep -q 'bad\|corrupted' || fail "corruption not reported"
 rm -rf .enc && cp -R "$work/enc-good" .enc

@@ -142,7 +142,9 @@ test "git integration: store round trip, clone, tamper" {
         if (path.len == 0) continue;
         if (std.mem.eql(u8, path, "README.md")) continue;
         try testing.expect(std.mem.startsWith(u8, path, ".enc/"));
-        if (std.mem.eql(u8, path, ".enc/.turbocrypt") or std.mem.eql(u8, path, ".enc/.gitattributes")) continue;
+        if (std.mem.eql(u8, path, ".enc/.turbocrypt") or
+            std.mem.eql(u8, path, ".enc/.gitattributes") or
+            std.mem.eql(u8, path, ".enc/README.txt")) continue;
         try testing.expect(std.mem.indexOf(u8, path, "AGENT") == null);
         entries += 1;
     }
