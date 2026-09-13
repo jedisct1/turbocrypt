@@ -280,78 +280,10 @@ key errors, and other recovery steps.
 ## The checkout's key
 
 On initial setup, `init` and `unlock` choose the key from `--key`, then
-`TURBOCRYPT_KEY_FILE`, then your saved default. Neither command generates a
-key.
+`TURBOCRYPT_KEY_FILE`, then your saved default.
 
-Once bound, the checkout keeps using `.git/turbocrypt/key`; changing the default or environment variable doesn't change that binding. Daily Git
-commands don't accept `--key`.
-
-The local copy is unencrypted so hooks can use it without a password prompt.
-On Unix, its file has mode 0600 and its directory has mode 0700.
-
-The password protects the original key file, but anyone who can read the unlocked checkout
-can read its private files, and access to the local key lets them decrypt
-its store.
-
-Replacing the bound key requires an explicit `--key` and `--force`. That
-doesn't rotate the encryption key of existing history. See
-[key replacement](troubleshooting.md#this-repository-already-has-a-different-key)
-before changing an existing checkout's binding.
-
-## How this compares to git-crypt
-
-[git-crypt](https://github.com/AGWA/git-crypt#using-git-crypt) uses Git filters
-to encrypt contents at their original tracked paths, selected through
-committed `.gitattributes` rules. Those rules must be in place before a
-sensitive file is added.
-
-TurboCrypt tracks separate encrypted copies under
-`.enc/`, excludes the readable paths locally, and checks for private files
-tracked in clear before allowing a commit.
-
-git-crypt leaves names visible and uses deterministic encryption, which
-reveals identical file contents, as its
-[security and limitations sections](https://github.com/AGWA/git-crypt#security)
-describe.
-
-TurboCrypt encrypts names and the private path list, and uses a
-fresh random nonce whenever it encrypts contents. Unchanged files keep their
-existing encrypted copies.
-
-Contents are also authenticated with their
-relative path, so moving or swapping encrypted entries is detected. The
-[cryptography guide](cryptography.md) explains these constructions.
-
-## Metadata and limitations
+## Limitations
 
 Encryption doesn't hide the repository's activity. Branch names, commit
 messages, authors, and timestamps stay public, so choose them with that in
 mind when pushing unfinished work.
-
-The encrypted store also reveals how many keys and files there are, the
-directory structure, file sizes, executable bits, and when entries change.
-
-Under the same key, equal file or directory names have equal encrypted
-names, even in different directories. Encoded names reveal their padded
-lengths; see [filename encryption](cryptography.md#filename-encryption).
-
-Path authentication detects moved or swapped entries. It doesn't establish
-that a commit is the latest one or prevent replay of older valid data, so
-verify Git history and use signed commits where that matters.
-
-Git mode handles regular files up to 256 MiB each. Symbolic links aren't
-supported, and long filename components can exceed the filesystem limit
-after encryption.
-
-Linked worktrees aren't supported. On Windows, hooks use the `sh` supplied
-by Git for Windows.
-
-Existing hooks are left in place. If you use a hook manager or have set
-`core.hooksPath`, follow the calls printed by `init` or `unlock` to connect
-TurboCrypt to it.
-
-If the binary moves, rerun `turbocrypt git init` to refresh its location in the installed hooks.
-
-The hooks and exclude rules help prevent mistakes, but `git add -f` can
-deliberately stage readable files and `git commit --no-verify` skips the
-commit hook's checks.
