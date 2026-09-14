@@ -652,15 +652,15 @@ const testing = std.testing;
 
 test "mount options preserve filesystem assumptions and match the platform" {
     if (builtin.os.tag == .macos) {
-        try testing.expectEqual(@as(?[]const u8, null), refusedOption("noattrcache"));
-        try testing.expectEqual(@as(?[]const u8, null), refusedOption("volname=Secret"));
-        try testing.expectEqual(@as(?[]const u8, null), refusedOption("rwsize=1048576"));
+        try testing.expectEqual(null, refusedOption("noattrcache"));
+        try testing.expectEqual(null, refusedOption("volname=Secret"));
+        try testing.expectEqual(null, refusedOption("rwsize=1048576"));
     } else {
         try testing.expect(refusedOption("noattrcache") != null);
         try testing.expect(refusedOption("volname=Secret") != null);
     }
-    try testing.expectEqual(@as(?[]const u8, null), refusedOption("noatime"));
-    try testing.expectEqual(@as(?[]const u8, null), refusedOption("debug"));
+    try testing.expectEqual(null, refusedOption("noatime"));
+    try testing.expectEqual(null, refusedOption("debug"));
     try testing.expect(refusedOption("use_ino") != null);
     try testing.expect(refusedOption("hard_remove") != null);
     try testing.expect(refusedOption("writeback_cache") != null);
@@ -674,8 +674,8 @@ test "mount options preserve filesystem assumptions and match the platform" {
 }
 
 test "the memory limit floor follows the growth peak" {
-    try testing.expectEqual(@as(?usize, 3 * (1 << 30) + (1 << 20)), minimumMemoryLimit(1 << 30));
-    try testing.expectEqual(@as(?usize, null), minimumMemoryLimit(std.math.maxInt(usize)));
+    try testing.expectEqual(3 * (1 << 30) + (1 << 20), minimumMemoryLimit(1 << 30));
+    try testing.expectEqual(null, minimumMemoryLimit(std.math.maxInt(usize)));
 }
 
 test "the key check needs a readable file within its bound" {
@@ -754,7 +754,7 @@ test "mount options are parsed and checked" {
     var opts = try parseMountOptions(&.{ "--read-only", "-o", passing, "--max-file-size", "1000", "--memory-limit", "2000000", "enc", "mnt" }, allocator, io, &environ_map);
     defer opts.deinit(allocator);
     try testing.expect(opts.read_only);
-    try testing.expectEqual(@as(usize, 2), opts.fuse_options.items.len);
+    try testing.expectEqual(2, opts.fuse_options.items.len);
     try testing.expectEqualStrings("enc", opts.backing);
     try testing.expectEqualStrings("mnt", opts.mountpoint);
 

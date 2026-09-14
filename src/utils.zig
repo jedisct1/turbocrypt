@@ -283,8 +283,8 @@ test "directory walking" {
 
     try walkDirectory("tmp/walk_test", Context.callback, &ctx, allocator, false, io);
 
-    try testing.expectEqual(@as(usize, 3), ctx.files.items.len);
-    try testing.expectEqual(@as(usize, 1), ctx.dirs.items.len);
+    try testing.expectEqual(3, ctx.files.items.len);
+    try testing.expectEqual(1, ctx.dirs.items.len);
 }
 
 test "ensureDirectory creates nested directories" {
@@ -375,7 +375,7 @@ test "symlinks to files are followed" {
 
     try walkDirectory("tmp/symlink_test", Context.callback, &ctx, allocator, false, io);
 
-    try testing.expectEqual(@as(usize, 2), ctx.files.items.len);
+    try testing.expectEqual(2, ctx.files.items.len);
 }
 
 test "exclude pattern matching" {
@@ -462,7 +462,7 @@ test "ignore symlinks flag" {
 
         try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, false, io);
 
-        try testing.expectEqual(@as(usize, 2), ctx.files.items.len);
+        try testing.expectEqual(2, ctx.files.items.len);
     }
 
     {
@@ -495,7 +495,7 @@ test "ignore symlinks flag" {
 
         try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, true, io);
 
-        try testing.expectEqual(@as(usize, 1), ctx.files.items.len);
+        try testing.expectEqual(1, ctx.files.items.len);
         try testing.expectEqualStrings("target.txt", ctx.files.items[0]);
     }
 }
@@ -539,7 +539,7 @@ test "openParentIn walks through handles and refuses unsafe components" {
         f.close(io);
         _ = try std.Io.Dir.statFile(.cwd(), io, "tmp/open_parent/top", .{});
     }
-    try testing.expectEqual(@as(?std.Io.Dir, null), try openParentIn(io, root, "missing/file", false));
+    try testing.expectEqual(null, try openParentIn(io, root, "missing/file", false));
     try testing.expectError(error.UnsafePath, openParentIn(io, root, "a//file", false));
     try testing.expectError(error.UnsafePath, openParentIn(io, root, "a/../file", false));
     try testing.expectError(error.UnsafePath, openParentIn(io, root, "./file", false));
@@ -547,9 +547,9 @@ test "openParentIn walks through handles and refuses unsafe components" {
 
     if (builtin.os.tag == .windows) return;
     root.symLink(io, "a", "link", .{ .is_directory = true }) catch return;
-    try testing.expectEqual(@as(?std.Io.Dir, null), try openParentIn(io, root, "link/file", false));
-    try testing.expectEqual(@as(?std.Io.Dir, null), try openParentIn(io, root, "link/file", true));
-    try testing.expectEqual(@as(?std.Io.Dir, null), try openParent(io, "tmp/open_parent", "link/file", false));
+    try testing.expectEqual(null, try openParentIn(io, root, "link/file", false));
+    try testing.expectEqual(null, try openParentIn(io, root, "link/file", true));
+    try testing.expectEqual(null, try openParent(io, "tmp/open_parent", "link/file", false));
 
     var created = (try openParentIn(io, root, "new/deeper/file", true)).?;
     created.close(io);

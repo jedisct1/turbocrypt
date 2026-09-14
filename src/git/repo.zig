@@ -455,11 +455,11 @@ test "splitNul drops the trailing terminator" {
 
     const parts = try splitNul(allocator, "a\x00b c\x00\x00");
     defer utils.freeList(allocator, parts);
-    try testing.expectEqual(@as(usize, 2), parts.len);
+    try testing.expectEqual(2, parts.len);
     try testing.expectEqualStrings("a", parts[0]);
     try testing.expectEqualStrings("b c", parts[1]);
 
     const none = try splitNul(allocator, "");
     defer utils.freeList(allocator, none);
-    try testing.expectEqual(@as(usize, 0), none.len);
+    try testing.expectEqual(0, none.len);
 }

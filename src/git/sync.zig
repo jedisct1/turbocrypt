@@ -1882,7 +1882,7 @@ test "state round trip" {
 
     var loaded = try State.parse(allocator, text, key_id);
     defer loaded.deinit(allocator);
-    try testing.expectEqual(@as(usize, 2), loaded.map.count());
+    try testing.expectEqual(2, loaded.map.count());
     const doc = loaded.get("docs/internal.md").?;
     try testing.expect(doc.exec);
     try testing.expectEqualSlices(u8, &@as([16]u8, @splat(0xab)), &doc.plain);
@@ -1894,7 +1894,7 @@ test "state round trip" {
 
     var other = try State.parse(allocator, text, @splat(6));
     defer other.deinit(allocator);
-    try testing.expectEqual(@as(usize, 0), other.map.count());
+    try testing.expectEqual(0, other.map.count());
 
     try testing.expectError(Error.InvalidState, State.parse(allocator, "{\"version\": 2, \"entries\": []}", key_id));
     try testing.expectError(Error.InvalidState, State.parse(allocator, "not json", key_id));

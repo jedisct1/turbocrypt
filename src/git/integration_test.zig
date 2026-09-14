@@ -131,7 +131,7 @@ test "git integration: store round trip, clone, tamper" {
     var report = sync.Report{};
     defer report.deinit(allocator);
     try sync.encrypt(&repo_a, keys, .{}, &report);
-    try testing.expectEqual(@as(usize, 4), report.count(.encrypted));
+    try testing.expectEqual(4, report.count(.encrypted));
     try gitOk(allocator, io, &env, a, &.{ "commit", "-qm", "private" });
 
     const tracked = try git(allocator, io, &env, a, &.{ "ls-files", "-z" });
@@ -148,12 +148,12 @@ test "git integration: store round trip, clone, tamper" {
         try testing.expect(std.mem.indexOf(u8, path, "AGENT") == null);
         entries += 1;
     }
-    try testing.expectEqual(@as(usize, 4), entries);
+    try testing.expectEqual(4, entries);
 
     var again = sync.Report{};
     defer again.deinit(allocator);
     try sync.encrypt(&repo_a, keys, .{}, &again);
-    try testing.expectEqual(@as(usize, 0), again.count(.encrypted));
+    try testing.expectEqual(0, again.count(.encrypted));
     const status = try git(allocator, io, &env, a, &.{ "status", "--porcelain" });
     defer allocator.free(status);
     try testing.expectEqualStrings("", status);
@@ -171,7 +171,7 @@ test "git integration: store round trip, clone, tamper" {
     var decrypted = sync.Report{};
     defer decrypted.deinit(allocator);
     try sync.decrypt(&repo_b, keys, .{}, &decrypted);
-    try testing.expectEqual(@as(usize, 4), decrypted.count(.written));
+    try testing.expectEqual(4, decrypted.count(.written));
     const agent = try readFile(io, b, "AGENT.md", allocator);
     defer allocator.free(agent);
     try testing.expectEqualStrings("agent notes\n", agent);
@@ -188,7 +188,7 @@ test "git integration: store round trip, clone, tamper" {
     defer bad.deinit(allocator);
     const files = try sync.listStore(allocator, store_b, &bad, io);
     defer utils.freeList(allocator, files);
-    try testing.expectEqual(@as(usize, 4), files.len);
+    try testing.expectEqual(4, files.len);
 
     // The manifest entry is the key check, so corrupting it stops a pass before any row is produced.
     // Tamper with two other entries.
@@ -202,7 +202,7 @@ test "git integration: store round trip, clone, tamper" {
         picked[n] = f;
         n += 1;
     }
-    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expectEqual(2, n);
 
     const first = try std.fs.path.join(allocator, &.{ store_b, picked[0] });
     defer allocator.free(first);
@@ -218,8 +218,8 @@ test "git integration: store round trip, clone, tamper" {
     var swapped = sync.Report{};
     defer swapped.deinit(allocator);
     try sync.decrypt(&repo_b, keys, .{}, &swapped);
-    try testing.expectEqual(@as(usize, 2), swapped.count(.bad));
-    try testing.expectEqual(@as(usize, 0), swapped.count(.written));
+    try testing.expectEqual(2, swapped.count(.bad));
+    try testing.expectEqual(0, swapped.count(.written));
     const agent_after = try readFile(io, b, "AGENT.md", allocator);
     defer allocator.free(agent_after);
     try testing.expectEqualStrings("agent notes\n", agent_after);
@@ -232,12 +232,12 @@ test "git integration: store round trip, clone, tamper" {
     var corrupted = sync.Report{};
     defer corrupted.deinit(allocator);
     try sync.decrypt(&repo_b, keys, .{}, &corrupted);
-    try testing.expectEqual(@as(usize, 1), corrupted.count(.bad));
+    try testing.expectEqual(1, corrupted.count(.bad));
 
     var refused = sync.Report{};
     defer refused.deinit(allocator);
     try testing.expectError(sync.Error.SyncAborted, sync.encrypt(&repo_b, keys, .{}, &refused));
-    try testing.expectEqual(@as(usize, 1), refused.count(.bad));
+    try testing.expectEqual(1, refused.count(.bad));
     const staged = try git(allocator, io, &env, b, &.{ "diff", "--cached", "--name-only" });
     defer allocator.free(staged);
     try testing.expectEqualStrings("", staged);
@@ -245,11 +245,11 @@ test "git integration: store round trip, clone, tamper" {
     var repaired = sync.Report{};
     defer repaired.deinit(allocator);
     try sync.encrypt(&repo_b, keys, .{ .force = true }, &repaired);
-    try testing.expectEqual(@as(usize, 1), repaired.count(.encrypted));
+    try testing.expectEqual(1, repaired.count(.encrypted));
     var clean = sync.Report{};
     defer clean.deinit(allocator);
     try sync.decrypt(&repo_b, keys, .{}, &clean);
-    try testing.expectEqual(@as(usize, 0), clean.count(.bad));
+    try testing.expectEqual(0, clean.count(.bad));
     try gitOk(allocator, io, &env, b, &.{ "commit", "-qm", "repaired" });
 
     // A second key joins from another clone and sees none of the first key's files.
@@ -262,7 +262,7 @@ test "git integration: store round trip, clone, tamper" {
     const keys2 = crypto.deriveKeys(key2, null);
     try repo_c.saveKey(key2);
     try testing.expect(try sync.manifestFromStore(&repo_c, keys2) == null);
-    try testing.expectEqual(@as(usize, 1), try sync.otherKeyCount(&repo_c, keys2));
+    try testing.expectEqual(1, try sync.otherKeyCount(&repo_c, keys2));
 
     try cmd.setupStore(&repo_c);
     try writeFile(io, c, "mine.md", "mine\n", allocator);
@@ -270,8 +270,8 @@ test "git integration: store round trip, clone, tamper" {
     var joined = sync.Report{};
     defer joined.deinit(allocator);
     try sync.encrypt(&repo_c, keys2, .{}, &joined);
-    try testing.expectEqual(@as(usize, 2), joined.count(.encrypted));
-    try testing.expectEqual(@as(usize, 0), joined.count(.bad));
+    try testing.expectEqual(2, joined.count(.encrypted));
+    try testing.expectEqual(0, joined.count(.bad));
     try gitOk(allocator, io, &env, c, &.{ "commit", "-qm", "second key" });
     const c_tracked = try git(allocator, io, &env, c, &.{ "ls-files", "-z" });
     defer allocator.free(c_tracked);
@@ -280,20 +280,20 @@ test "git integration: store round trip, clone, tamper" {
 
     const ours = try sync.storeEntries(&repo_c, keys2);
     defer sync.freeEntries(allocator, ours);
-    try testing.expectEqual(@as(usize, 2), ours.len);
+    try testing.expectEqual(2, ours.len);
     const theirs = try sync.storeEntries(&repo_c, keys);
     defer sync.freeEntries(allocator, theirs);
-    try testing.expectEqual(@as(usize, 4), theirs.len);
+    try testing.expectEqual(4, theirs.len);
 
     // The first key pulls that commit and nothing changes for it.
     try gitOk(allocator, io, &env, b, &.{ "pull", "-q", "--no-rebase", c, "main" });
-    try testing.expectEqual(@as(usize, 1), try sync.otherKeyCount(&repo_b, keys));
+    try testing.expectEqual(1, try sync.otherKeyCount(&repo_b, keys));
     var after_pull = sync.Report{};
     defer after_pull.deinit(allocator);
     try sync.decrypt(&repo_b, keys, .{}, &after_pull);
-    try testing.expectEqual(@as(usize, 0), after_pull.count(.written));
-    try testing.expectEqual(@as(usize, 0), after_pull.count(.bad));
-    try testing.expectEqual(@as(usize, 4), after_pull.count(.ok));
+    try testing.expectEqual(0, after_pull.count(.written));
+    try testing.expectEqual(0, after_pull.count(.bad));
+    try testing.expectEqual(4, after_pull.count(.ok));
     const mine_b = try std.fs.path.join(allocator, &.{ b, "mine.md" });
     defer allocator.free(mine_b);
     try testing.expect(!utils.pathExists(mine_b, io));
@@ -342,8 +342,8 @@ test "git integration: an unencryptable private name aborts before writing" {
     var report = sync.Report{};
     defer report.deinit(allocator);
     try testing.expectError(sync.Error.SyncAborted, sync.encrypt(&repo, keys, .{}, &report));
-    try testing.expectEqual(@as(usize, 1), report.count(.bad));
-    try testing.expectEqual(@as(usize, 0), report.count(.encrypted));
+    try testing.expectEqual(1, report.count(.bad));
+    try testing.expectEqual(0, report.count(.encrypted));
     const staged_after = try git(allocator, io, &env, worktree, &.{ "diff", "--cached", "--name-only" });
     defer allocator.free(staged_after);
     try testing.expectEqualStrings(staged_before, staged_after);
@@ -351,7 +351,7 @@ test "git integration: an unencryptable private name aborts before writing" {
     var status = sync.Report{};
     defer status.deinit(allocator);
     try sync.collectStatus(&repo, keys, &status);
-    try testing.expectEqual(@as(usize, 1), status.count(.bad));
+    try testing.expectEqual(1, status.count(.bad));
     for (status.rows.items) |row| {
         if (std.mem.eql(u8, row.path, private_path)) try testing.expectEqual(sync.Row.Kind.bad, row.kind);
     }

@@ -176,7 +176,7 @@ test "key file write and read (password-protected)" {
     const file = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
     defer file.close(io);
     const stat = try file.stat(io);
-    try testing.expectEqual(@as(u64, protected_key_file_size), stat.size);
+    try testing.expectEqual(protected_key_file_size, stat.size);
 
     const read_key = try readKeyFile(test_path, test_password, io);
     try testing.expectEqualSlices(u8, &original_key, &read_key);
@@ -265,7 +265,7 @@ test "add password protection to plain key" {
     const file1 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
     defer file1.close(io);
     const stat1 = try file1.stat(io);
-    try testing.expectEqual(@as(u64, plain_key_file_size), stat1.size);
+    try testing.expectEqual(plain_key_file_size, stat1.size);
 
     const read_key = try readKeyFile(test_path, null, io);
     try writeKeyFile(test_path, read_key, test_password, std.testing.allocator, io);
@@ -273,7 +273,7 @@ test "add password protection to plain key" {
     const file2 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
     defer file2.close(io);
     const stat2 = try file2.stat(io);
-    try testing.expectEqual(@as(u64, protected_key_file_size), stat2.size);
+    try testing.expectEqual(protected_key_file_size, stat2.size);
 
     const read_key_protected = try readKeyFile(test_path, test_password, io);
     try testing.expectEqualSlices(u8, &original_key, &read_key_protected);
@@ -297,7 +297,7 @@ test "remove password protection from protected key" {
     const file1 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
     defer file1.close(io);
     const stat1 = try file1.stat(io);
-    try testing.expectEqual(@as(u64, protected_key_file_size), stat1.size);
+    try testing.expectEqual(protected_key_file_size, stat1.size);
 
     const read_key = try readKeyFile(test_path, test_password, io);
     try writeKeyFile(test_path, read_key, null, std.testing.allocator, io);
@@ -305,7 +305,7 @@ test "remove password protection from protected key" {
     const file2 = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
     defer file2.close(io);
     const stat2 = try file2.stat(io);
-    try testing.expectEqual(@as(u64, plain_key_file_size), stat2.size);
+    try testing.expectEqual(plain_key_file_size, stat2.size);
 
     const read_key_plain = try readKeyFile(test_path, null, io);
     try testing.expectEqualSlices(u8, &original_key, &read_key_plain);

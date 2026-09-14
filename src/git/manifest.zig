@@ -395,7 +395,7 @@ test "manifest keeps comments and reports bad lines" {
 
     const list = try manifest.entries(allocator);
     defer allocator.free(list);
-    try testing.expectEqual(@as(usize, 2), list.len);
+    try testing.expectEqual(2, list.len);
     try testing.expectEqualStrings("/ops/", manifest.covering("ops/x").?);
     try testing.expect(manifest.covering("other") == null);
 
@@ -475,11 +475,11 @@ test "exclude block union" {
     const text = begin_marker ++ "\n" ++ block_comment ++ "\n/old.md\n/AGENT.md\n" ++ end_marker ++ "\n";
     const previous = try blockLines(allocator, text);
     defer utils.freeList(allocator, previous);
-    try testing.expectEqual(@as(usize, 2), previous.len);
+    try testing.expectEqual(2, previous.len);
 
     const merged = try mergeBlockLines(allocator, previous, &.{ "/new.md", "/AGENT.md" }, &.{"/old.md"});
     defer utils.freeList(allocator, merged);
-    try testing.expectEqual(@as(usize, 2), merged.len);
+    try testing.expectEqual(2, merged.len);
     try testing.expectEqualStrings("/AGENT.md", merged[0]);
     try testing.expectEqualStrings("/new.md", merged[1]);
 }

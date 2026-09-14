@@ -327,7 +327,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
 fn getThreadCount(opts: Options) !u32 {
     if (opts.threads) |t| return @min(t, 64);
     const cpu_count = try std.Thread.getCpuCount();
-    return @as(u32, @intCast(@min(cpu_count, 16)));
+    return @intCast(@min(cpu_count, 16));
 }
 
 fn explainConfigError(action: []const u8, err: anyerror, allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) void {

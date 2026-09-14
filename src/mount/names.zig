@@ -90,10 +90,10 @@ test "plain names pass through and temporary names stay hidden" {
     try testing.expectEqualStrings("notes.txt", plain);
 
     try testing.expect(!mapper.kindsDiffer());
-    try testing.expectEqual(@as(?[]u8, null), try mapper.toPlain(allocator, ".tc-0123456789abcdef.tmp", .file));
+    try testing.expectEqual(null, try mapper.toPlain(allocator, ".tc-0123456789abcdef.tmp", .file));
     try testing.expect(Mapper.isReserved(".tc-0123456789abcdef.tmp"));
     try testing.expect(!Mapper.isReserved("notes.txt"));
-    try testing.expectEqual(@as(u64, 255), mapper.nameMax());
+    try testing.expectEqual(255, mapper.nameMax());
 }
 
 test "suffix mode adds the suffix to files only and hides files without it" {
@@ -112,12 +112,12 @@ test "suffix mode adds the suffix to files only and hides files without it" {
     const plain = (try mapper.toPlain(allocator, "notes.txt.enc", .file)).?;
     defer allocator.free(plain);
     try testing.expectEqualStrings("notes.txt", plain);
-    try testing.expectEqual(@as(?[]u8, null), try mapper.toPlain(allocator, "notes.txt", .file));
-    try testing.expectEqual(@as(?[]u8, null), try mapper.toPlain(allocator, ".enc", .file));
+    try testing.expectEqual(null, try mapper.toPlain(allocator, "notes.txt", .file));
+    try testing.expectEqual(null, try mapper.toPlain(allocator, ".enc", .file));
     const plain_dir = (try mapper.toPlain(allocator, "docs", .directory)).?;
     defer allocator.free(plain_dir);
     try testing.expectEqualStrings("docs", plain_dir);
-    try testing.expectEqual(@as(u64, 251), mapper.nameMax());
+    try testing.expectEqual(251, mapper.nameMax());
 }
 
 test "encrypted names round-trip in both kinds and hide what does not decode" {
@@ -139,18 +139,18 @@ test "encrypted names round-trip in both kinds and hide what does not decode" {
     defer allocator.free(plain_dir);
     try testing.expectEqualStrings("notes.txt", plain_dir);
 
-    try testing.expectEqual(@as(?[]u8, null), try mapper.toPlain(allocator, dir, .file));
-    try testing.expectEqual(@as(?[]u8, null), try mapper.toPlain(allocator, "not-a-ciphertext", .file));
-    try testing.expectEqual(@as(?[]u8, null), try mapper.toPlain(allocator, "", .directory));
+    try testing.expectEqual(null, try mapper.toPlain(allocator, dir, .file));
+    try testing.expectEqual(null, try mapper.toPlain(allocator, "not-a-ciphertext", .file));
+    try testing.expectEqual(null, try mapper.toPlain(allocator, "", .directory));
 
     // Reservation applies to the backing spelling, not the plaintext name.
     const odd = try mapper.toBacking(allocator, ".tc-0123456789abcdef.tmp", .directory);
     defer allocator.free(odd);
     try testing.expect(!Mapper.isReserved(odd));
-    try testing.expectEqual(@as(u64, 193), mapper.nameMax());
+    try testing.expectEqual(193, mapper.nameMax());
 
     const plain_mapper: Mapper = .{ .filename_key = key };
     const too_long: [255]u8 = @splat('b');
     try testing.expectError(error.NameTooLong, plain_mapper.toBacking(allocator, &too_long, .file));
-    try testing.expectEqual(@as(u64, 197), plain_mapper.nameMax());
+    try testing.expectEqual(197, plain_mapper.nameMax());
 }

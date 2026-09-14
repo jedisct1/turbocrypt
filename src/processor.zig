@@ -579,7 +579,7 @@ test "in-place encrypt/decrypt works with absolute path" {
         const file = try std.Io.Dir.openFile(.cwd(), io, relative_path, .{});
         defer file.close(io);
         const stat = try file.stat(io);
-        try testing.expectEqual(@as(u64, plaintext.len + crypto.overhead_size), stat.size);
+        try testing.expectEqual(plaintext.len + crypto.overhead_size, stat.size);
     }
 
     try decryptFile(abs_path, abs_path, derived, allocator, io);
@@ -590,7 +590,7 @@ test "in-place encrypt/decrypt works with absolute path" {
         const buf = try allocator.alloc(u8, plaintext.len);
         defer allocator.free(buf);
         const read = try readAll(file, io, buf);
-        try testing.expectEqual(@as(usize, plaintext.len), read);
+        try testing.expectEqual(plaintext.len, read);
         try testing.expectEqualStrings(plaintext, buf);
     }
 }
@@ -675,7 +675,7 @@ test "symlink at output path does not hijack writes" {
         const buf = try allocator.alloc(u8, sentinel_content.len);
         defer allocator.free(buf);
         const read = try readAll(f, io, buf);
-        try testing.expectEqual(@as(usize, sentinel_content.len), read);
+        try testing.expectEqual(sentinel_content.len, read);
         try testing.expectEqualStrings(sentinel_content, buf);
     }
 
@@ -683,7 +683,7 @@ test "symlink at output path does not hijack writes" {
         const f = try std.Io.Dir.openFile(.cwd(), io, output_path, .{});
         defer f.close(io);
         const stat = try f.stat(io);
-        try testing.expectEqual(@as(u64, plaintext.len + crypto.overhead_size), stat.size);
+        try testing.expectEqual(plaintext.len + crypto.overhead_size, stat.size);
     }
 }
 
@@ -709,12 +709,12 @@ test "writeFileAtomic keeps temporary files in the given directory" {
     var it = dest_dir.iterate();
     var count: usize = 0;
     while (try it.next(io)) |_| count += 1;
-    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqual(1, count);
 
     var tmp_dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/atomic_tmp", .{ .iterate = true });
     defer tmp_dir.close(io);
     var tmp_it = tmp_dir.iterate();
-    try testing.expectEqual(@as(?std.Io.Dir.Entry, null), try tmp_it.next(io));
+    try testing.expectEqual(null, try tmp_it.next(io));
 }
 
 test "temporary names have one shape" {
@@ -776,5 +776,5 @@ test "createIn stages and publishes through directory handles" {
     var it = stage.iterate();
     var count: usize = 0;
     while (try it.next(io)) |_| count += 1;
-    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqual(1, count);
 }

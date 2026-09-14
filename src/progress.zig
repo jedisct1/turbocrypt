@@ -78,7 +78,7 @@ pub const Tracker = struct {
         const elapsed_ns = elapsed.raw.nanoseconds;
         if (elapsed_ns <= 0) return 0.0;
 
-        const bytes = @as(f64, @floatFromInt(self.getBytesProcessed()));
+        const bytes: f64 = @floatFromInt(self.getBytesProcessed());
         const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
         const bits = bytes * 8.0;
         const megabits = bits / (1000.0 * 1000.0);
@@ -86,7 +86,7 @@ pub const Tracker = struct {
     }
 
     fn formatBytes(bytes: u64, buf: []u8) []const u8 {
-        const fb = @as(f64, @floatFromInt(bytes));
+        const fb: f64 = @floatFromInt(bytes);
 
         if (bytes < 1024) {
             return std.fmt.bufPrint(buf, "{d} B", .{bytes}) catch "? B";
@@ -198,15 +198,15 @@ test "progress tracker basic operations" {
 
     var tracker = Tracker.init(100, 1024 * 1024 * 100, io);
 
-    try testing.expectEqual(@as(u64, 0), tracker.getFilesProcessed());
-    try testing.expectEqual(@as(u64, 0), tracker.getFilesFailed());
-    try testing.expectEqual(@as(u64, 0), tracker.getBytesProcessed());
+    try testing.expectEqual(0, tracker.getFilesProcessed());
+    try testing.expectEqual(0, tracker.getFilesFailed());
+    try testing.expectEqual(0, tracker.getBytesProcessed());
 
     tracker.addFileProcessed();
     tracker.addBytesProcessed(1024 * 1024);
-    try testing.expectEqual(@as(u64, 1), tracker.getFilesProcessed());
-    try testing.expectEqual(@as(u64, 1024 * 1024), tracker.getBytesProcessed());
+    try testing.expectEqual(1, tracker.getFilesProcessed());
+    try testing.expectEqual(1024 * 1024, tracker.getBytesProcessed());
 
     tracker.addFileFailed();
-    try testing.expectEqual(@as(u64, 1), tracker.getFilesFailed());
+    try testing.expectEqual(1, tracker.getFilesFailed());
 }

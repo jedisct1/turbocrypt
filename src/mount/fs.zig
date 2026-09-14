@@ -691,7 +691,7 @@ fn releasedir(m: *Mount, fi: ?*fuse.FileInfo) !void {
 }
 
 fn openFlags(fi: *const fuse.FileInfo) std.posix.O {
-    return @bitCast(@as(u32, @bitCast(fi.flags)));
+    return @bitCast(fi.flags);
 }
 
 fn attachHandle(m: *Mount, resolved: *const Resolved, fi: *fuse.FileInfo, want: Want, truncate_first: bool) !void {

@@ -61,13 +61,13 @@ const Stats = struct {
 
     fn stddev(self: Stats) f64 {
         if (self.durations_ns.items.len < 2) return 0.0;
-        const mean_val = @as(f64, @floatFromInt(self.mean()));
+        const mean_val: f64 = @floatFromInt(self.mean());
         var variance: f64 = 0.0;
         for (self.durations_ns.items) |d| {
             const diff = @as(f64, @floatFromInt(d)) - mean_val;
             variance += diff * diff;
         }
-        variance /= @as(f64, @floatFromInt(self.durations_ns.items.len));
+        variance /= @floatFromInt(self.durations_ns.items.len);
         return @sqrt(variance);
     }
 };
@@ -304,7 +304,7 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
     const chunks_per_thread = 2;
 
     const cpu_count = try std.Thread.getCpuCount();
-    const thread_counts = [_]u32{ 1, 2, 4, 8, @min(@as(u32, @intCast(cpu_count)), 16) };
+    const thread_counts = [_]u32{ 1, 2, 4, 8, @intCast(@min(cpu_count, 16)) };
 
     for (thread_counts) |thread_count| {
         const total_chunks = thread_count * chunks_per_thread;
@@ -427,7 +427,7 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
     const total_size = file_count * file_size;
 
     const cpu_count = try std.Thread.getCpuCount();
-    const thread_counts = [_]u32{ 1, 2, 4, 8, @min(@as(u32, @intCast(cpu_count)), 16) };
+    const thread_counts = [_]u32{ 1, 2, 4, 8, @intCast(@min(cpu_count, 16)) };
 
     // The input files are created once, outside the timed loops.
     std.debug.print("\nGenerating {d} × {d}MB test files...\n", .{ file_count, file_size / (1024 * 1024) });

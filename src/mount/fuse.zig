@@ -138,9 +138,9 @@ fn statxInto(dirfd: std.c.fd_t, path: [*:0]const u8, flags: u32, st: *Stat) bool
         .size = @intCast(buf.size),
         .blksize = @intCast(buf.blksize),
         .blocks = @intCast(buf.blocks),
-        .atim = .{ .sec = @intCast(buf.atime.sec), .nsec = @intCast(buf.atime.nsec) },
-        .mtim = .{ .sec = @intCast(buf.mtime.sec), .nsec = @intCast(buf.mtime.nsec) },
-        .ctim = .{ .sec = @intCast(buf.ctime.sec), .nsec = @intCast(buf.ctime.nsec) },
+        .atim = .{ .sec = @intCast(buf.atime.sec), .nsec = buf.atime.nsec },
+        .mtim = .{ .sec = @intCast(buf.mtime.sec), .nsec = buf.mtime.nsec },
+        .ctim = .{ .sec = @intCast(buf.ctime.sec), .nsec = buf.ctime.nsec },
     };
     return true;
 }
@@ -582,7 +582,7 @@ const darwin = struct {
 };
 
 pub fn negErrno(e: std.c.E) c_int {
-    return -@as(c_int, @intCast(@backingInt(e)));
+    return -@as(c_int, @backingInt(e));
 }
 
 pub fn privateData(lib: *const Library, comptime T: type) *T {

@@ -221,7 +221,7 @@ test "Config - empty exclude list" {
     var config = try Config.fromJson(allocator, "{\"exclude_patterns\": []}");
     defer config.deinit(allocator);
 
-    try std.testing.expectEqual(@as(usize, 0), config.exclude_patterns.len);
+    try std.testing.expectEqual(0, config.exclude_patterns.len);
 }
 
 test "Config - default config" {
@@ -233,7 +233,7 @@ test "Config - default config" {
     try std.testing.expect(config.key == null);
     try std.testing.expect(config.threads == null);
     try std.testing.expect(config.buffer_size == null);
-    try std.testing.expectEqual(@as(usize, 0), config.exclude_patterns.len);
+    try std.testing.expectEqual(0, config.exclude_patterns.len);
 }
 
 test "Config - to/from JSON" {
@@ -257,9 +257,9 @@ test "Config - to/from JSON" {
     var config2 = try Config.fromJson(allocator, json_str);
 
     try std.testing.expectEqualSlices(u8, &test_key_data, config2.key.?);
-    try std.testing.expectEqual(@as(u32, 8), config2.threads.?);
-    try std.testing.expectEqual(@as(usize, 8388608), config2.buffer_size.?);
-    try std.testing.expectEqual(@as(usize, 2), config2.exclude_patterns.len);
+    try std.testing.expectEqual(8, config2.threads.?);
+    try std.testing.expectEqual(8388608, config2.buffer_size.?);
+    try std.testing.expectEqual(2, config2.exclude_patterns.len);
     try std.testing.expectEqualStrings("*.log", config2.exclude_patterns[0]);
     try std.testing.expectEqualStrings(".git/", config2.exclude_patterns[1]);
 
@@ -308,5 +308,5 @@ test "Config - save does not follow a planted temporary-file symlink" {
 
     var loaded = try load(allocator, io, &environ_map);
     defer loaded.deinit(allocator);
-    try testing.expectEqual(@as(u32, 3), loaded.threads.?);
+    try testing.expectEqual(3, loaded.threads.?);
 }

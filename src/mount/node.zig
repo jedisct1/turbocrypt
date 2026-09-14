@@ -382,7 +382,7 @@ pub fn markKey(st: fuse.Stat) MarkKey {
 fn toU64(x: anytype) u64 {
     return switch (@typeInfo(@TypeOf(x)).int.signedness) {
         .signed => @bitCast(@as(i64, x)),
-        .unsigned => @intCast(x),
+        .unsigned => x,
     };
 }
 
@@ -720,32 +720,32 @@ test "write at an offset zero-fills the gap and truncate goes both ways" {
     try node.write(&table, 4, "abc", test_now);
     try testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 'a', 'b', 'c' }, node.plaintext);
     try testing.expect(node.dirty);
-    try testing.expectEqual(@as(usize, 64 * 1024), node.plaintext_capacity);
-    try testing.expectEqual(@as(usize, 64 * 1024 + overhead), node.ciphertext.len);
-    try testing.expectEqual(@as(usize, 2 * 64 * 1024 + overhead), table.budget.used());
+    try testing.expectEqual(64 * 1024, node.plaintext_capacity);
+    try testing.expectEqual(64 * 1024 + overhead, node.ciphertext.len);
+    try testing.expectEqual(2 * 64 * 1024 + overhead, table.budget.used());
 
     try node.truncate(&table, 10, test_now);
-    try testing.expectEqual(@as(usize, 10), node.len());
-    try testing.expectEqual(@as(u8, 0), node.plaintext[9]);
+    try testing.expectEqual(10, node.len());
+    try testing.expectEqual(0, node.plaintext[9]);
 
     try node.truncate(&table, 2, test_now);
     try testing.expectEqualSlices(u8, &[_]u8{ 0, 0 }, node.plaintext);
 
     try node.truncate(&table, 0, test_now);
-    try testing.expectEqual(@as(usize, 0), node.plaintext_capacity);
-    try testing.expectEqual(@as(usize, overhead), node.ciphertext.len);
-    try testing.expectEqual(@as(usize, overhead), table.budget.used());
+    try testing.expectEqual(0, node.plaintext_capacity);
+    try testing.expectEqual(overhead, node.ciphertext.len);
+    try testing.expectEqual(overhead, table.budget.used());
 
     const big: [200 * 1024]u8 = @splat('x');
     try node.write(&table, 0, &big, test_now);
-    try testing.expectEqual(@as(usize, 256 * 1024), node.plaintext_capacity);
+    try testing.expectEqual(256 * 1024, node.plaintext_capacity);
     try node.truncate(&table, 100, test_now);
-    try testing.expectEqual(@as(usize, 64 * 1024), node.plaintext_capacity);
-    try testing.expectEqual(@as(usize, 2 * 64 * 1024 + overhead), table.budget.used());
+    try testing.expectEqual(64 * 1024, node.plaintext_capacity);
+    try testing.expectEqual(2 * 64 * 1024 + overhead, table.budget.used());
 
     node.dirty = false;
     table.release(node);
-    try testing.expectEqual(@as(usize, 0), table.budget.used());
+    try testing.expectEqual(0, table.budget.used());
 }
 
 test "the file limit and the mount budget refuse writes" {
@@ -770,7 +770,7 @@ test "the file limit and the mount budget refuse writes" {
     c.loaded = true;
     try testing.expectError(error.NoSpaceLeft, c.write(&small, 0, "two", test_now));
     try testing.expectEqualStrings("one", b.plaintext);
-    try testing.expectEqual(@as(usize, 0), c.len());
+    try testing.expectEqual(0, c.len());
     small.release(c);
     small.release(b);
 }
@@ -790,20 +790,20 @@ test "a refused growth keeps the data and a usable ciphertext buffer" {
     try testing.expectError(error.NoSpaceLeft, node.write(&table, 0, &bigger, test_now));
     try testing.expectEqualStrings("start", node.plaintext);
     try testing.expectEqual(first, node.ciphertext.ptr);
-    try testing.expectEqual(@as(usize, 64 * 1024 + overhead), node.ciphertext.len);
-    try testing.expectEqual(@as(usize, 2 * 64 * 1024 + overhead), table.budget.used());
+    try testing.expectEqual(64 * 1024 + overhead, node.ciphertext.len);
+    try testing.expectEqual(2 * 64 * 1024 + overhead, table.budget.used());
 
     armFaults(&.{.plaintext_realloc});
     try testing.expectError(error.NoSpaceLeft, node.write(&table, 0, &bigger, test_now));
     try testing.expectEqualStrings("start", node.plaintext);
-    try testing.expectEqual(@as(usize, 64 * 1024), node.plaintext_capacity);
-    try testing.expectEqual(@as(usize, 128 * 1024 + overhead), node.ciphertext.len);
-    try testing.expectEqual(@as(usize, 64 * 1024 + 128 * 1024 + overhead), table.budget.used());
+    try testing.expectEqual(64 * 1024, node.plaintext_capacity);
+    try testing.expectEqual(128 * 1024 + overhead, node.ciphertext.len);
+    try testing.expectEqual(64 * 1024 + 128 * 1024 + overhead, table.budget.used());
 
     armFaults(&.{});
     try node.write(&table, 0, &bigger, test_now);
-    try testing.expectEqual(@as(usize, 128 * 1024), node.plaintext_capacity);
-    try testing.expectEqual(@as(usize, 2 * 128 * 1024 + overhead), table.budget.used());
+    try testing.expectEqual(128 * 1024, node.plaintext_capacity);
+    try testing.expectEqual(2 * 128 * 1024 + overhead, table.budget.used());
     node.dirty = false;
     table.release(node);
 }
@@ -816,10 +816,10 @@ test "a growth of a dirty node peaks at three buffers" {
     node.times = test_times;
     node.loaded = true;
     try node.write(&table, 0, "start", test_now);
-    try testing.expectEqual(@as(usize, 2 * 64 * 1024 + overhead), table.budget.used());
+    try testing.expectEqual(2 * 64 * 1024 + overhead, table.budget.used());
     const bigger: [70 * 1024]u8 = @splat('y');
     try node.write(&table, 0, &bigger, test_now);
-    try testing.expectEqual(@as(usize, 2 * 128 * 1024 + overhead), table.budget.used());
+    try testing.expectEqual(2 * 128 * 1024 + overhead, table.budget.used());
     node.dirty = false;
     table.release(node);
 }
@@ -842,18 +842,18 @@ test "the peak of a growth from an exact-size load is three buffers" {
     const file = try std.Io.Dir.openFile(.cwd(), io, "tmp/node_peak/f", .{});
     defer file.close(io);
     try node.load(&table, file, encrypted.len, keys, io);
-    try testing.expectEqual(@as(usize, plain.len), node.plaintext_capacity);
+    try testing.expectEqual(plain.len, node.plaintext_capacity);
     try testing.expectEqualSlices(u8, &plain, node.plaintext);
 
     // Overwriting loaded data must not grow plaintext capacity.
     try node.write(&table, 0, "q", test_now);
-    try testing.expectEqual(@as(u8, 'q'), node.plaintext[0]);
-    try testing.expectEqual(@as(usize, plain.len), node.plaintext_capacity);
-    try testing.expectEqual(@as(usize, 2 * plain.len + overhead), table.budget.used());
+    try testing.expectEqual('q', node.plaintext[0]);
+    try testing.expectEqual(plain.len, node.plaintext_capacity);
+    try testing.expectEqual(2 * plain.len + overhead, table.budget.used());
 
     try node.write(&table, plain.len, "z", test_now);
-    try testing.expectEqual(@as(usize, limit), node.plaintext_capacity);
-    try testing.expectEqual(@as(usize, 2 * limit + overhead), table.budget.used());
+    try testing.expectEqual(limit, node.plaintext_capacity);
+    try testing.expectEqual(2 * limit + overhead, table.budget.used());
     node.dirty = false;
     table.release(node);
 
@@ -864,7 +864,7 @@ test "the peak of a growth from an exact-size load is three buffers" {
     fitting.times = test_times;
     try fitting.load(&exact, file, encrypted.len, keys, io);
     try fitting.write(&exact, plain.len, "z", test_now);
-    try testing.expectEqual(@as(usize, 2 * limit + overhead), exact.budget.used());
+    try testing.expectEqual(2 * limit + overhead, exact.budget.used());
     fitting.dirty = false;
     exact.release(fitting);
 
@@ -876,7 +876,7 @@ test "the peak of a growth from an exact-size load is three buffers" {
     try other.load(&tight, file, encrypted.len, keys, io);
     try testing.expectError(error.NoSpaceLeft, other.write(&tight, plain.len, "z", test_now));
     try testing.expectEqualSlices(u8, &plain, other.plaintext);
-    try testing.expectEqual(@as(usize, plain.len), other.plaintext_capacity);
+    try testing.expectEqual(plain.len, other.plaintext_capacity);
     tight.release(other);
 }
 
@@ -903,7 +903,7 @@ test "load rejects short files and wrong keys" {
         defer file.close(io);
         const wrong = crypto.deriveKeys(@splat(13), null);
         try testing.expectError(error.InvalidHeaderMac, node.load(&table, file, encrypted.len, wrong, io));
-        try testing.expectEqual(@as(usize, 0), table.budget.used());
+        try testing.expectEqual(0, table.budget.used());
         try node.load(&table, file, encrypted.len, keys, io);
         try testing.expectEqualStrings("secret", node.plaintext);
     }
@@ -935,7 +935,7 @@ test "write-back publishes a decryptable file with the recorded attributes and m
     try writeBack(node, &table, parent, "out", fallback, keys, &marks, false, io);
     node.mutex.unlock(testing.io);
     try testing.expect(!node.dirty);
-    try testing.expectEqual(@as(usize, 1), marks.count());
+    try testing.expectEqual(1, marks.count());
 
     const stored = try std.Io.Dir.readFileAlloc(.cwd(), io, "tmp/node_flush/out", allocator, .limited(1024));
     defer allocator.free(stored);
@@ -945,22 +945,22 @@ test "write-back publishes a decryptable file with the recorded attributes and m
 
     var st: fuse.Stat = undefined;
     try testing.expect(fuse.statAt(parent.handle, "out", &st));
-    try testing.expectEqual(@as(u32, 0o640), @as(u32, st.mode) & 0o777);
+    try testing.expectEqual(0o640, st.mode & 0o777);
     try testing.expectEqual(test_now.sec, st.mtime().sec);
 
     var it = parent.iterate();
     var count: usize = 0;
     while (try it.next(io)) |_| count += 1;
-    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqual(1, count);
 
     try node.write(&table, 7, "!", test_now);
     node.mutex.lockUncancelable(testing.io);
     try writeBack(node, &table, parent, "out", fallback, keys, &marks, true, io);
     node.mutex.unlock(testing.io);
-    try testing.expectEqual(@as(usize, 0), marks.count());
+    try testing.expectEqual(0, marks.count());
     const pending = try marks.pendingKeys(allocator);
     defer allocator.free(pending);
-    try testing.expectEqual(@as(usize, 0), pending.len);
+    try testing.expectEqual(0, pending.len);
     table.release(node);
 }
 
@@ -990,13 +990,13 @@ test "a failed sync keeps the node dirty and the temporary file is gone" {
     try testing.expectError(error.InputOutput, writeBack(node, &table, parent, "f", fallback, keys, &marks, false, io));
     node.mutex.unlock(testing.io);
     try testing.expect(node.dirty);
-    try testing.expectEqual(@as(usize, 0), marks.count());
+    try testing.expectEqual(0, marks.count());
     var it = parent.iterate();
-    try testing.expectEqual(@as(?std.Io.Dir.Entry, null), try it.next(io));
+    try testing.expectEqual(null, try it.next(io));
 
     // Failed writes must survive the last close for a later retry.
     table.release(node);
-    try testing.expectEqual(@as(usize, 1), table.nodes.items.len);
+    try testing.expectEqual(1, table.nodes.items.len);
     const again = try table.attach("f");
     try testing.expectEqual(node, again);
     try testing.expectEqualStrings("data", again.plaintext);
@@ -1007,11 +1007,11 @@ test "a failed sync keeps the node dirty and the temporary file is gone" {
     try testing.expectError(error.InputOutput, writeBack(again, &table, parent, "f", fallback, keys, &marks, true, io));
     again.mutex.unlock(testing.io);
     try testing.expect(!again.dirty);
-    try testing.expectEqual(@as(usize, 1), marks.count());
+    try testing.expectEqual(1, marks.count());
     _ = try parent.statFile(io, "f", .{});
     armFaults(&.{});
     table.release(again);
-    try testing.expectEqual(@as(usize, 0), table.nodes.items.len);
+    try testing.expectEqual(0, table.nodes.items.len);
 }
 
 test "marks survive a rename of the directory and a sync clears only its own generation" {
@@ -1030,7 +1030,7 @@ test "marks survive a rename of the directory and a sync clears only its own gen
     try marks.reserve();
     try testing.expect(marks.commit(key, dir));
     try std.Io.Dir.rename(.cwd(), "tmp/node_marks/a", .cwd(), "tmp/node_marks/b", io);
-    try testing.expectEqual(@as(usize, 1), marks.count());
+    try testing.expectEqual(1, marks.count());
 
     var other = try std.Io.Dir.openDir(.cwd(), io, "tmp/node_marks/b", .{});
     try marks.reserve();
@@ -1042,10 +1042,10 @@ test "marks survive a rename of the directory and a sync clears only its own gen
     try marks.reserve();
     try testing.expect(!marks.commit(key, other));
     marks.unpin(key, pinned.generation, true);
-    try testing.expectEqual(@as(usize, 1), marks.count());
+    try testing.expectEqual(1, marks.count());
 
     try syncMark(&marks, key);
-    try testing.expectEqual(@as(usize, 0), marks.count());
+    try testing.expectEqual(0, marks.count());
 
     // Removing a directory must not close descriptors still used for sync.
     dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/node_marks/b", .{ .iterate = true });
@@ -1053,13 +1053,13 @@ test "marks survive a rename of the directory and a sync clears only its own gen
     try testing.expect(marks.commit(key, dir));
     const held = marks.pin(key).?;
     marks.drop(key);
-    try testing.expectEqual(@as(usize, 1), marks.count());
+    try testing.expectEqual(1, marks.count());
     marks.unpin(key, held.generation, false);
-    try testing.expectEqual(@as(usize, 0), marks.count());
+    try testing.expectEqual(0, marks.count());
 
     try marks.reserve();
     marks.cancel();
-    try testing.expectEqual(@as(usize, 0), marks.reserved);
+    try testing.expectEqual(0, marks.reserved);
 }
 
 test "renames re-key a file or a whole subtree and displace the destination node" {
@@ -1071,15 +1071,15 @@ test "renames re-key a file or a whole subtree and displace the destination node
     const target = try table.attach("x/one");
 
     var rekey = try table.beginRekey("d", "e", true);
-    try testing.expectEqual(@as(usize, 2), rekey.nodes.items.len);
-    try testing.expectEqual(@as(?*Node, null), rekey.target);
+    try testing.expectEqual(2, rekey.nodes.items.len);
+    try testing.expectEqual(null, rekey.target);
     rekey.commit();
     try testing.expectEqualStrings("e/one", file.path);
     try testing.expectEqualStrings("e/sub/two", deep.path);
     try testing.expectEqualStrings("dx/three", outside.path);
 
     var onto = try table.beginRekey("e/sub/two", "x/one", false);
-    try testing.expectEqual(@as(usize, 1), onto.nodes.items.len);
+    try testing.expectEqual(1, onto.nodes.items.len);
     try testing.expectEqual(target, onto.target.?);
     onto.commit();
     try testing.expect(target.unlinked.load(.acquire));
@@ -1092,8 +1092,8 @@ test "renames re-key a file or a whole subtree and displace the destination node
     try testing.expectEqualStrings("x/one", deep.path);
 
     var same = try table.beginRekey("x/one", "x/one", false);
-    try testing.expectEqual(@as(usize, 0), same.nodes.items.len);
-    try testing.expectEqual(@as(?*Node, null), same.target);
+    try testing.expectEqual(0, same.nodes.items.len);
+    try testing.expectEqual(null, same.target);
     same.commit();
     try testing.expect(!deep.unlinked.load(.acquire));
 
@@ -1101,7 +1101,7 @@ test "renames re-key a file or a whole subtree and displace the destination node
     table.release(deep);
     table.release(outside);
     table.release(target);
-    try testing.expectEqual(@as(usize, 0), table.nodes.items.len);
+    try testing.expectEqual(0, table.nodes.items.len);
 }
 
 test "unlink drops a retained node or keeps an unlinked one alive under a pin" {
@@ -1112,20 +1112,20 @@ test "unlink drops a retained node or keeps an unlinked one alive under a pin" {
     node.loaded = true;
     try node.write(&table, 0, "x", test_now);
     table.release(node);
-    try testing.expectEqual(@as(usize, 1), table.nodes.items.len);
+    try testing.expectEqual(1, table.nodes.items.len);
 
     const pinned = try table.pinAll(testing.allocator);
     defer testing.allocator.free(pinned);
-    try testing.expectEqual(@as(usize, 1), pinned.len);
+    try testing.expectEqual(1, pinned.len);
     // Deletion must preserve data still held by another pin.
     const unlinked = table.pin("f").?;
     unlinked.unlinked.store(true, .release);
     table.release(unlinked);
-    try testing.expectEqual(@as(usize, 1), table.nodes.items.len);
-    try testing.expectEqual(@as(?*Node, null), table.pin("f"));
+    try testing.expectEqual(1, table.nodes.items.len);
+    try testing.expectEqual(null, table.pin("f"));
     for (pinned) |p| table.release(p);
-    try testing.expectEqual(@as(usize, 0), table.nodes.items.len);
-    try testing.expectEqual(@as(usize, 0), table.budget.used());
+    try testing.expectEqual(0, table.nodes.items.len);
+    try testing.expectEqual(0, table.budget.used());
 
     const retained = try table.attach("g");
     retained.times = test_times;
@@ -1135,7 +1135,7 @@ test "unlink drops a retained node or keeps an unlinked one alive under a pin" {
     const gone = table.pin("g").?;
     gone.unlinked.store(true, .release);
     table.release(gone);
-    try testing.expectEqual(@as(usize, 0), table.nodes.items.len);
+    try testing.expectEqual(0, table.nodes.items.len);
 
     // Replacing a retained destination must release its buffers.
     const displaced = try table.attach("h");
@@ -1146,10 +1146,10 @@ test "unlink drops a retained node or keeps an unlinked one alive under a pin" {
     const source = try table.attach("i");
     var rekey = try table.beginRekey("i", "h", false);
     rekey.commit();
-    try testing.expectEqual(@as(usize, 1), table.nodes.items.len);
+    try testing.expectEqual(1, table.nodes.items.len);
     try testing.expectEqualStrings("h", source.path);
     table.release(source);
-    try testing.expectEqual(@as(usize, 0), table.budget.used());
+    try testing.expectEqual(0, table.budget.used());
 }
 
 test "write and truncate update logical times" {

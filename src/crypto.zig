@@ -395,7 +395,7 @@ test "empty plaintext encryption" {
     const decrypted = try decrypt(encrypted, derived, allocator);
     defer allocator.free(decrypted);
 
-    try testing.expectEqual(@as(usize, 0), decrypted.len);
+    try testing.expectEqual(0, decrypted.len);
 }
 
 test "large data encryption" {
