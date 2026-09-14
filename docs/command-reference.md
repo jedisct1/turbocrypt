@@ -1,211 +1,106 @@
-# Command reference
+# Everyday tasks
 
 [Back to the main README](../README.md)
 
-These examples cover the current command set.
-For the exact usage accepted by the installed version, run `turbocrypt --help` or `turbocrypt git help`.
+These examples walk through a few common jobs. If this is your first time using TurboCrypt, start with [the setup guide](getting-started.md).
 
-## Key management
+## Send someone an encrypted file
 
-```bash
-# Write a new key
-turbocrypt keygen output.key
-
-# Protect a new key with a password
-turbocrypt keygen --password output.key
-
-# Add or change password protection
-turbocrypt change-password my.key
-
-# Turn a protected key back into a plain key
-turbocrypt change-password --remove-password my.key
-```
-
-## Encryption
+Create a key for the files you want to share, then encrypt your document with it:
 
 ```bash
-# Encrypt a file or directory
-turbocrypt encrypt --key KEY source dest
-
-# Force a password prompt (protected keys are normally detected)
-turbocrypt encrypt --key KEY --password source dest
-
-# Replace the source instead of writing a second copy
-turbocrypt encrypt --key KEY --in-place source/
-
-# Encrypt every component of the destination path
-turbocrypt encrypt --key KEY --encrypted-filenames source/ dest/
-
-# Skip matching paths; --exclude may be repeated
-turbocrypt encrypt --key KEY --exclude "*.log" --exclude ".git/" source/ dest/
-
-# Derive a key for this context
-turbocrypt encrypt --key KEY --context "project-x" source/ dest/
-
-# Add .enc to destination names
-turbocrypt encrypt --key KEY --enc-suffix source/ dest/
-
-# Override the configured worker count
-turbocrypt encrypt --key KEY --threads 16 source/ dest/
-
-# Check the paths and totals without writing files
-turbocrypt encrypt --key KEY --dry-run source/ dest/
+turbocrypt keygen --password shared.key
+turbocrypt encrypt --key shared.key report.pdf report.pdf.enc
 ```
 
-## Decryption
+Send `report.pdf.enc` to the recipient, and share `shared.key` and its password through a separate trusted channel. Anyone with that key and password can open every file encrypted with the key, so use a separate key if you don't want to share access to your other files.
+
+Once the recipient has TurboCrypt installed, they can restore the document with:
 
 ```bash
-# Decrypt a file or directory
-turbocrypt decrypt --key KEY source dest
-
-# Replace encrypted files in place
-turbocrypt decrypt --key KEY --in-place encrypted/
-
-# Recover names that were encrypted too
-turbocrypt decrypt --key KEY --encrypted-filenames encrypted/ decrypted/
-
-# The context must match the one used for encryption
-turbocrypt decrypt --key KEY --context "project-x" encrypted/ decrypted/
-
-# Remove .enc and skip source files without that suffix
-turbocrypt decrypt --key KEY --enc-suffix encrypted/ decrypted/
-
-# Show what would be decrypted
-turbocrypt decrypt --key KEY --dry-run encrypted/ decrypted/
+turbocrypt decrypt --key shared.key report.pdf.enc report.pdf
 ```
 
-## Verification and listing
+TurboCrypt will ask for the key's password. The recipient doesn't need to save this key as their default.
+
+## Back up a project folder
+
+Suppose your project is in `project/`, and you want a copy without its Git history or build logs. First, preview the job:
 
 ```bash
-# Authenticate the complete contents
-turbocrypt verify --key KEY encrypted-file.enc
-turbocrypt verify --key KEY encrypted-directory/
-
-# Authenticate headers only
-turbocrypt verify --quick --key KEY encrypted-directory/
-
-# A context used for encryption is also needed here
-turbocrypt verify --quick --key KEY --context "project-x" encrypted/
-
-# Preview verification without reading and authenticating the contents
-turbocrypt verify --key KEY --dry-run encrypted/
-
-# List stored paths as they appear on disk
-turbocrypt list encrypted-directory/
-
-# Decrypt encrypted names in the listing
-turbocrypt list --key KEY --encrypted-filenames encrypted-directory/
+turbocrypt encrypt --dry-run \
+  --exclude ".git/" \
+  --exclude "*.log" \
+  project/ encrypted-project/
 ```
 
-## Configuration commands
+Check the reported file count and size, then run the same command without `--dry-run`:
 
 ```bash
-# Inspect the current values
-turbocrypt config show
-
-# Copy a key into the config, then set processing defaults
-turbocrypt config set-key path/to/key
-turbocrypt config set-threads 8
-turbocrypt config set-buffer-size 8388608
-
-# Add or remove a persistent exclusion
-turbocrypt config add-exclude "*.tmp"
-turbocrypt config remove-exclude "*.tmp"
-
-# Choose how directory jobs handle links and names
-turbocrypt config set-ignore-symlinks true
-turbocrypt config set-encrypted-filenames true
+turbocrypt encrypt \
+  --exclude ".git/" \
+  --exclude "*.log" \
+  project/ encrypted-project/
 ```
 
-## Git
-
-See [Private files in Git](git.md) for a walkthrough from adding maintainer files to restoring them in another clone.
+Verify the result before copying `encrypted-project/` to your backup drive:
 
 ```bash
-# Set up this repository with the selected key
-turbocrypt git init
-
-# Set up a clone with a key already represented in .enc/
-turbocrypt git unlock --key ~/.config/turbocrypt/team.key
-
-# Join with a key that has no files in the repository yet
-turbocrypt git init --key ~/.config/turbocrypt/my.key
-
-# Write a password-protected copy of the repository key outside the checkout
-turbocrypt git export-key --password ~/.config/turbocrypt/team.key
-
-# Encrypt and stage private files or directory trees
-turbocrypt git add NOTES.md ops/
-
-# Stop managing a path privately; its readable copy stays on disk
-turbocrypt git rm NOTES.md
-git add NOTES.md  # explicitly stage the readable file for a public commit
-
-# Compare the working files with the encrypted store
-turbocrypt git status
-
-# Find the entry of a file in .enc/ and the last commit that changed it
-turbocrypt git show docs/internal.md
-
-# Refresh one side from the other
-turbocrypt git encrypt
-turbocrypt git decrypt
-
-# Resolve a file changed on both sides
-turbocrypt git decrypt --force docs/internal.md  # take the upstream version
-turbocrypt git encrypt --force docs/internal.md  # keep the working version
+turbocrypt verify encrypted-project/
 ```
 
-## Mount
+Keep a copy of the key somewhere separate from that drive. If the filenames should also be private, see [how to encrypt names](usage.md#hide-file-and-folder-names).
 
-The first argument is the encrypted directory and the second is the empty directory where the plain files appear.
-See [Mounting an encrypted directory](mount.md) for the details and the limits.
+## Restore a backup without replacing your current files
+
+Choose a new destination for the restored files:
 
 ```bash
-# Show the encrypted directory as a normal one, in the foreground
-turbocrypt mount --key KEY encrypted/ ~/Volumes/plain
-
-# Return once the volume is up
-turbocrypt mount --key KEY --daemon encrypted/ ~/Volumes/plain
-
-# A directory encrypted with --encrypted-filenames or --enc-suffix
-turbocrypt mount --key KEY --encrypted-filenames encrypted/ ~/Volumes/plain
-
-# Refuse every change
-turbocrypt mount --key KEY --read-only encrypted/ ~/Volumes/plain
-
-# Pass an option to fuse-t, here to turn attribute caching off
-turbocrypt mount --key KEY -o noattrcache encrypted/ ~/Volumes/plain
-
-# Unmount
-turbocrypt unmount ~/Volumes/plain
+turbocrypt decrypt --key backup.key encrypted-project/ restored-project/
 ```
 
+Now open the files in `restored-project/` and compare them with the ones you're working on. Copy back only what you need.
+
+Use the same `--context`, `--encrypted-filenames`, or `--enc-suffix` options you used when creating the backup. If you aren't sure which key belongs to it, try a quick check first:
 
 ```bash
-# Measure encryption throughput
-turbocrypt bench
-
-# Print the installed version
-turbocrypt version
+turbocrypt verify --quick --key backup.key encrypted-project/
 ```
 
-## Processing options
+A successful quick check confirms that the headers match the key. Run a full `verify` if you also want to check the stored contents.
 
-The processing commands accept the following options where they apply:
+## Move encrypted files to another computer
 
-| Option                  | Effect                                                                      |
-| ----------------------- | --------------------------------------------------------------------------- |
-| `--key <path>`          | Use this key instead of the environment or configuration                    |
-| `--password`            | Force a password prompt; protected keys are normally detected               |
-| `--context <string>`    | Derive a separate key namespace from the context                            |
-| `--threads <n>`         | Override the default of one worker per CPU, capped at 16; the maximum is 64 |
-| `--buffer-size <bytes>` | Change the 4 MiB I/O buffer                                                 |
-| `--in-place`            | Replace the source during encryption or decryption                          |
-| `--force`               | Replace an existing destination without prompting                           |
-| `--enc-suffix`          | Add `.enc` when encrypting; remove it and skip other names when decrypting  |
-| `--encrypted-filenames` | Encrypt each path component; incompatible with `--in-place`                 |
-| `--exclude <pattern>`   | Skip matching paths; may be repeated                                        |
-| `--ignore-symlinks`     | Skip symbolic links                                                         |
-| `--quick`               | Authenticate only the header during verification                            |
-| `--dry-run`             | Report what would be processed without changing files                       |
+Install TurboCrypt on the new computer, then copy over your encrypted folder and transfer the key separately. Ordinary encrypted files can be moved between supported systems without converting them.
+
+Save the key as your default on the new computer, then restore your files:
+
+```bash
+turbocrypt config set-key backup.key
+turbocrypt decrypt encrypted-documents/ restored-documents/
+```
+
+If you used encrypted filenames or a context, use the same options here. For a Git repository, clone it normally and follow [the unlock steps](git.md#restore-private-files-in-another-clone).
+
+## Use a different key for one job
+
+You can keep your everyday default and choose a key just for a work folder:
+
+```bash
+turbocrypt encrypt --key work.key work-documents/ encrypted-work/
+turbocrypt verify --key work.key encrypted-work/
+```
+
+Later, use `--key work.key` again when decrypting. This doesn't change your saved default or the keys used by existing Git checkouts.
+
+## Find help for your installed version
+
+The built-in help lists the commands and options your copy supports:
+
+```bash
+turbocrypt --help
+turbocrypt git help
+turbocrypt mount --help
+```
+
+If you need to report a problem, include the output of `turbocrypt version` along with the command you ran and the error message. The [troubleshooting guide](troubleshooting.md) covers the most common problems.

@@ -1,127 +1,131 @@
-# Mounting an encrypted directory
+# Work with an encrypted folder
 
 [Back to the main README](../README.md)
 
-`turbocrypt mount` shows an encrypted directory as a normal one.
+A mount lets you open and edit encrypted files in your usual apps. TurboCrypt shows them in a normal folder while keeping the stored copies encrypted.
 
-You read and write plain files in the mounted directory, and TurboCrypt keeps encrypted files in the original one.
+For example, you might keep encrypted documents on an external drive and open them through `~/Volumes/documents`. Files you save there are encrypted as they're written back to the drive.
 
-`decrypt`, `verify` and `list` accept that directory afterwards, since the file format does not change.
+## 1. Install the mount support
 
-```bash
-turbocrypt mount encrypted/ ~/Volumes/plain
-turbocrypt unmount ~/Volumes/plain
-```
+On macOS, install [fuse-t](https://github.com/macos-fuse-t/fuse-t/releases). It works without a kernel extension or a reboot. On Linux, install your distribution's `fuse3` package, which provides the mount helper TurboCrypt needs.
 
-The first argument is the encrypted directory.
+Once that's installed, you can mount folders you own without running TurboCrypt as root. Mounting is available on Linux and macOS. Ordinary encryption and decryption work without the mount support installed.
 
-The second is an empty directory where the plain files appear.
+## 2. Prepare an encrypted folder
 
-The command stays in the foreground until the volume is unmounted.
-
-`--daemon` returns once the volume is up.
-
-## Starting from plain files
-
-To start from plain files, encrypt them first, then mount the result:
+If your files are still readable, encrypt them first:
 
 ```bash
-turbocrypt encrypt documents/ encrypted/
-mkdir ~/Volumes/documents
-turbocrypt mount encrypted/ ~/Volumes/documents
+turbocrypt encrypt documents/ encrypted-documents/
 ```
 
-From then on, every file written under `~/Volumes/documents` lands encrypted in `encrypted/`.
-An empty encrypted directory mounts too, so a new store can also start empty and fill up through the mount.
+This uses your default key and leaves `documents/` alone. You can choose a key explicitly with `--key secret.key`, just as you would for other file commands.
 
-The mount handles plain names, names with the `.enc` suffix, and encrypted names, with the same options as `encrypt`.
+If you'd like to start with an empty encrypted folder, create one instead:
 
-## Requirements
+```bash
+mkdir encrypted-documents
+```
 
-On macOS, install [fuse-t](https://github.com/macos-fuse-t/fuse-t/releases).
+Choose one of these starting points. The `mount` command opens encrypted files; it doesn't encrypt an existing folder of readable files for you.
 
-It needs no kernel extension and no reboot.
+## 3. Mount it
 
-The mount loads its library at run time, so a machine without it still runs every other command.
+Create an empty folder where you want to work, then mount the encrypted folder there:
 
-On Linux, install the `fuse3` package for its `fusermount3` helper.
+```bash
+mkdir -p ~/Volumes/documents
+turbocrypt mount --daemon encrypted-documents/ ~/Volumes/documents
+```
 
-The library itself is compiled into the binary, which stays a single static file.
+The encrypted folder comes first. The second path is where the readable files appear while the mount is open. Keep these folders separate, with neither inside the other.
 
-Windows is not supported.
+`--daemon` gives you your terminal prompt back once the folder is mounted. Leave it out if you'd like the command to stay in the terminal so you can watch its messages.
 
-## Limitations
+## 4. Open and edit your files
 
-- A file larger than `--max-file-size` cannot be opened. The default is 1 GiB.
-- All open files together must fit in `--memory-limit`. The default is 4 GiB.
-- Closing a large file takes the time of one encryption of that file.
-- Every write-back replaces the encrypted file. Hard links to it break, and its inode changes.
+Open `~/Volumes/documents` in your file manager or editor. You can read, change, create, and delete files there as you would in another folder.
 
-These limitations will be lifted in Turbocrypt 2.0.
+Work through this mounted folder while it's open. TurboCrypt keeps open files in memory and writes encrypted versions back when they're saved or closed. Closing a large file can therefore take a little time.
 
-## Options
+The stored files use the same format as `turbocrypt encrypt`. After unmounting, you can also use `decrypt`, `verify`, or `list` on `encrypted-documents/`.
 
-| Option                             | Effect                                                                              |
-| ---------------------------------- | ----------------------------------------------------------------------------------- |
-| `--key`, `--password`, `--context` | As for every other command. The config default for encrypted filenames applies too  |
-| `--encrypted-filenames`            | The encrypted directory has encrypted names                                         |
-| `--enc-suffix`                     | Files in the encrypted directory carry `.enc`, the view does not                    |
-| `--read-only`                      | Every change is refused with EROFS                                                  |
-| `--daemon`                         | Return once the volume is mounted                                                   |
-| `--single-thread`                  | Serve one request at a time, for debugging                                          |
-| `--debug`                          | Print libfuse traffic and the mount's own diagnostics                               |
-| `--volname <name>`                 | The volume name, by default the name of the mountpoint                              |
-| `--allow-other`                    | Serve other users, with POSIX permission checks done by the mount                   |
-| `--max-file-size <n>`              | Largest file that can be opened, in bytes                                           |
-| `--memory-limit <n>`               | Budget for all open files, in bytes. At least three times the file limit plus 1 MiB |
-| `--rescue-dir <dir>`               | Where files that could not be written back go at unmount                            |
-| `--force`                          | Skip the key check on the first file                                                |
-| `-o <option>`                      | A libfuse or fuse-t option, may be repeated                                         |
+## 5. Unmount when you're done
 
-`--exclude` is not accepted. The view shows the whole directory.
+Save your work, close any open files, then run:
 
-## Permissions
+```bash
+turbocrypt unmount ~/Volumes/documents
+```
 
-The mount serves its own user only.
+The readable view disappears, and the encrypted files stay in `encrypted-documents/`. If TurboCrypt says a file is still open, close the app using it and try again.
 
-`--allow-other` serves everyone, and the mount then applies the usual POSIX rules itself: the mode bits, the owner, the group and the sticky bit.
+## Open a folder with encrypted names
 
-On macOS only the primary group of the caller counts, because fuse-t gives no list of supplementary groups.
+If you used `--encrypted-filenames` when creating the folder, use it again when mounting:
 
-A file or directory that another user creates gets that user as its owner.
+```bash
+turbocrypt mount --daemon --encrypted-filenames encrypted-documents/ ~/Volumes/documents
+```
 
-Only a mount that runs as root can give it, so another user's create gets EPERM otherwise.
+Likewise, use `--enc-suffix` if your encrypted files were written with that option. If you used a context, pass the same `--context` value, too.
 
-A file is writable through the mount only when a new file could get the same owner and group.
+Your [saved filename setting](configuration.md#encrypt-filenames-by-default) applies to mounts. Exclusions don't: a mount shows the whole encrypted folder.
 
-A file that belongs to someone else can be read but not written, and the mount prints why.
+## Browse without changing anything
 
-Creation modes follow the umask of the program that creates the file, once.
+For a backup you only want to read, mount it with `--read-only`:
 
-## Unsupported operations
+```bash
+turbocrypt mount --daemon --read-only encrypted-documents/ ~/Volumes/documents
+```
 
-Hard links, symbolic links, device nodes and extended attributes answer `ENOTSUP`.
+You can open files and copy them elsewhere, but apps won't be able to save changes to the mounted folder.
 
-`cp -p` warns about extended attributes and copies the rest.
+## Use remote storage
 
-## Failures and the exit status
+First, connect your remote storage so it appears as a folder on your computer. Then give TurboCrypt the path to the encrypted folder on it. For example, if a network drive appears at `/Volumes/backup`:
 
-The exit status of a foreground mount:
+```bash
+turbocrypt mount --daemon /Volumes/backup/encrypted-documents/ ~/Volumes/documents
+```
 
-| Status | Meaning                                                                |
-| ------ | ---------------------------------------------------------------------- |
-| 0      | A requested unmount, with no failure during the session                |
-| 1      | A setup error, the mount never happened                                |
-| 2      | The volume is gone but at least one file could not be written back     |
-| 3      | The session ended without an unmount request, or a failure was counted |
+TurboCrypt takes a folder path, so the connection to the server needs to be set up separately. Keep that connection available while you work, and unmount TurboCrypt before disconnecting the drive.
 
-A daemonized mount reports only through stderr and the rescue directory.
+## Work with larger files
 
-Stop a mount with `turbocrypt unmount`, `umount` or `diskutil unmount`.
+By default, a mount allows files up to 1 GiB and uses a memory budget of 4 GiB. Since open files are held in memory, opening several large files can reach that budget.
 
-## Locks and logs
+If your computer has enough memory, you can raise both limits. This example allows files up to 2 GiB with an 8 GiB budget:
 
-File locks never reach the mount on macOS. The NFS client handles them locally.
+```bash
+turbocrypt mount --daemon \
+  --max-file-size 2147483648 \
+  --memory-limit 8589934592 \
+  encrypted-documents/ ~/Volumes/documents
+```
 
-fuse-t writes `fuse-t.log` and `fuse-t.err` under `~/Library/Logs/fuse-t`.
-The log names the mountpoint and is readable by everyone on the machine.
+Values are in bytes. The memory budget must be at least three times the file-size limit plus 1 MiB. For files too large to work with comfortably this way, use ordinary `decrypt` and `encrypt` commands instead.
+
+## Know which file operations are supported
+
+The mount handles regular files and folders. Hard links, symbolic links, device files, and extended attributes aren't supported. A copy command such as `cp -p` may warn that it couldn't preserve extended attributes even though it copied the file's contents.
+
+Saving changes replaces the encrypted file. If you've made hard links to that stored file outside the mount, they won't follow the replacement.
+
+By default, only your user can access the mount. `--allow-other` lets other users access it according to the files' permissions. Files owned by another user may be readable but not writable, and creating files for another user requires the mount to run as root. On macOS, group checks only use the caller's primary group.
+
+## Recover a file that couldn't be saved
+
+If the disk fills up or remote storage disconnects, TurboCrypt reports that it "cannot write back" a file. Reconnect the drive or free up space while the mount is still running, then try saving or closing the file again.
+
+If saving still fails at unmount, TurboCrypt tries to save an encrypted rescue copy and prints its location. You can choose a local rescue folder when mounting, which is useful when the encrypted folder is on a remote drive:
+
+```bash
+turbocrypt mount --rescue-dir ~/turbocrypt-rescue encrypted-documents/ ~/Volumes/documents
+```
+
+Use `turbocrypt decrypt` with the same key and context to recover the file from the printed path. Rescue copies also need free space, so check the messages before assuming the file was saved.
+
+For other mount problems, see [Troubleshooting](troubleshooting.md#mounting-folders). To see the options your installed version accepts, run `turbocrypt mount --help`.

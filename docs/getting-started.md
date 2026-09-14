@@ -1,14 +1,24 @@
-# Getting started
+# Get started with TurboCrypt
 
 [Back to the main README](../README.md)
 
-## Installation
+This guide takes you from installing TurboCrypt to restoring your first encrypted folder. Start with a few files you can experiment with.
 
-Linux, macOS and Windows binaries are available from the [releases page](https://github.com/jedisct1/turbocrypt/releases), so the quickest installation is to download the archive for your system.
+## 1. Install TurboCrypt
 
-For the best performance, build locally instead.
-Zig can then optimize the binary for the machine it will run on.
-You will need the master version of [Zig](https://ziglang.org/download/):
+Download the archive for your system from the [releases page](https://github.com/jedisct1/turbocrypt/releases) and extract it. Put `turbocrypt` in a directory on your `PATH` so you can run it from any folder. On Windows, the program is called `turbocrypt.exe`.
+
+Then open a terminal and check that it runs:
+
+```bash
+turbocrypt version
+```
+
+If you haven't added it to your `PATH` yet, you can run `./turbocrypt` from the directory where you extracted it. In Windows PowerShell, use `.\turbocrypt.exe`.
+
+### Build it yourself
+
+To build from source, install the master version of [Zig](https://ziglang.org/download/), then run:
 
 ```bash
 git clone https://github.com/jedisct1/turbocrypt.git
@@ -16,74 +26,72 @@ cd turbocrypt
 zig build -Doptimize=ReleaseFast
 ```
 
-The binary is written to `zig-out/bin/turbocrypt`.
+The program is written to `zig-out/bin/`. Add that directory to your `PATH`, or use the full path to the program in the examples below.
 
-## Quick start
+## 2. Create a key
 
-### Step 1: Generate a key
-
-First, create the key that will encrypt and decrypt your files:
+TurboCrypt uses a key file to encrypt and decrypt your files. Create one now:
 
 ```bash
 turbocrypt keygen secret.key
 ```
 
-The file contains a random 128-bit key.
+Save this key outside the folder you're about to encrypt, and keep a backup somewhere separate. If you lose every copy, you won't be able to recover your encrypted files.
 
-Keep a backup somewhere separate, because losing it also means losing access to the encrypted files.
-Anyone who gets a copy of it can decrypt them.
+Anyone with the key can read files encrypted with it. If you'd like a password on the key file as well, use `turbocrypt keygen --password secret.key` when creating it. TurboCrypt will ask for that password whenever it needs to open the key.
 
-### Step 2: Set the default key
+## 3. Save your default key
 
-Next, copy the key into the configuration so that you do not need to pass `--key` to every command:
+To avoid typing the key's path each time, run:
 
 ```bash
 turbocrypt config set-key secret.key
 ```
 
-From this point on, TurboCrypt will use the stored copy unless a command selects another key explicitly.
+TurboCrypt saves a copy in your settings. Moving the original key file later won't affect that copy. If you used a password, the saved copy keeps its password protection.
 
-Moving or deleting `secret.key` does not change that copy.
+You can also choose a key for an individual command with `--key secret.key`. The [settings guide](configuration.md#choose-which-key-to-use) explains how this works when you have more than one key.
 
-### Step 3: Encrypt files
+## 4. Encrypt a folder
 
-Once the key is configured, the same command works on a file or a whole directory:
+Choose a folder with a few files in it. In this example, it's called `my-documents`:
 
 ```bash
-# A single file
-turbocrypt encrypt document.pdf document.pdf.enc
-
-# A directory tree
 turbocrypt encrypt my-documents/ encrypted-documents/
 ```
 
-### Step 4: Verify the result
+TurboCrypt creates the encrypted copies in `encrypted-documents/` and leaves the originals alone. Keep the output folder outside the source folder.
 
-Before deleting the original, authenticate the encrypted copy from beginning to end:
+To encrypt just one file, give the command two filenames instead:
+
+```bash
+turbocrypt encrypt document.pdf document.pdf.enc
+```
+
+By default, folder and file names stay readable. You can [encrypt those too](usage.md#hide-file-and-folder-names).
+
+## 5. Check the encrypted copy
+
+Before relying on it, check that TurboCrypt can read and verify every encrypted file:
 
 ```bash
 turbocrypt verify encrypted-documents/
 ```
 
-For a faster key check, `verify --quick` authenticates only the header.
+This checks the full contents without saving decrypted copies. If anything is damaged or the key is wrong, TurboCrypt reports an error.
 
-It does not detect damage elsewhere in the file.
+## 6. Restore your files
 
-```bash
-turbocrypt verify --quick encrypted-documents/
-```
-
-### Step 5: Decrypt files
-
-Finally, supply the encrypted source and the destination for the plaintext.
-As with encryption, the source may be a file or a directory:
+Decrypt into a new folder so you can compare the result with your originals:
 
 ```bash
-# A single file
-turbocrypt decrypt document.pdf.enc document.pdf
-
-# A directory tree
-turbocrypt decrypt encrypted-documents/ my-documents/
+turbocrypt decrypt encrypted-documents/ restored-documents/
 ```
 
-Continue with the [usage guide](usage.md) for common workflows and options.
+Open a few files in `restored-documents/` and make sure they're what you expect. For the single file from earlier, use:
+
+```bash
+turbocrypt decrypt document.pdf.enc restored-document.pdf
+```
+
+Now you can [encrypt a larger collection](usage.md), [work in a mounted folder](mount.md), or [keep private files in Git](git.md).
