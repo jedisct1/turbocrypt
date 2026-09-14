@@ -13,7 +13,7 @@ TurboCrypt encrypts anything from a single document to a whole directory of back
 - **Fast.** Processes files in parallel, whether you're working with a few documents or a large directory tree.
 - **Modern cryptography.** Encryption and tamper detection are built in, so you don't have to choose algorithms or security settings.
 - **Encrypted folders you can work in.** Mount a folder and use your usual apps to read and edit its files. The encrypted folder can be on your own disk or on remote storage you've connected to your computer.
-- **Private files alongside public code.** Commit encrypted notes, scripts, or unfinished work to Git, and share the key with the maintainers who need access.
+- **Private files alongside public code.** Commit encrypted notes, scripts, or unfinished work to Git, and optionally share the key with other maintainers who need access.
 
 ## Install TurboCrypt
 
