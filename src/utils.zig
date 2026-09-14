@@ -100,6 +100,55 @@ pub fn pathRelation(parent: []const u8, candidate: []const u8, allocator: std.me
     return if (std.mem.eql(u8, first, "..")) .other else .descendant;
 }
 
+pub fn isPlainComponent(component: []const u8) bool {
+    return component.len != 0 and !std.mem.eql(u8, component, ".") and !std.mem.eql(u8, component, "..");
+}
+
+/// Resolve the parent of `rel` through directory handles so symlinks cannot redirect writes outside the root.
+///
+/// Reject empty, dot, and dot-dot components.
+/// Missing parents return null unless creation is requested; symlinks and non-directories always return null.
+/// The caller closes the returned handle.
+pub fn openParentIn(io: std.Io, root: std.Io.Dir, rel: []const u8, create: bool) !?std.Io.Dir {
+    var it = std.mem.splitScalar(u8, rel, '/');
+    var component = it.next() orelse return error.UnsafePath;
+    var dir = try root.openDir(io, ".", .{});
+    errdefer dir.close(io);
+    while (true) {
+        if (!isPlainComponent(component)) return error.UnsafePath;
+        const next = it.next() orelse return dir;
+        // Linux and macOS report symlinks as SymLinkLoop and NotDir respectively.
+        const child = dir.openDir(io, component, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound, error.SymLinkLoop, error.NotDir => blk: {
+                if (!create or err != error.FileNotFound) {
+                    dir.close(io);
+                    return null;
+                }
+                try dir.createDir(io, component, .default_dir);
+                break :blk try dir.openDir(io, component, .{ .follow_symlinks = false });
+            },
+            else => return err,
+        };
+        dir.close(io);
+        dir = child;
+        component = next;
+    }
+}
+
+/// Path-based wrapper for openParentIn; `create` also permits creating the root.
+pub fn openParent(io: std.Io, root: []const u8, rel: []const u8, create: bool) !?std.Io.Dir {
+    var dir = std.Io.Dir.openDir(.cwd(), io, root, .{}) catch |err| switch (err) {
+        error.FileNotFound => blk: {
+            if (!create) return err;
+            try ensureDirectory(root, io);
+            break :blk try std.Io.Dir.openDir(.cwd(), io, root, .{});
+        },
+        else => return err,
+    };
+    defer dir.close(io);
+    return openParentIn(io, dir, rel, create);
+}
+
 pub fn containsString(list: []const []const u8, needle: []const u8) bool {
     for (list) |item| {
         if (std.mem.eql(u8, item, needle)) return true;
@@ -465,4 +514,44 @@ test "path relation" {
     try testing.expectEqual(PathRelation.other, try pathRelation("tmp/relation/source", "tmp/relation/sibling", allocator, io));
     try testing.expectEqual(PathRelation.other, try pathRelation("tmp/relation/source", "tmp/relation", allocator, io));
     try testing.expectEqual(PathRelation.other, try pathRelation("tmp/relation/source", "tmp/relation/source-two", allocator, io));
+}
+
+test "openParentIn walks through handles and refuses unsafe components" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    try ensureDirectory("tmp/open_parent/a/b", io);
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/open_parent") catch {};
+    var root = try std.Io.Dir.openDir(.cwd(), io, "tmp/open_parent", .{});
+    defer root.close(io);
+
+    {
+        var parent = (try openParentIn(io, root, "a/b/file", false)).?;
+        defer parent.close(io);
+        const f = try parent.createFile(io, "file", .{});
+        f.close(io);
+        _ = try std.Io.Dir.statFile(.cwd(), io, "tmp/open_parent/a/b/file", .{});
+    }
+    {
+        var parent = (try openParentIn(io, root, "top", false)).?;
+        defer parent.close(io);
+        const f = try parent.createFile(io, "top", .{});
+        f.close(io);
+        _ = try std.Io.Dir.statFile(.cwd(), io, "tmp/open_parent/top", .{});
+    }
+    try testing.expectEqual(@as(?std.Io.Dir, null), try openParentIn(io, root, "missing/file", false));
+    try testing.expectError(error.UnsafePath, openParentIn(io, root, "a//file", false));
+    try testing.expectError(error.UnsafePath, openParentIn(io, root, "a/../file", false));
+    try testing.expectError(error.UnsafePath, openParentIn(io, root, "./file", false));
+    try testing.expectError(error.UnsafePath, openParentIn(io, root, "", false));
+
+    if (builtin.os.tag == .windows) return;
+    root.symLink(io, "a", "link", .{ .is_directory = true }) catch return;
+    try testing.expectEqual(@as(?std.Io.Dir, null), try openParentIn(io, root, "link/file", false));
+    try testing.expectEqual(@as(?std.Io.Dir, null), try openParentIn(io, root, "link/file", true));
+    try testing.expectEqual(@as(?std.Io.Dir, null), try openParent(io, "tmp/open_parent", "link/file", false));
+
+    var created = (try openParentIn(io, root, "new/deeper/file", true)).?;
+    created.close(io);
+    try testing.expect(try isDirectory("tmp/open_parent/new/deeper", io));
 }

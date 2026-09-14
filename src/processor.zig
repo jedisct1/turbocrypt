@@ -14,12 +14,35 @@ fn readAll(file: std.Io.File, io: std.Io, buffer: []u8) !usize {
 
 const max_tmp_attempts = 16;
 
+const temporary_prefix = ".tc-";
+const temporary_suffix = ".tmp";
+pub const temporary_name_length = temporary_prefix.len + 16 + temporary_suffix.len;
+
+/// Keep temporary names short enough to fit beside destinations at the filesystem's name limit.
+pub fn temporaryName(rand: u64) [temporary_name_length]u8 {
+    var name: [temporary_name_length]u8 = undefined;
+    _ = std.fmt.bufPrint(&name, temporary_prefix ++ "{x:0>16}" ++ temporary_suffix, .{rand}) catch unreachable;
+    return name;
+}
+
+/// Recognize temporary files that the mount must hide, including leftovers from a crash.
+pub fn isTemporaryName(name: []const u8) bool {
+    if (name.len != temporary_name_length) return false;
+    if (!std.mem.startsWith(u8, name, temporary_prefix) or !std.mem.endsWith(u8, name, temporary_suffix)) return false;
+    for (name[temporary_prefix.len .. name.len - temporary_suffix.len]) |c| {
+        if (!std.ascii.isHex(c) or std.ascii.isUpper(c)) return false;
+    }
+    return true;
+}
+
 /// A file that appears at its destination only once it is complete.
 ///
 /// The data goes to a temporary file that is renamed over the destination.
 /// The temporary file lives next to the destination unless a directory is given, which keeps plain temporary files out of a git working tree.
 pub const AtomicOutput = struct {
     file: std.Io.File,
+    /// Anchors tmp_path; the caller keeps this handle open through deinit.
+    tmp_dir: std.Io.Dir,
     tmp_path: []u8,
     dest_path: []const u8,
     allocator: std.mem.Allocator,
@@ -31,19 +54,43 @@ pub const AtomicOutput = struct {
         allocator: std.mem.Allocator,
         io: std.Io,
     ) !AtomicOutput {
+        const dir = tmp_dir orelse (std.fs.path.dirname(dest_path) orelse ".");
+        return createWith(.cwd(), dir, dest_path, options, allocator, io);
+    }
+
+    /// Stage through a directory handle so symlink changes cannot redirect the write.
+    pub fn createIn(
+        dir: std.Io.Dir,
+        options: std.Io.Dir.CreateFileOptions,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+    ) !AtomicOutput {
+        return createWith(dir, null, &.{}, options, allocator, io);
+    }
+
+    fn createWith(
+        tmp_dir: std.Io.Dir,
+        prefix_dir: ?[]const u8,
+        dest_path: []const u8,
+        options: std.Io.Dir.CreateFileOptions,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+    ) !AtomicOutput {
         var opts = options;
         opts.exclusive = true;
-        const dir = tmp_dir orelse (std.fs.path.dirname(dest_path) orelse ".");
-        const base = std.fs.path.basename(dest_path);
 
         var attempt: u32 = 0;
         while (attempt < max_tmp_attempts) : (attempt += 1) {
             var rand: u64 = undefined;
             io.random(std.mem.asBytes(&rand));
-            const tmp_path = try std.fmt.allocPrint(allocator, "{s}/{s}.{x}.tmp", .{ dir, base, rand });
+            const name = temporaryName(rand);
+            const tmp_path = if (prefix_dir) |dir|
+                try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, name })
+            else
+                try allocator.dupe(u8, &name);
             errdefer allocator.free(tmp_path);
 
-            const file = std.Io.Dir.createFile(.cwd(), io, tmp_path, opts) catch |err| switch (err) {
+            const file = tmp_dir.createFile(io, tmp_path, opts) catch |err| switch (err) {
                 error.PathAlreadyExists => {
                     allocator.free(tmp_path);
                     continue;
@@ -53,6 +100,7 @@ pub const AtomicOutput = struct {
 
             return .{
                 .file = file,
+                .tmp_dir = tmp_dir,
                 .tmp_path = tmp_path,
                 .dest_path = dest_path,
                 .allocator = allocator,
@@ -73,7 +121,7 @@ pub const AtomicOutput = struct {
     /// Move the file into an already open directory.
     /// The handle, not a path, decides where the file lands, so a symbolic link planted in the tree after the checks cannot redirect it.
     pub fn finalizeInto(self: *AtomicOutput, dest_dir: std.Io.Dir, dest_name: []const u8, io: std.Io) !void {
-        try std.Io.Dir.rename(.cwd(), self.tmp_path, dest_dir, dest_name, io);
+        try std.Io.Dir.rename(self.tmp_dir, self.tmp_path, dest_dir, dest_name, io);
         self.keep();
     }
 
@@ -86,7 +134,7 @@ pub const AtomicOutput = struct {
     pub fn deinit(self: *AtomicOutput, io: std.Io) void {
         self.file.close(io);
         if (self.tmp_path.len != 0) {
-            std.Io.Dir.deleteFile(.cwd(), io, self.tmp_path) catch {};
+            self.tmp_dir.deleteFile(io, self.tmp_path) catch {};
             self.allocator.free(self.tmp_path);
         }
     }
@@ -101,10 +149,12 @@ pub fn writeFileAtomic(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
-    try writeFileAtomicIn(.cwd(), dest_path, data, permissions, tmp_dir, allocator, io);
+    const dir = tmp_dir orelse (std.fs.path.dirname(dest_path) orelse ".");
+    try writeFileAtomicIn(.cwd(), dest_path, data, permissions, dir, allocator, io);
 }
 
 /// Like writeFileAtomic, with the destination given as an open directory and a name inside it.
+/// By default, stage through the destination handle to prevent path redirection.
 pub fn writeFileAtomicIn(
     dest_dir: std.Io.Dir,
     dest_name: []const u8,
@@ -116,7 +166,10 @@ pub fn writeFileAtomicIn(
 ) !void {
     var options: std.Io.Dir.CreateFileOptions = .{};
     if (permissions) |perms| options.permissions = perms;
-    var atomic = try AtomicOutput.create(dest_name, options, tmp_dir, allocator, io);
+    var atomic = if (tmp_dir) |dir|
+        try AtomicOutput.create(dest_name, options, dir, allocator, io)
+    else
+        try AtomicOutput.createIn(dest_dir, options, allocator, io);
     defer atomic.deinit(io);
 
     try atomic.file.writeStreamingAll(io, data);
@@ -662,4 +715,66 @@ test "writeFileAtomic keeps temporary files in the given directory" {
     defer tmp_dir.close(io);
     var tmp_it = tmp_dir.iterate();
     try testing.expectEqual(@as(?std.Io.Dir.Entry, null), try tmp_it.next(io));
+}
+
+test "temporary names have one shape" {
+    const testing = std.testing;
+    const name = temporaryName(0x0123456789abcdef);
+    try testing.expectEqualStrings(".tc-0123456789abcdef.tmp", &name);
+    try testing.expect(isTemporaryName(&name));
+    try testing.expect(isTemporaryName(&temporaryName(0)));
+    try testing.expect(!isTemporaryName(".tc-0123456789ABCDEF.tmp"));
+    try testing.expect(!isTemporaryName(".tc-0123456789abcde.tmp"));
+    try testing.expect(!isTemporaryName("x.tc-0123456789abcdef.tmp"));
+    try testing.expect(!isTemporaryName("notes.txt"));
+}
+
+test "the temporary file fits next to a 255-byte destination" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_long");
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_long") catch {};
+
+    const long_name: [255]u8 = @splat('n');
+    const dest_path = "tmp/atomic_long/" ++ long_name;
+    try writeFileAtomic(dest_path, "data", null, null, allocator, io);
+    const content = try std.Io.Dir.readFileAlloc(.cwd(), io, dest_path, allocator, .limited(16));
+    defer allocator.free(content);
+    try testing.expectEqualStrings("data", content);
+}
+
+test "createIn stages and publishes through directory handles" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_in/dest");
+    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_in") catch {};
+    var stage = try std.Io.Dir.openDir(.cwd(), io, "tmp/atomic_in", .{ .iterate = true });
+    defer stage.close(io);
+    var dest = try std.Io.Dir.openDir(.cwd(), io, "tmp/atomic_in/dest", .{ .iterate = true });
+    defer dest.close(io);
+
+    {
+        var atomic = try AtomicOutput.createIn(stage, .{}, allocator, io);
+        defer atomic.deinit(io);
+        try testing.expect(isTemporaryName(atomic.tmp_path));
+        _ = try stage.statFile(io, atomic.tmp_path, .{});
+        try atomic.file.writeStreamingAll(io, "moved");
+        try atomic.finalizeInto(dest, "final", io);
+    }
+    const content = try std.Io.Dir.readFileAlloc(.cwd(), io, "tmp/atomic_in/dest/final", allocator, .limited(16));
+    defer allocator.free(content);
+    try testing.expectEqualStrings("moved", content);
+
+    {
+        var atomic = try AtomicOutput.createIn(stage, .{}, allocator, io);
+        atomic.deinit(io);
+    }
+    var it = stage.iterate();
+    var count: usize = 0;
+    while (try it.next(io)) |_| count += 1;
+    try testing.expectEqual(@as(usize, 1), count);
 }

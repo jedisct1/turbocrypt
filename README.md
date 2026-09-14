@@ -45,6 +45,15 @@ turbocrypt decrypt encrypted-documents/ restored-documents/
 
 The same commands work on individual files.
 
+To work on the encrypted files without decrypting them to disk, mount the encrypted directory on an empty one:
+
+```bash
+turbocrypt mount encrypted-documents/ ~/Volumes/documents
+turbocrypt unmount ~/Volumes/documents
+```
+
+This needs [fuse-t](https://github.com/macos-fuse-t/fuse-t/releases) on macOS, and the `fuse3` package on Linux for its mount helper.
+
 Read [Getting started](docs/getting-started.md) for the full tutorial or the [command reference](docs/command-reference.md) for the complete command set.
 
 ## Documentation
@@ -54,6 +63,8 @@ Read [Getting started](docs/getting-started.md) for the full tutorial or the [co
 - [Usage guide](docs/usage.md): password-protected keys, contexts, filenames, exclusions, verification, and other common workflows
 
 - [Private files in Git](docs/git.md): keep notes, scripts, and unfinished work in the same repository as public code, with shared or separate keys
+
+- [Mounting an encrypted directory](docs/mount.md): work on encrypted files through a normal directory, with fuse-t on macOS or libfuse on Linux
 
 - [Command reference](docs/command-reference.md): commands and processing options at a glance
 

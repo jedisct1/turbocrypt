@@ -2,6 +2,36 @@ const std = @import("std");
 
 const version = @import("build.zig.zon").version;
 
+const libfuse_sources = [_][]const u8{
+    "fuse.c",
+    "fuse_loop.c",
+    "fuse_loop_mt.c",
+    "fuse_lowlevel.c",
+    "fuse_opt.c",
+    "fuse_signals.c",
+    "buffer.c",
+    "cuse_lowlevel.c",
+    "helper.c",
+    "modules/subdir.c",
+    "mount_util.c",
+    "fuse_log.c",
+    "compat.c",
+    "util.c",
+    "mount.c",
+};
+
+// Match libfuse's Meson build without shared-library symbol versioning.
+const libfuse_flags = [_][]const u8{
+    "-D_REENTRANT",
+    "-DHAVE_LIBFUSE_PRIVATE_CONFIG_H",
+    "-D_GNU_SOURCE",
+    "-D_FILE_OFFSET_BITS=64",
+    "-DFUSE_USE_VERSION=317",
+    "-DFUSERMOUNT_DIR=\"/usr/bin\"",
+    "-Wno-sign-compare",
+    "-fno-strict-aliasing",
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -16,8 +46,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const fuse_default = target.result.os.tag == .macos or target.result.os.tag == .linux;
+    const fuse = b.option(bool, "fuse", "Build the mount command (default: on for macOS and Linux)") orelse fuse_default;
+
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
+    build_options.addOption(bool, "fuse", fuse);
 
     const exe = b.addExecutable(.{
         .name = "turbocrypt",
@@ -44,6 +78,22 @@ pub fn build(b: *std.Build) void {
         exe.root_module.link_libc = true;
     }
 
+    if (fuse and target.result.os.tag == .linux) {
+        exe.root_module.link_libc = true;
+        // Bundle LGPL-2.1 libfuse so Linux releases need no shared library.
+        // The checked-in configuration headers replace Meson's generated headers.
+        if (b.lazyDependency("libfuse", .{})) |libfuse| {
+            exe.root_module.addIncludePath(libfuse.path("include"));
+            exe.root_module.addIncludePath(libfuse.path("lib"));
+            exe.root_module.addIncludePath(b.path("src/mount/libfuse"));
+            exe.root_module.addCSourceFiles(.{
+                .root = libfuse.path("lib"),
+                .files = &libfuse_sources,
+                .flags = &libfuse_flags,
+            });
+        }
+    }
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");
@@ -65,4 +115,11 @@ pub fn build(b: *std.Build) void {
     git_e2e.has_side_effects = true;
     const git_e2e_step = b.step("test-git", "Run the git integration scenario with real hooks");
     git_e2e_step.dependOn(&git_e2e.step);
+
+    // Skip when the host lacks the FUSE runtime needed for a real mount.
+    const mount_e2e = b.addSystemCommand(&.{ "sh", "tests/mount_e2e.sh" });
+    mount_e2e.addArtifactArg(exe);
+    mount_e2e.has_side_effects = true;
+    const mount_e2e_step = b.step("test-mount", "Run the mount scenario through FUSE");
+    mount_e2e_step.dependOn(&mount_e2e.step);
 }

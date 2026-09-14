@@ -1025,45 +1025,9 @@ fn decide(ctx: *const Context, info: *PathInfo, direction: Direction, force: boo
     info.decision = decision;
 }
 
-/// Open the directory that holds `rel` under `root`, one component at a time.
-/// Symbolic links are not followed, so a link planted in the tree cannot redirect a write or a delete.
-/// Missing directories are created when asked, the root included, otherwise null is returned.
-/// The caller closes the handle.
-fn openParent(io: std.Io, root: []const u8, rel: []const u8, create: bool) !?std.Io.Dir {
-    var dir = std.Io.Dir.openDir(.cwd(), io, root, .{}) catch |err| switch (err) {
-        error.FileNotFound => blk: {
-            if (!create) return err;
-            try utils.ensureDirectory(root, io);
-            break :blk try std.Io.Dir.openDir(.cwd(), io, root, .{});
-        },
-        else => return err,
-    };
-    errdefer dir.close(io);
-
-    var it = std.mem.splitScalar(u8, rel, '/');
-    var component = it.next() orelse return Error.UnsafePath;
-    while (it.next()) |next| : (component = next) {
-        if (component.len == 0) return Error.UnsafePath;
-        const child = dir.openDir(io, component, .{ .follow_symlinks = false }) catch |err| switch (err) {
-            error.FileNotFound => blk: {
-                if (!create) {
-                    dir.close(io);
-                    return null;
-                }
-                try dir.createDir(io, component, .default_dir);
-                break :blk try dir.openDir(io, component, .{ .follow_symlinks = false });
-            },
-            else => return err,
-        };
-        dir.close(io);
-        dir = child;
-    }
-    return dir;
-}
-
 /// Delete `rel` under `root` through directory handles, then remove the directories it leaves empty.
 fn deleteThroughHandles(io: std.Io, root: []const u8, rel: []const u8) !void {
-    if (try openParent(io, root, rel, false)) |parent| {
+    if (try utils.openParent(io, root, rel, false)) |parent| {
         var dir = parent;
         defer dir.close(io);
         dir.deleteFile(io, std.fs.path.basename(rel)) catch |err| switch (err) {
@@ -1077,7 +1041,7 @@ fn deleteThroughHandles(io: std.Io, root: []const u8, rel: []const u8) !void {
 fn pruneEmptyParents(io: std.Io, root: []const u8, rel: []const u8) void {
     var ancestor = std.fs.path.dirname(rel);
     while (ancestor) |path| : (ancestor = std.fs.path.dirname(path)) {
-        const parent = (openParent(io, root, path, false) catch break) orelse break;
+        const parent = (utils.openParent(io, root, path, false) catch break) orelse break;
         var dir = parent;
         defer dir.close(io);
         dir.deleteDir(io, std.fs.path.basename(path)) catch break;
@@ -1162,7 +1126,7 @@ fn writePlain(ctx: *const Context, info: *PathInfo) !void {
     const allocator = ctx.allocator;
     try validateDestination(allocator, ctx.repo.toplevel, info.plain, ctx.tracked, ctx.io);
 
-    const parent = openParent(ctx.io, ctx.repo.toplevel, info.plain, true) catch return Error.UnsafePath;
+    const parent = utils.openParent(ctx.io, ctx.repo.toplevel, info.plain, true) catch return Error.UnsafePath;
     var dir = parent orelse return Error.UnsafePath;
     defer dir.close(ctx.io);
     const name = std.fs.path.basename(info.plain);
@@ -1278,7 +1242,7 @@ fn putBack(ctx: *const Context, atomic: *const processor.AtomicOutput, dir: std.
 fn deletePlain(ctx: *const Context, info: *const PathInfo) !void {
     const allocator = ctx.allocator;
     const io = ctx.io;
-    const parent = (try openParent(io, ctx.repo.toplevel, info.plain, false)) orelse return;
+    const parent = (try utils.openParent(io, ctx.repo.toplevel, info.plain, false)) orelse return;
     var dir = parent;
     defer dir.close(io);
     const name = std.fs.path.basename(info.plain);
@@ -1314,7 +1278,7 @@ fn encryptPlain(ctx: *const Context, info: *PathInfo, stage: *std.ArrayList([]u8
         info.cipher_rel = try filename_crypto.encryptPath(allocator, info.plain, ctx.keys.filename_key, '/');
         break :blk info.cipher_rel.?;
     };
-    var dir = (try openParent(ctx.io, ctx.store_abs, cipher_rel, true)) orelse return Error.UnsafePath;
+    var dir = (try utils.openParent(ctx.io, ctx.store_abs, cipher_rel, true)) orelse return Error.UnsafePath;
     defer dir.close(ctx.io);
 
     const encrypted = try crypto.encryptBound(plain_bytes.?, info.plain, ctx.keys, allocator, ctx.io);

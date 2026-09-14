@@ -156,7 +156,31 @@ turbocrypt git decrypt --force docs/internal.md  # take the upstream version
 turbocrypt git encrypt --force docs/internal.md  # keep the working version
 ```
 
-## Benchmarks and version
+## Mount
+
+The first argument is the encrypted directory and the second is the empty directory where the plain files appear.
+See [Mounting an encrypted directory](mount.md) for the details and the limits.
+
+```bash
+# Show the encrypted directory as a normal one, in the foreground
+turbocrypt mount --key KEY encrypted/ ~/Volumes/plain
+
+# Return once the volume is up
+turbocrypt mount --key KEY --daemon encrypted/ ~/Volumes/plain
+
+# A directory encrypted with --encrypted-filenames or --enc-suffix
+turbocrypt mount --key KEY --encrypted-filenames encrypted/ ~/Volumes/plain
+
+# Refuse every change
+turbocrypt mount --key KEY --read-only encrypted/ ~/Volumes/plain
+
+# Pass an option to fuse-t, here to turn attribute caching off
+turbocrypt mount --key KEY -o noattrcache encrypted/ ~/Volumes/plain
+
+# Unmount
+turbocrypt unmount ~/Volumes/plain
+```
+
 
 ```bash
 # Measure encryption throughput

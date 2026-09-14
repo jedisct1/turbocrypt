@@ -14,8 +14,8 @@ builds:
       - -Doptimize=ReleaseFast
       - -Dcpu=baseline+aes+avx+pclmul
     targets:
-      # Linux
-      - x86_64-linux-gnu
+      # Keep Linux releases self-contained with musl and bundled libfuse.
+      - x86_64-linux-musl
       # macOS (will be merged into universal binary)
       - x86_64-macos
       # Windows
@@ -32,8 +32,7 @@ builds:
       - -Doptimize=ReleaseFast
       - -Dcpu=baseline+aes+avx+avx2+pclmul+vaes
     targets:
-      # Linux
-      - x86_64-linux-gnu
+      - x86_64-linux-musl
       # macOS (will be merged into universal binary)
       - x86_64-macos
       # Windows
@@ -49,7 +48,7 @@ builds:
     flags:
       - -Doptimize=ReleaseFast
     targets:
-      - aarch64-linux-gnu
+      - aarch64-linux-musl
       - aarch64-macos
       - aarch64-windows-gnu
     hooks:

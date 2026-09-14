@@ -13,6 +13,7 @@ const password = @import("password.zig");
 const bench = @import("bench.zig");
 const git_cmd = @import("git/cmd.zig");
 const build_options = @import("build_options");
+const mount_cmd = if (build_options.fuse) @import("mount/cmd.zig") else void;
 
 const usage_text =
     \\TurboCrypt - High-performance file encryption
@@ -26,19 +27,23 @@ const usage_text =
     \\      Change or add password protection to an existing key file
     \\      Use --remove-password to remove password protection from a key
     \\
-    \\  turbocrypt encrypt [--key <key-file>] [--password] <source> <destination> [options]
+    \\  turbocrypt encrypt [--key <key-file>] [--password] <source> <destination>
+    \\                     [options]
     \\      Encrypt a file or directory
     \\
-    \\  turbocrypt decrypt [--key <key-file>] [--password] <source> <destination> [options]
+    \\  turbocrypt decrypt [--key <key-file>] [--password] <source> <destination>
+    \\                     [options]
     \\      Decrypt a file or directory
     \\
     \\  turbocrypt verify [--key <key-file>] [--password] [--quick] <source> [options]
     \\      Verify integrity of encrypted files without decrypting
-    \\      Use --quick to only check header MAC (faster, but doesn't verify data integrity)
+    \\      Use --quick to only check the header MAC (faster, but does not verify
+    \\      the data)
     \\
-    \\  turbocrypt list [--key <key-file>] [--password] [--encrypted-filenames] <directory> [options]
+    \\  turbocrypt list [--key <key-file>] [--password] [--encrypted-filenames]
+    \\                  <directory> [options]
     \\      List contents of encrypted directory
-    \\      If --encrypted-filenames is used, decrypts filenames (requires correct key)
+    \\      With --encrypted-filenames, decrypts filenames (requires the right key)
     \\      Shows file sizes and directory structure
     \\
     \\  turbocrypt config set-key <key-file>
@@ -70,6 +75,7 @@ const usage_text =
     \\      Subcommands: init, unlock, export-key, add, rm, status, encrypt, decrypt
     \\      Run "turbocrypt git help" for details
     \\
+++ mount_usage_text ++
     \\  turbocrypt bench
     \\      Run performance benchmarks
     \\
@@ -83,26 +89,26 @@ const usage_text =
     \\
     \\Options:
     \\  --key <path>         Path to key file (overrides env var and config)
-    \\  --password           Prompt for password (auto-detects password-protected keys)
-    \\  --context <string>   Context string for key derivation (creates independent key namespace)
-    \\                       Same context must be used for both encryption and decryption
+    \\  --password           Prompt for a password (protected keys are detected)
+    \\  --context <string>   Context string for key derivation (an independent key
+    \\                       namespace). The same context is needed to decrypt
     \\  --threads <n>        Number of worker threads (default: CPU count, max 64)
     \\  --buffer-size <size> Buffer size in bytes (default: 4194304 = 4MB)
-    \\  --in-place           Encrypt/decrypt files in place (source overwrites destination)
+    \\  --in-place           Encrypt/decrypt files in place (the source is replaced)
     \\  --force              Overwrite existing files without prompting
     \\  --enc-suffix         Add ".enc" suffix when encrypting, remove when decrypting
     \\                       (skips files without .enc suffix during decryption)
     \\  --encrypted-filenames      Encrypt filenames
-    \\                       (preserves directory structure, encrypts each path component)
+    \\                       (keeps the directory structure, encrypts each component)
     \\                       (incompatible with --in-place)
     \\  --exclude <pattern>  Exclude files matching pattern (can use multiple times)
     \\                       Supports: *.ext (extensions), dir/ (directories),
     \\                       exact/path (exact matches), prefix* (wildcards)
     \\  --ignore-symlinks    Ignore symbolic links (skip them during processing)
-    \\  --quick              (verify only) Only check header MAC, skip full verification
-    \\                       Faster but doesn't verify data integrity - only checks key correctness
-    \\  --dry-run            Show what would be processed without actually encrypting/decrypting
-    \\                       Useful for testing exclude patterns and verifying operations
+    \\  --quick              (verify only) Check the header MAC, skip the full check
+    \\                       Faster, but only tells whether the key is right
+    \\  --dry-run            Show what would be processed without changing files
+    \\                       Useful to test exclude patterns
     \\
     \\Examples:
     \\  turbocrypt keygen secret.key
@@ -125,7 +131,27 @@ const usage_text =
     \\  turbocrypt git add INTERNAL-DOC.md docs/internal.md
     \\  turbocrypt git unlock --key team.key
     \\
-;
+++ mount_examples_text;
+
+const mount_usage_text = if (build_options.fuse)
+    \\  turbocrypt mount [options] <encrypted-dir> <mountpoint>
+    \\      Show the encrypted files of <encrypted-dir> as plain files at <mountpoint>
+    \\      Stays in the foreground until the volume is unmounted, --daemon returns
+    \\      at once
+    \\      Run "turbocrypt mount --help" for the options
+    \\
+    \\  turbocrypt unmount <mountpoint>
+    \\      Unmount a directory mounted with "turbocrypt mount"
+    \\
+else
+    "";
+
+const mount_examples_text = if (build_options.fuse)
+    \\  turbocrypt mount encrypted/ ~/Volumes/plain
+    \\  turbocrypt unmount ~/Volumes/plain
+    \\
+else
+    "";
 
 fn printUsage() void {
     std.debug.print("{s}\n", .{usage_text});
@@ -1508,6 +1534,11 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     }
 }
 
+fn noMountSupport() noreturn {
+    std.debug.print("Error: this build of turbocrypt has no mount support\n", .{});
+    std.process.exit(1);
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
@@ -1575,6 +1606,16 @@ pub fn main(init: std.process.Init) !void {
         };
     } else if (std.mem.eql(u8, command, "bench")) {
         bench.run(allocator, io) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, command, "mount")) {
+        if (comptime !build_options.fuse) noMountSupport();
+        mount_cmd.runMount(command_args, allocator, io, init.environ_map) catch {
+            std.process.exit(1);
+        };
+    } else if (std.mem.eql(u8, command, "unmount")) {
+        if (comptime !build_options.fuse) noMountSupport();
+        mount_cmd.runUnmount(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else {
@@ -1743,4 +1784,11 @@ test {
     _ = @import("git/hooks.zig");
     _ = @import("git/cmd.zig");
     _ = @import("git/integration_test.zig");
+    if (build_options.fuse) {
+        _ = @import("mount/fuse.zig");
+        _ = @import("mount/names.zig");
+        _ = @import("mount/node.zig");
+        _ = @import("mount/fs.zig");
+        _ = @import("mount/cmd.zig");
+    }
 }

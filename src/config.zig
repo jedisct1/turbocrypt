@@ -117,7 +117,7 @@ pub const Config = struct {
 };
 
 /// The per-user data directory: Application Support on macOS, the XDG data home on Linux, LOCALAPPDATA on Windows.
-fn getAppDataDir(allocator: std.mem.Allocator, appname: []const u8, environ_map: *const std.process.Environ.Map) ![]const u8 {
+pub fn getAppDataDir(allocator: std.mem.Allocator, appname: []const u8, environ_map: *const std.process.Environ.Map) ![]const u8 {
     const native_os = builtin.os.tag;
     if (native_os == .windows) {
         const local_app_data = environ_map.get("LOCALAPPDATA") orelse return error.EnvironmentVariableNotFound;

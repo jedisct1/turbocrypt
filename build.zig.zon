@@ -12,6 +12,11 @@
             .url = "git+https://github.com/jedisct1/zig-base84.git?ref=0.2.0#abf64430414ee462fcd2847c7f694151c5e47caf",
             .hash = "base84-0.2.0-Pe665lpYAADUkY5wwdPFV5ex9oBvE7ZtcileYeWJSA2_",
         },
+        .libfuse = .{
+            .url = "https://github.com/libfuse/libfuse/releases/download/fuse-3.18.3/fuse-3.18.3.tar.gz",
+            .hash = "N-V-__8AAH7hpQBGgn_WYJ7zWhp38R2aFrmFmmYqDUpTz_D7",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

@@ -9,3 +9,4 @@ secret.key
 tmp
 zig-out
 zig-pkg/
+fuse-mount-progress.md

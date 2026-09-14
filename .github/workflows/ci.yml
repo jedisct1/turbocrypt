@@ -40,3 +40,56 @@ jobs:
 
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast
+
+  mount:
+    name: Mount (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Bound hangs in FUSE sessions.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: master
+
+      - name: Install fuse-t
+        if: runner.os == 'macOS'
+        run: brew install --cask fuse-t
+
+      - name: Install fusermount3
+        # Mounting still needs the setuid helper even with libfuse compiled in.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3
+
+      - name: Build with the mount command
+        run: zig build -Dfuse=true
+
+      - name: Check the entry points of the library
+        run: sh tests/fuse_symbols.sh zig-out/bin/turbocrypt
+
+      - name: Run tests
+        run: zig build -Dfuse=true test
+
+      - name: Check the binding against the headers
+        run: sh tests/fuse_abi.sh
+
+      - name: Mount scenario
+        run: zig build -Dfuse=true test-mount
+
+      - name: Static Linux release binary
+        if: runner.os == 'Linux'
+        run: |
+          zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseFast --prefix zig-out/musl
+          file zig-out/musl/bin/turbocrypt | grep -q "statically linked"
+          zig-out/musl/bin/turbocrypt mount --print-abi > /dev/null

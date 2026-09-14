@@ -105,6 +105,16 @@ pub fn decryptFilenameStrict(
     return decryptFilenameCanonical(allocator, encrypted_name, filename_key, .strict);
 }
 
+/// Reject noncanonical or unsafe names before using them as native path components.
+/// The caller frees the result.
+pub fn decryptFilenameForFilesystem(
+    allocator: std.mem.Allocator,
+    encrypted_name: []const u8,
+    filename_key: [16]u8,
+) ![]u8 {
+    return decryptFilenameCanonical(allocator, encrypted_name, filename_key, .{ .filesystem = std.fs.path.sep });
+}
+
 /// What a decrypted name may contain.
 /// `strict` is for names that are printed and joined with '/'. `filesystem` is for native paths with the given separator.
 const DecryptionSafety = union(enum) {

@@ -32,6 +32,55 @@ For large files, storage speed is usually the limit.
 
 Reduce the per-file buffer, for example with `--buffer-size 1048576`.
 
+## Mount
+
+### "fuse-t is not installed"
+
+On macOS, `mount` loads fuse-t at run time.
+Install it from [its releases](https://github.com/macos-fuse-t/fuse-t/releases).
+Every other command works without it.
+On Linux the library is part of the binary, and only the `fusermount3` helper of the `fuse3` package is needed.
+
+### The command does not return
+
+That is the normal foreground mode.
+The volume stays mounted until you run `turbocrypt unmount <mountpoint>` in another terminal, or press Ctrl-C.
+Pass `--daemon` to get the prompt back once the volume is up.
+
+### The mounted directory is empty
+
+The arguments are `<encrypted-dir> <mountpoint>`, in that order.
+With the order reversed, the mount shows an empty encrypted directory and hides your files under the mountpoint until the unmount.
+The mount warns when the mountpoint is not empty.
+
+### "is already mounted by another turbocrypt process"
+
+The encrypted directory belongs to one mount at a time.
+Unmount the other one first.
+
+### "is read-only through the mount"
+
+The file belongs to another user, or to a group the mount could not give to a new file.
+A write-back creates a new file, so the mount refuses to open the file for writing instead of failing at every close.
+Change the owner or the group of the file, or copy it.
+
+### "cannot write back"
+
+The write of the new encrypted file failed, on a full disk for example.
+The data stays in memory and the next flush, sync or close retries.
+At unmount, what still fails is saved as ciphertext under the rescue directory, and the exit status is 2.
+`turbocrypt decrypt` restores such a copy with the same key.
+
+### "still in the mount table"
+
+The fuse-t server died while the mount was up, so the mountpoint kept a stale entry.
+Run `umount <mountpoint>`.
+
+### Attributes look old
+
+The NFS client of macOS caches attributes for up to 60 seconds.
+Open the file to see the latest content, or mount with `-o noattrcache`.
+
 ## Git integration
 
 ### "nothing to commit" after editing a private file

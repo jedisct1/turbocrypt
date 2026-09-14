@@ -9,7 +9,7 @@ _turbocrypt() {
         cword=$COMP_CWORD
     fi
 
-    local subcommands=(keygen change-password encrypt decrypt verify list config git bench version)
+    local subcommands=(keygen change-password encrypt decrypt verify list config git mount unmount bench version)
     local config_subs=(show set-key set-threads set-buffer-size add-exclude remove-exclude set-ignore-symlinks set-encrypted-filenames)
     local git_subs=(init unlock export-key add rm status show encrypt decrypt help)
 
@@ -89,6 +89,24 @@ _turbocrypt() {
                 --exclude) COMPREPLY=(); return 0 ;;
             esac
             COMPREPLY=( $(compgen -d -- "$cur") )  # directories only
+            return 0
+            ;;
+        mount)
+            local opts="--key --password --context --encrypted-filenames --enc-suffix --read-only --daemon --single-thread --debug --volname --allow-other --max-file-size --memory-limit --rescue-dir --force -o -h --help"
+            if [[ "$cur" == --* || "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+                return 0
+            fi
+            case "$prev" in
+                --key) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
+                --rescue-dir) COMPREPLY=( $(compgen -d -- "$cur") ); return 0 ;;
+                --context|--volname|--max-file-size|--memory-limit|-o) COMPREPLY=(); return 0 ;;
+            esac
+            COMPREPLY=( $(compgen -d -- "$cur") )
+            return 0
+            ;;
+        unmount)
+            COMPREPLY=( $(compgen -d -- "$cur") )
             return 0
             ;;
         git)
