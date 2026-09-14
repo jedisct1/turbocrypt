@@ -1,8 +1,11 @@
 .DS_Store
-*~
+.swival/
 .zig-cache
-zig-out
+*~
 api-faq.md
+LOG.md
+MISTAKES.md
 secret.key
 tmp
+zig-out
 zig-pkg/
