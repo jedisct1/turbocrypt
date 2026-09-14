@@ -34,6 +34,8 @@ turbocrypt mount encrypted/ ~/Volumes/documents
 From then on, every file written under `~/Volumes/documents` lands encrypted in `encrypted/`.
 An empty encrypted directory mounts too, so a new store can also start empty and fill up through the mount.
 
+The mount handles plain names, names with the `.enc` suffix, and encrypted names, with the same options as `encrypt`.
+
 ## Requirements
 
 On macOS, install [fuse-t](https://github.com/macos-fuse-t/fuse-t/releases).
@@ -55,9 +57,7 @@ Windows is not supported.
 - Closing a large file takes the time of one encryption of that file.
 - Every write-back replaces the encrypted file. Hard links to it break, and its inode changes.
 
-Filenames map in both directions without any table.
-
-The mount handles plain names, names with the `.enc` suffix, and encrypted names, with the same options as `encrypt`.
+These limitations will be lifted in Turbocrypt 2.0.
 
 ## Options
 
@@ -97,29 +97,6 @@ A file is writable through the mount only when a new file could get the same own
 A file that belongs to someone else can be read but not written, and the mount prints why.
 
 Creation modes follow the umask of the program that creates the file, once.
-
-## What is hidden
-
-The view shows regular files and directories.
-
-Symbolic links, FIFOs, sockets and devices in the encrypted directory are absent and answer ENOENT.
-
-Names that do not decode in encrypted-name mode are absent too.
-
-So are files without `.enc` in suffix mode, and temporary files of the form `.tc-<16 hex digits>.tmp`.
-`list` still shows everything.
-
-In plain-name mode a file with that name cannot be created through the mount.
-
-A temporary file left by a crash stays hidden.
-
-Remove them with:
-
-```bash
-find encrypted/ -name '.tc-*.tmp' -delete
-```
-
-A directory that holds only hidden entries is not empty on disk, so `rmdir` refuses it.
 
 ## Unsupported operations
 
