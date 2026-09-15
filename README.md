@@ -11,7 +11,7 @@ TurboCrypt encrypts anything from a single document to a whole directory of back
 - **Easy to use.** Create a key, then encrypt and decrypt files with a single command.
 - **Small and portable.** Written in Zig, with no extra libraries to install for file encryption. It runs on Linux, macOS, Windows, and BSD.
 - **Fast.** Processes files in parallel, whether you're working with a few documents or a large directory tree.
-- **Modern cryptography.** Built on AEGIS, HCTR2, and TurboSHAKE, with no insecure options.
+- **Modern cryptography.** Built on Argon2, AEGIS, HCTR2, and TurboSHAKE, with no insecure options.
 - **Encrypted folders you can work in.** Mount a folder and use your usual apps to read and edit its files. The encrypted folder can be on your own disk or on remote storage you've connected to your computer.
 - **Private files alongside public code.** Commit encrypted notes, scripts, or unfinished work to Git, and optionally share the key with other maintainers who need access.
 
