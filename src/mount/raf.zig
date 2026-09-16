@@ -123,6 +123,21 @@ pub const Node = struct {
         node.adopt(file, true);
     }
 
+    /// Replace a read-only backing handle without releasing the inode claim.
+    /// On failure the caller retains `file`; on success the node owns it.
+    pub fn upgradeWritable(node: *Node, file: std.Io.File, io: std.Io) !void {
+        std.debug.assert(node.opened and !node.writable);
+        const claim = node.claim orelse return error.FileBusy;
+        const key = node_mod.markKey(try fuse.statFd(file.handle));
+        if (key.dev != claim.key.dev or key.ino != claim.key.ino) return error.FileBusy;
+
+        const old_file = node.file;
+        node.storage = Storage.init(file, io);
+        node.file = file;
+        node.writable = true;
+        old_file.close(io);
+    }
+
     fn prepare(node: *Node, file: std.Io.File, inodes: *Inodes, io: std.Io) !void {
         std.debug.assert(!node.opened and node.claim == null);
         const key = node_mod.markKey(try fuse.statFd(file.handle));
@@ -461,6 +476,56 @@ test "one inode carries one context: a second node on it is refused until the fi
     try testing.expectEqual(null, abandoned.claim);
     try testing.expectEqual(0, inodes.count());
     table.release(abandoned);
+}
+
+test "a read-only node upgrades to a writable handle without changing its inode" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+    var dir = try openTestRoot(io);
+    defer dir.close(io);
+    defer std.Io.Dir.deleteTree(.cwd(), io, test_root) catch {};
+    const raf_key = testRafKey(49);
+    var inodes: Inodes = .{ .allocator = allocator, .io = io };
+    defer inodes.deinit();
+    var table = Table.init(allocator, io, 0, 0);
+    defer table.deinit();
+
+    {
+        const created = try createNode(&table, &inodes, dir, "upgrade", &raf_key);
+        _ = try created.write("old", 0);
+        table.release(created);
+    }
+
+    const node = try table.attach("upgrade");
+    const read_only = try dir.openFile(io, "upgrade", .{ .mode = .read_only });
+    node.openWith(read_only, false, &inodes, &raf_key, allocator, io) catch |err| {
+        read_only.close(io);
+        return err;
+    };
+    try testing.expect(!node.writable);
+    try testing.expectEqual(1, inodes.count());
+
+    try dir.writeFile(io, .{ .sub_path = "different", .data = "not the same inode" });
+    const different = try dir.openFile(io, "different", .{ .mode = .read_write });
+    try testing.expectError(error.FileBusy, node.upgradeWritable(different, io));
+    different.close(io);
+    try testing.expect(!node.writable);
+    try testing.expectEqual(1, inodes.count());
+
+    const writable = try dir.openFile(io, "upgrade", .{ .mode = .read_write });
+    node.upgradeWritable(writable, io) catch |err| {
+        writable.close(io);
+        return err;
+    };
+    try testing.expect(node.writable);
+    try testing.expectEqual(1, inodes.count());
+    _ = try node.write("new", 0);
+    var back: [3]u8 = undefined;
+    try testing.expectEqual(3, try node.read(&back, 0));
+    try testing.expectEqualStrings("new", &back);
+
+    table.release(node);
+    try testing.expectEqual(0, inodes.count());
 }
 
 test "the cold size is authenticated, probed, or the backing size, and never an error" {

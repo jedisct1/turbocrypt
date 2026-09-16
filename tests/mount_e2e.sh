@@ -1238,9 +1238,24 @@ expect_no_file "$mnt/link"
 expect_unmount 0
 rm "$plain/link"
 
-step "container 13: chmod, and cp -p keeps the mtime"
+step "container 13: chmod upgrades an open reader, and cp -p keeps the mtime"
 mount_fs $fresh_attrs || fail "mount"
-chmod 600 "$mnt/empty"
+chmod 400 "$mnt/empty"
+python3 - "$mnt/empty" <<'PY'
+import os, sys
+p = sys.argv[1]
+reader = os.open(p, os.O_RDONLY)
+try:
+    os.chmod(p, 0o600)
+    writer = os.open(p, os.O_WRONLY)
+    try:
+        os.write(writer, b"X")
+    finally:
+        os.close(writer)
+finally:
+    os.close(reader)
+PY
+expect_content "$mnt/empty" "X"
 expect_eq "$(mode "$mnt/empty")" "600"
 expect_eq "$(mode "$box/empty")" "600"
 touch -t 202001010000 "$plain/hello.txt"

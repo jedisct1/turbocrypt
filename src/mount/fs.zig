@@ -1299,8 +1299,19 @@ fn syncPendingMarks(m: *Mount) void {
 
 /// Prefer read/write access even for readers so a later writer can share the context.
 /// RAF needs read access for partial-record updates; read-only mounts or denied writes keep the node read-only.
-fn rafOpenNode(m: *Mount, node: *raf_mod.Node, parent: std.Io.Dir, backing_path: []const u8) !void {
-    if (node.opened) return;
+fn rafOpenNode(m: *Mount, node: *raf_mod.Node, parent: std.Io.Dir, backing_path: []const u8, need_write: bool) !void {
+    if (node.opened) {
+        if (!need_write or node.writable) return;
+        const file = try openBackingIn(m, parent, backing_path, .read_write);
+        node.upgradeWritable(file, m.io) catch |err| {
+            file.close(m.io);
+            if (err == error.FileBusy) {
+                std.debug.print("turbocrypt mount: {s} changed while it was open; refusing to attach a different backing file\n", .{backing_path});
+            }
+            return err;
+        };
+        return;
+    }
     var writable = !m.options.read_only;
     const file = if (writable)
         openBackingIn(m, parent, backing_path, .read_write) catch |err| switch (err) {
@@ -1337,7 +1348,7 @@ fn rafOpenLocked(m: *Mount, resolved: *const Resolved, need_write: bool) !*raf_m
     errdefer m.raf_table.release(node);
     node.mutex.lockUncancelable(m.io);
     errdefer node.mutex.unlock(m.io);
-    try rafOpenNode(m, node, resolved.parent.dir, resolved.backing_path);
+    try rafOpenNode(m, node, resolved.parent.dir, resolved.backing_path, need_write);
     if (need_write and !node.writable) return error.AccessDenied;
     return node;
 }

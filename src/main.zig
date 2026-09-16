@@ -372,8 +372,8 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         opts.exclude_patterns.deinit(allocator);
     }
 
-    if (parsed.positional.len < 1) {
-        std.debug.print("Error: Missing output file path\n", .{});
+    if (parsed.positional.len != 1) {
+        std.debug.print("Error: Expected one output file path\n", .{});
         std.debug.print("Usage: turbocrypt keygen [--password] <output-file>\n", .{});
         return error.InvalidArguments;
     }
@@ -639,6 +639,11 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         std.debug.print("Usage: turbocrypt {s} [--key <key-file>] <source> [destination] [options]\n", .{op_name});
         return error.InvalidArguments;
     }
+    if (parsed.positional.len > 2) {
+        std.debug.print("Error: Expected a source and at most one destination\n", .{});
+        std.debug.print("Usage: turbocrypt {s} [--key <key-file>] <source> [destination] [options]\n", .{op_name});
+        return error.InvalidArguments;
+    }
 
     const source_path = parsed.positional[0];
 
@@ -858,8 +863,8 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         opts.exclude_patterns.deinit(allocator);
     }
 
-    if (parsed.positional.len < 1) {
-        std.debug.print("Error: Missing required argument\n", .{});
+    if (parsed.positional.len != 1) {
+        std.debug.print("Error: Expected one source path\n", .{});
         std.debug.print("Usage: turbocrypt verify [--key <key-file>] <source> [options]\n", .{});
         return error.InvalidArguments;
     }
@@ -1007,8 +1012,8 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
         opts.exclude_patterns.deinit(allocator);
     }
 
-    if (parsed.positional.len < 1) {
-        std.debug.print("Error: Missing required argument\n", .{});
+    if (parsed.positional.len != 1) {
+        std.debug.print("Error: Expected one directory path\n", .{});
         std.debug.print("Usage: turbocrypt list [--key <key-file>] [--encrypted-filenames] <directory> [options]\n", .{});
         return error.InvalidArguments;
     }
@@ -1124,8 +1129,8 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
         opts.exclude_patterns.deinit(allocator);
     }
 
-    if (parsed.positional.len < 1) {
-        std.debug.print("Error: Missing key file path\n", .{});
+    if (parsed.positional.len != 1) {
+        std.debug.print("Error: Expected one key file path\n", .{});
         std.debug.print("Usage: turbocrypt change-password [--remove-password] <key-file>\n", .{});
         return error.InvalidArguments;
     }
@@ -1291,8 +1296,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     const subcommand = args[0];
 
     if (std.mem.eql(u8, subcommand, "set-key")) {
-        if (args.len < 2) {
-            std.debug.print("Error: Missing key file path\n", .{});
+        if (args.len != 2) {
+            std.debug.print("Error: Expected one key file path\n", .{});
             std.debug.print("Usage: turbocrypt config set-key <key-file>\n", .{});
             return error.InvalidArguments;
         }
@@ -1374,8 +1379,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             std.debug.print("  turbocrypt encrypt source/ dest/\n", .{});
         }
     } else if (std.mem.eql(u8, subcommand, "set-threads")) {
-        if (args.len < 2) {
-            std.debug.print("Error: Missing thread count\n", .{});
+        if (args.len != 2) {
+            std.debug.print("Error: Expected one thread count\n", .{});
             std.debug.print("Usage: turbocrypt config set-threads <n>\n", .{});
             return error.InvalidArguments;
         }
@@ -1398,8 +1403,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 
         std.debug.print("Default thread count set to: {d}\n", .{threads});
     } else if (std.mem.eql(u8, subcommand, "set-buffer-size")) {
-        if (args.len < 2) {
-            std.debug.print("Error: Missing buffer size\n", .{});
+        if (args.len != 2) {
+            std.debug.print("Error: Expected one buffer size\n", .{});
             std.debug.print("Usage: turbocrypt config set-buffer-size <size>\n", .{});
             return error.InvalidArguments;
         }
@@ -1422,8 +1427,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 
         std.debug.print("Default buffer size set to: {d} bytes\n", .{buffer_size});
     } else if (std.mem.eql(u8, subcommand, "add-exclude")) {
-        if (args.len < 2) {
-            std.debug.print("Error: Missing exclude pattern\n", .{});
+        if (args.len != 2) {
+            std.debug.print("Error: Expected one exclude pattern\n", .{});
             std.debug.print("Usage: turbocrypt config add-exclude <pattern>\n", .{});
             return error.InvalidArguments;
         }
@@ -1434,8 +1439,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         try modifyExcludePattern(&cfg, args[1], .add, allocator);
         try saveConfig(cfg, allocator, io, environ_map);
     } else if (std.mem.eql(u8, subcommand, "remove-exclude")) {
-        if (args.len < 2) {
-            std.debug.print("Error: Missing exclude pattern\n", .{});
+        if (args.len != 2) {
+            std.debug.print("Error: Expected one exclude pattern\n", .{});
             std.debug.print("Usage: turbocrypt config remove-exclude <pattern>\n", .{});
             return error.InvalidArguments;
         }
@@ -1446,8 +1451,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         try modifyExcludePattern(&cfg, args[1], .remove, allocator);
         try saveConfig(cfg, allocator, io, environ_map);
     } else if (std.mem.eql(u8, subcommand, "set-ignore-symlinks")) {
-        if (args.len < 2) {
-            std.debug.print("Error: Missing value\n", .{});
+        if (args.len != 2) {
+            std.debug.print("Error: Expected one value\n", .{});
             std.debug.print("Usage: turbocrypt config set-ignore-symlinks <true|false>\n", .{});
             return error.InvalidArguments;
         }
@@ -1470,8 +1475,8 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 
         std.debug.print("Ignore symlinks set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "set-encrypted-filenames")) {
-        if (args.len < 2) {
-            std.debug.print("Error: Missing value\n", .{});
+        if (args.len != 2) {
+            std.debug.print("Error: Expected one value\n", .{});
             std.debug.print("Usage: turbocrypt config set-encrypted-filenames <true|false>\n", .{});
             return error.InvalidArguments;
         }
@@ -1494,6 +1499,10 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 
         std.debug.print("Encrypt filenames set to: {s}\n", .{if (value) "true" else "false"});
     } else if (std.mem.eql(u8, subcommand, "show")) {
+        if (args.len != 1) {
+            std.debug.print("Usage: turbocrypt config show\n", .{});
+            return error.InvalidArguments;
+        }
         var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
@@ -1558,6 +1567,14 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         std.debug.print("Usage: turbocrypt config <set-key|set-threads|set-buffer-size|add-exclude|remove-exclude|set-ignore-symlinks|set-encrypted-filenames|show>\n", .{});
         return error.InvalidArguments;
     }
+}
+
+fn cmdBench(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+    if (args.len != 0) {
+        std.debug.print("Usage: turbocrypt bench\n", .{});
+        return error.InvalidArguments;
+    }
+    try bench.run(allocator, io);
 }
 
 fn noMountSupport() noreturn {
@@ -1631,7 +1648,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "bench")) {
-        bench.run(allocator, io) catch {
+        cmdBench(command_args, allocator, io) catch {
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, command, "mount")) {
@@ -1654,6 +1671,32 @@ pub fn main(init: std.process.Init) !void {
         printUsage();
         std.process.exit(1);
     }
+}
+
+test "commands reject extra positional arguments before side effects" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_extra_arguments";
+    const key_path = root ++ "/key";
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, root);
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    var environ_map = try config_mod.testEnviron(allocator, root);
+    defer environ_map.deinit();
+
+    try testing.expectError(error.InvalidArguments, cmdKeygen(&.{ key_path, "ignored" }, allocator, io, &environ_map));
+    try testing.expect(!utils.pathExists(key_path, io));
+    try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "source", "destination", "ignored" }, allocator, true, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdVerify(&.{ "source", "ignored" }, allocator, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdList(&.{ "directory", "ignored" }, allocator, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdChangePassword(&.{ key_path, "ignored" }, allocator, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdConfig(&.{ "set-threads", "2", "ignored" }, allocator, io, &environ_map));
+    const config_path = try config_mod.filePath(allocator, &environ_map);
+    defer allocator.free(config_path);
+    try testing.expect(!utils.pathExists(config_path, io));
+    try testing.expectError(error.InvalidArguments, cmdBench(&.{"ignored"}, allocator, io));
 }
 
 test "directory processing returns an error when a worker fails" {

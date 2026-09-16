@@ -32,6 +32,11 @@ pub const pending_detail = "encrypted at the next commit";
 const state_version = 1;
 const max_state_size = 64 * 1024 * 1024;
 
+/// `readFileAlloc` rejects a file that reaches its limit, so add one to make a maximum inclusive.
+fn readLimit(max_size: u64) std.Io.Limit {
+    return .limited64(max_size + 1);
+}
+
 pub const Error = error{
     WrongKey,
     NoManifest,
@@ -164,7 +169,7 @@ pub const State = struct {
     };
 
     pub fn load(allocator: std.mem.Allocator, path: []const u8, key_id: [crypto.mac_length]u8, io: std.Io) !State {
-        const text = std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(max_state_size)) catch |err| switch (err) {
+        const text = std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, readLimit(max_state_size)) catch |err| switch (err) {
             error.FileNotFound => return .{ .key_id = key_id },
             else => return err,
         };
@@ -567,7 +572,7 @@ pub fn readPlainManifest(repo: *const Repo) !?Manifest {
     const allocator = repo.allocator;
     const path = try repo.absolutePath(manifest_mod.filename);
     defer allocator.free(path);
-    const text = std.Io.Dir.readFileAlloc(.cwd(), repo.io, path, allocator, .limited(max_file_size)) catch |err| switch (err) {
+    const text = std.Io.Dir.readFileAlloc(.cwd(), repo.io, path, allocator, readLimit(max_file_size)) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
@@ -590,7 +595,7 @@ fn manifestFromDir(repo: *const Repo, store_abs: []const u8, keys: crypto.Derive
     const abs = try std.fs.path.join(allocator, &.{ store_abs, cipher_rel });
     defer allocator.free(abs);
 
-    const encrypted = std.Io.Dir.readFileAlloc(.cwd(), repo.io, abs, allocator, .limited(max_file_size)) catch |err| switch (err) {
+    const encrypted = std.Io.Dir.readFileAlloc(.cwd(), repo.io, abs, allocator, readLimit(max_file_size + crypto.overhead_size)) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
@@ -799,7 +804,7 @@ fn snapshot(ctx: *const Context, abs: []const u8, limit: u64, key: [crypto.key_l
     if (stat.kind != .file) return null;
     if (stat.size > limit) return Error.FileTooLarge;
 
-    const bytes = try std.Io.Dir.readFileAlloc(.cwd(), ctx.io, abs, ctx.allocator, .limited(limit));
+    const bytes = try std.Io.Dir.readFileAlloc(.cwd(), ctx.io, abs, ctx.allocator, readLimit(limit));
     const snap = Snapshot{ .mac = crypto.keyedMac(bytes, key), .exec = isExecutable(stat.permissions) };
     if (bytes_out) |out| out.* = bytes else ctx.allocator.free(bytes);
     return snap;
@@ -831,7 +836,7 @@ fn readNew(ctx: *const Context, cipher_rel: []const u8) !?New {
 fn readEntry(ctx: *const Context, cipher_rel: []const u8) !?[]u8 {
     const abs = try entryPath(ctx, cipher_rel);
     defer ctx.allocator.free(abs);
-    return std.Io.Dir.readFileAlloc(.cwd(), ctx.io, abs, ctx.allocator, .limited(max_file_size + crypto.overhead_size)) catch |err| switch (err) {
+    return std.Io.Dir.readFileAlloc(.cwd(), ctx.io, abs, ctx.allocator, readLimit(max_file_size + crypto.overhead_size)) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
     };
@@ -1094,7 +1099,7 @@ fn matchesAnalysis(ctx: *const Context, path: []const u8, cur: ?Cur) !bool {
 }
 
 fn fileHolds(ctx: *const Context, path: []const u8, expected: []const u8) !bool {
-    const bytes = std.Io.Dir.readFileAlloc(.cwd(), ctx.io, path, ctx.allocator, .limited(max_file_size)) catch return false;
+    const bytes = std.Io.Dir.readFileAlloc(.cwd(), ctx.io, path, ctx.allocator, readLimit(max_file_size)) catch return false;
     defer ctx.allocator.free(bytes);
     return std.mem.eql(u8, bytes, expected);
 }
@@ -1356,7 +1361,7 @@ fn coveredByAny(manifests: []const *const Manifest, plain: []const u8) bool {
 }
 
 fn readExcludeText(repo: *const Repo) !?[]u8 {
-    return std.Io.Dir.readFileAlloc(.cwd(), repo.io, repo.exclude_path, repo.allocator, .limited(max_state_size)) catch |err| switch (err) {
+    return std.Io.Dir.readFileAlloc(.cwd(), repo.io, repo.exclude_path, repo.allocator, readLimit(max_state_size)) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return err,
     };
@@ -1756,6 +1761,9 @@ test "replace without an exchange keeps the old file inspectable" {
         .tracked = &.{},
         .unmerged = &.{},
     };
+
+    // A file exactly at the documented bound must not be rejected by the reader's exclusive limit.
+    try testing.expect((try snapshot(&ctx, "tmp/aside/tree/note.md", 3, @splat(0), null)) != null);
 
     var dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/aside/tree", .{});
     defer dir.close(io);

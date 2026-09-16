@@ -680,7 +680,7 @@ test "benchmark files use an isolated temporary directory" {
     defer allocator.free(test_file);
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = test_file, .data = "temporary" });
 
-    const data = try std.Io.Dir.readFileAlloc(.cwd(), io, test_file, allocator, .limited(9));
+    const data = try std.Io.Dir.readFileAlloc(.cwd(), io, test_file, allocator, .limited(10));
     defer allocator.free(data);
     try testing.expectEqualStrings("temporary", data);
 }

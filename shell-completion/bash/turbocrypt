@@ -30,7 +30,7 @@ _turbocrypt() {
     case "$subcmd" in
         keygen)
             if [[ "$cur" == --* || "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--password -h --help" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--password" -- "$cur") )
                 return 0
             fi
             COMPREPLY=( $(compgen -f -- "$cur") )
@@ -38,14 +38,14 @@ _turbocrypt() {
             ;;
         change-password)
             if [[ "$cur" == --* || "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--remove-password -h --help" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--remove-password" -- "$cur") )
                 return 0
             fi
             COMPREPLY=( $(compgen -f -- "$cur") )
             return 0
             ;;
         encrypt|decrypt)
-            local opts="--key --password --in-place --force --encrypted-filenames --exclude --context --enc-suffix --threads --buffer-size --ignore-symlinks --dry-run -h --help"
+            local opts="--key --password --in-place --force --encrypted-filenames --exclude --context --enc-suffix --threads --buffer-size --ignore-symlinks --dry-run"
             if [[ "$cur" == --* || "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
                 return 0
@@ -62,7 +62,7 @@ _turbocrypt() {
             return 0
             ;;
         verify)
-            local opts="--key --password --quick --context --exclude --threads --buffer-size --ignore-symlinks --dry-run -h --help"
+            local opts="--key --password --quick --context --exclude --threads --buffer-size --ignore-symlinks --dry-run"
             if [[ "$cur" == --* || "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
                 return 0
@@ -78,7 +78,7 @@ _turbocrypt() {
             return 0
             ;;
         list)
-            local opts="--key --password --encrypted-filenames --context --exclude --ignore-symlinks -h --help"
+            local opts="--key --password --encrypted-filenames --context --exclude --ignore-symlinks"
             if [[ "$cur" == --* || "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
                 return 0
@@ -92,7 +92,7 @@ _turbocrypt() {
             return 0
             ;;
         mount)
-            local opts="--key --password --context --encrypted-filenames --enc-suffix --read-only --daemon --single-thread --debug --volname --allow-other --max-file-size --memory-limit --rescue-dir --force -o -h --help"
+            local opts="--key --password --context --encrypted-filenames --enc-suffix --read-only --daemon --single-thread --debug --volname --allow-other --max-file-size --memory-limit --rescue-dir --force -o --help"
             if [[ "$cur" == --* || "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
                 return 0
@@ -110,7 +110,7 @@ _turbocrypt() {
             return 0
             ;;
         init)
-            local opts="--key --password --context --encrypted-filenames --enc-suffix -h --help"
+            local opts="--key --password --context --encrypted-filenames --enc-suffix --help"
             if [[ "$cur" == --* || "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
                 return 0
@@ -167,7 +167,7 @@ _turbocrypt() {
 
         config)
             if [[ ${COMP_CWORD} -le 2 || "${COMP_WORDS[COMP_CWORD-1]}" == "config" ]]; then
-                COMPREPLY=( $(compgen -W "${config_subs[*]} -h --help" -- "$cur") )
+                COMPREPLY=( $(compgen -W "${config_subs[*]}" -- "$cur") )
                 return 0
             fi
             local cfg=""

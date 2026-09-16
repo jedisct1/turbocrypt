@@ -153,7 +153,7 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.pr
         io,
         config_path,
         allocator,
-        std.Io.Limit.limited(max_size),
+        std.Io.Limit.limited(max_size + 1),
     ) catch |err| {
         if (err == error.FileNotFound) {
             return Config{};
