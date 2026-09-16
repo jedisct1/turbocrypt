@@ -19,7 +19,7 @@ pub const WalkCallback = *const fn (
 ///
 /// A container found in the tree stops the walk before its callback runs.
 /// The caller checks the base path itself and its ancestors before the walk.
-pub fn walkDirectory(
+pub fn walkDir(
     base_path: []const u8,
     callback: WalkCallback,
     context: *anyopaque,
@@ -66,7 +66,7 @@ pub fn walkDirectory(
     }
 }
 
-pub fn ensureDirectory(path: []const u8, io: std.Io) !void {
+pub fn ensureDir(path: []const u8, io: std.Io) !void {
     std.Io.Dir.createDirPath(.cwd(), io, path) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
@@ -117,8 +117,8 @@ pub fn isPlainComponent(component: []const u8) bool {
 /// Reject empty, dot, and dot-dot components.
 /// Missing parents return null unless creation is requested; symlinks and non-directories always return null.
 /// The caller closes the returned handle.
-pub fn openParentIn(io: std.Io, root: std.Io.Dir, rel: []const u8, create: bool) !?std.Io.Dir {
-    var it = std.mem.splitScalar(u8, rel, '/');
+pub fn openParentIn(io: std.Io, root: std.Io.Dir, sub_path: []const u8, create: bool) !?std.Io.Dir {
+    var it = std.mem.splitScalar(u8, sub_path, '/');
     var component = it.next() orelse return error.UnsafePath;
     var dir = try root.openDir(io, ".", .{});
     errdefer dir.close(io);
@@ -144,17 +144,17 @@ pub fn openParentIn(io: std.Io, root: std.Io.Dir, rel: []const u8, create: bool)
 }
 
 /// Path-based wrapper for openParentIn; `create` also permits creating the root.
-pub fn openParent(io: std.Io, root: []const u8, rel: []const u8, create: bool) !?std.Io.Dir {
+pub fn openParent(io: std.Io, root: []const u8, sub_path: []const u8, create: bool) !?std.Io.Dir {
     var dir = std.Io.Dir.openDir(.cwd(), io, root, .{}) catch |err| switch (err) {
         error.FileNotFound => blk: {
             if (!create) return err;
-            try ensureDirectory(root, io);
+            try ensureDir(root, io);
             break :blk try std.Io.Dir.openDir(.cwd(), io, root, .{});
         },
         else => return err,
     };
     defer dir.close(io);
-    return openParentIn(io, dir, rel, create);
+    return openParentIn(io, dir, sub_path, create);
 }
 
 pub fn containsString(list: []const []const u8, needle: []const u8) bool {
@@ -171,7 +171,7 @@ pub fn freeList(allocator: std.mem.Allocator, list: []const []u8) void {
 }
 
 /// Like std.fs.path.dirname, but owned and never null.
-pub fn dirname(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
+pub fn dirnameAlloc(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
     const dir = std.fs.path.dirname(path) orelse "";
     return try allocator.dupe(u8, dir);
 }
@@ -181,7 +181,7 @@ pub fn pathExists(path: []const u8, io: std.Io) bool {
     return true;
 }
 
-pub fn isDirectory(path: []const u8, io: std.Io) !bool {
+pub fn isDir(path: []const u8, io: std.Io) !bool {
     const stat = std.Io.Dir.statFile(.cwd(), io, path, .{}) catch |err| {
         // On Windows, statFile returns error.IsDir for a directory.
         if (err == error.IsDir) return true;
@@ -237,7 +237,7 @@ test "directory walking" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    try ensureDirectory("tmp/walk_test/subdir", io);
+    try ensureDir("tmp/walk_test/subdir", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/walk_test") catch {};
 
     {
@@ -259,7 +259,7 @@ test "directory walking" {
     const Context = struct {
         files: std.ArrayList([]const u8),
         dirs: std.ArrayList([]const u8),
-        alloc: std.mem.Allocator,
+        allocator: std.mem.Allocator,
 
         fn callback(
             relative_path: []const u8,
@@ -270,9 +270,9 @@ test "directory walking" {
             _ = full_path;
             const self: *@This() = @ptrCast(@alignCast(ctx));
             if (is_directory) {
-                try self.dirs.append(self.alloc, try self.alloc.dupe(u8, relative_path));
+                try self.dirs.append(self.allocator, try self.allocator.dupe(u8, relative_path));
             } else {
-                try self.files.append(self.alloc, try self.alloc.dupe(u8, relative_path));
+                try self.files.append(self.allocator, try self.allocator.dupe(u8, relative_path));
             }
         }
     };
@@ -280,7 +280,7 @@ test "directory walking" {
     var ctx = Context{
         .files = .empty,
         .dirs = .empty,
-        .alloc = allocator,
+        .allocator = allocator,
     };
     defer {
         for (ctx.files.items) |f| allocator.free(f);
@@ -289,7 +289,7 @@ test "directory walking" {
         ctx.dirs.deinit(allocator);
     }
 
-    try walkDirectory("tmp/walk_test", Context.callback, &ctx, allocator, false, io);
+    try walkDir("tmp/walk_test", Context.callback, &ctx, allocator, false, io);
 
     try testing.expectEqual(3, ctx.files.items.len);
     try testing.expectEqual(1, ctx.dirs.items.len);
@@ -300,8 +300,8 @@ test "a container inside the tree stops the walk before its callback" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    try ensureDirectory("tmp/walk_container/ok", io);
-    try ensureDirectory("tmp/walk_container/box/inner", io);
+    try ensureDir("tmp/walk_container/ok", io);
+    try ensureDir("tmp/walk_container/box/inner", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/walk_container") catch {};
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = "tmp/walk_container/ok/f", .data = "x" });
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = "tmp/walk_container/box/" ++ container.descriptor_name, .data = "marker" });
@@ -318,25 +318,25 @@ test "a container inside the tree stops the walk before its callback" {
         }
     };
     var ctx: Context = .{};
-    try testing.expectError(error.ContainerInTree, walkDirectory("tmp/walk_container", Context.callback, &ctx, allocator, false, io));
+    try testing.expectError(error.ContainerInTree, walkDir("tmp/walk_container", Context.callback, &ctx, allocator, false, io));
     try testing.expect(!ctx.seen_box);
 }
 
-test "ensureDirectory creates nested directories" {
+test "ensureDir creates nested directories" {
     const testing = std.testing;
     const io = testing.io;
 
-    try ensureDirectory("tmp/nested/deeply/nested/path", io);
+    try ensureDir("tmp/nested/deeply/nested/path", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/nested") catch {};
 
-    try testing.expect(try isDirectory("tmp/nested/deeply/nested/path", io));
+    try testing.expect(try isDir("tmp/nested/deeply/nested/path", io));
 }
 
 test "dirname extracts directory" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const dir = try dirname("path/to/file.txt", allocator);
+    const dir = try dirnameAlloc("path/to/file.txt", allocator);
     defer allocator.free(dir);
 
     try testing.expectEqualStrings("path/to", dir);
@@ -346,7 +346,7 @@ test "pathExists checks existence" {
     const testing = std.testing;
     const io = testing.io;
 
-    try ensureDirectory("tmp", io);
+    try ensureDir("tmp", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp") catch {};
 
     {
@@ -364,7 +364,7 @@ test "symlinks to files are followed" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    try ensureDirectory("tmp/symlink_test", io);
+    try ensureDir("tmp/symlink_test", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/symlink_test") catch {};
 
     {
@@ -383,7 +383,7 @@ test "symlinks to files are followed" {
 
     const Context = struct {
         files: std.ArrayList([]const u8),
-        alloc: std.mem.Allocator,
+        allocator: std.mem.Allocator,
 
         fn callback(
             relative_path: []const u8,
@@ -394,21 +394,21 @@ test "symlinks to files are followed" {
             _ = full_path;
             const self: *@This() = @ptrCast(@alignCast(ctx));
             if (!is_directory) {
-                try self.files.append(self.alloc, try self.alloc.dupe(u8, relative_path));
+                try self.files.append(self.allocator, try self.allocator.dupe(u8, relative_path));
             }
         }
     };
 
     var ctx = Context{
         .files = .empty,
-        .alloc = allocator,
+        .allocator = allocator,
     };
     defer {
         for (ctx.files.items) |f| allocator.free(f);
         ctx.files.deinit(allocator);
     }
 
-    try walkDirectory("tmp/symlink_test", Context.callback, &ctx, allocator, false, io);
+    try walkDir("tmp/symlink_test", Context.callback, &ctx, allocator, false, io);
 
     try testing.expectEqual(2, ctx.files.items.len);
 }
@@ -450,7 +450,7 @@ test "ignore symlinks flag" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    try ensureDirectory("tmp/ignore_symlinks_test", io);
+    try ensureDir("tmp/ignore_symlinks_test", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/ignore_symlinks_test") catch {};
 
     {
@@ -470,7 +470,7 @@ test "ignore symlinks flag" {
     {
         const Context = struct {
             files: std.ArrayList([]const u8),
-            alloc: std.mem.Allocator,
+            allocator: std.mem.Allocator,
 
             fn callback(
                 relative_path: []const u8,
@@ -481,21 +481,21 @@ test "ignore symlinks flag" {
                 _ = full_path;
                 const self: *@This() = @ptrCast(@alignCast(ctx));
                 if (!is_directory) {
-                    try self.files.append(self.alloc, try self.alloc.dupe(u8, relative_path));
+                    try self.files.append(self.allocator, try self.allocator.dupe(u8, relative_path));
                 }
             }
         };
 
         var ctx = Context{
             .files = .empty,
-            .alloc = allocator,
+            .allocator = allocator,
         };
         defer {
             for (ctx.files.items) |f| allocator.free(f);
             ctx.files.deinit(allocator);
         }
 
-        try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, false, io);
+        try walkDir("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, false, io);
 
         try testing.expectEqual(2, ctx.files.items.len);
     }
@@ -503,7 +503,7 @@ test "ignore symlinks flag" {
     {
         const Context = struct {
             files: std.ArrayList([]const u8),
-            alloc: std.mem.Allocator,
+            allocator: std.mem.Allocator,
 
             fn callback(
                 relative_path: []const u8,
@@ -514,21 +514,21 @@ test "ignore symlinks flag" {
                 _ = full_path;
                 const self: *@This() = @ptrCast(@alignCast(ctx));
                 if (!is_directory) {
-                    try self.files.append(self.alloc, try self.alloc.dupe(u8, relative_path));
+                    try self.files.append(self.allocator, try self.allocator.dupe(u8, relative_path));
                 }
             }
         };
 
         var ctx = Context{
             .files = .empty,
-            .alloc = allocator,
+            .allocator = allocator,
         };
         defer {
             for (ctx.files.items) |f| allocator.free(f);
             ctx.files.deinit(allocator);
         }
 
-        try walkDirectory("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, true, io);
+        try walkDir("tmp/ignore_symlinks_test", Context.callback, &ctx, allocator, true, io);
 
         try testing.expectEqual(1, ctx.files.items.len);
         try testing.expectEqualStrings("target.txt", ctx.files.items[0]);
@@ -575,7 +575,7 @@ test "openParentIn walks through handles and refuses unsafe components" {
     const testing = std.testing;
     const io = testing.io;
 
-    try ensureDirectory("tmp/open_parent/a/b", io);
+    try ensureDir("tmp/open_parent/a/b", io);
     defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/open_parent") catch {};
     var root = try std.Io.Dir.openDir(.cwd(), io, "tmp/open_parent", .{});
     defer root.close(io);
@@ -608,5 +608,5 @@ test "openParentIn walks through handles and refuses unsafe components" {
 
     var created = (try openParentIn(io, root, "new/deeper/file", true)).?;
     created.close(io);
-    try testing.expect(try isDirectory("tmp/open_parent/new/deeper", io));
+    try testing.expect(try isDir("tmp/open_parent/new/deeper", io));
 }

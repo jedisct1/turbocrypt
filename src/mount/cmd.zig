@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const config_mod = @import("../config.zig");
+const config = @import("../config.zig");
 const container = @import("../container.zig");
 const crypto = @import("../crypto.zig");
 const key_loader = @import("../key_loader.zig");
@@ -242,7 +242,7 @@ fn parseMountOptions(args: []const []const u8, allocator: std.mem.Allocator) !Mo
 
 /// Fall back to plain names when configuration is unavailable.
 fn configuredEncryptedFilenames(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) bool {
-    var cfg = config_mod.load(allocator, io, environ_map) catch return false;
+    var cfg = config.load(allocator, io, environ_map) catch return false;
     defer cfg.deinit(allocator);
     return cfg.encrypted_filenames orelse false;
 }
@@ -431,15 +431,15 @@ pub fn runMount(args: []const []const u8, allocator: std.mem.Allocator, io: std.
     var opts = try parseMountOptions(args, allocator);
     defer opts.deinit(allocator);
 
-    if (!(utils.isDirectory(opts.backing, io) catch false)) {
+    if (!(utils.isDir(opts.backing, io) catch false)) {
         std.debug.print("Error: the encrypted directory {s} does not exist or is not a directory\n", .{opts.backing});
         return error.InvalidArguments;
     }
-    if (!(utils.isDirectory(opts.mountpoint, io) catch false)) {
+    if (!(utils.isDir(opts.mountpoint, io) catch false)) {
         std.debug.print("Error: the mountpoint {s} does not exist or is not a directory\n", .{opts.mountpoint});
         return error.InvalidArguments;
     }
-    if (!(isEmptyDirectory(opts.mountpoint, io) catch true)) {
+    if (!(isEmptyDir(opts.mountpoint, io) catch true)) {
         std.debug.print("Warning: the mountpoint {s} is not empty. Its own contents are hidden while the volume is mounted.\n         The arguments are <encrypted-dir> <mountpoint>, in that order.\n", .{opts.mountpoint});
     }
     switch (try utils.pathRelation(opts.backing, opts.mountpoint, allocator, io)) {
@@ -583,7 +583,7 @@ pub fn runMount(args: []const []const u8, allocator: std.mem.Allocator, io: std.
     }
 }
 
-fn isEmptyDirectory(path: []const u8, io: std.Io) !bool {
+fn isEmptyDir(path: []const u8, io: std.Io) !bool {
     var dir = try std.Io.Dir.openDir(.cwd(), io, path, .{ .iterate = true });
     defer dir.close(io);
     var it = dir.iterate();
@@ -682,7 +682,7 @@ fn looksLikeText(header: []const u8) bool {
 }
 
 fn defaultRescueDir(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) ![]u8 {
-    const app_dir = try config_mod.getAppDataDir(allocator, "turbocrypt", environ_map);
+    const app_dir = try config.getAppDataDir(allocator, "turbocrypt", environ_map);
     defer allocator.free(app_dir);
     return std.fs.path.join(allocator, &.{ app_dir, "rescue" });
 }
@@ -896,7 +896,7 @@ pub fn initializeContainer(destination: []const u8, descriptor_key: [16]u8, sett
     if (!created) {
         var it = dir.iterate();
         if (try it.next(io)) |entry| {
-            if (processor.isTemporaryName(entry.name)) {
+            if (processor.isTmpName(entry.name)) {
                 std.debug.print("Error: {s} is not empty: {s} looks like the leftover of an interrupted initialization\n", .{ destination, entry.name });
                 std.debug.print("       Check it and remove it yourself, then run init again\n", .{});
             } else {
@@ -907,11 +907,11 @@ pub fn initializeContainer(destination: []const u8, descriptor_key: [16]u8, sett
         }
     }
 
-    const tmp = processor.createTemporaryIn(dir, .{ .read = true, .permissions = .fromMode(0o600) }, io) catch |err| return failInit(destination, "create the descriptor in", err);
+    const tmp = processor.createTmpIn(dir, .{ .read = true, .permissions = .fromMode(0o600) }, io) catch |err| return failInit(destination, "create the descriptor in", err);
     defer tmp.file.close(io);
     {
         errdefer dir.deleteFile(io, &tmp.name) catch {};
-        container.writeDescriptorFile(tmp.file, descriptor_key, settings, io) catch |err| return failInit(destination, "write the descriptor in", err);
+        container.writeDescriptor(tmp.file, descriptor_key, settings, io) catch |err| return failInit(destination, "write the descriptor in", err);
         node_mod.syncFd(tmp.file.handle, .file_sync) catch |err| return failInit(destination, "sync the descriptor in", err);
         std.Io.Dir.hardLink(dir, &tmp.name, dir, container.descriptor_name, io, .{}) catch |err| return failInit(destination, "publish the descriptor in", err);
     }
@@ -1036,7 +1036,7 @@ test "mount options are parsed, and the v1 defaults and limits apply afterwards"
     std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
     try std.Io.Dir.createDirPath(.cwd(), io, root);
     defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
 
     const passing = if (builtin.os.tag == .macos) "noattrcache,volname=X" else "noatime,max_read=4096";
@@ -1053,8 +1053,8 @@ test "mount options are parsed, and the v1 defaults and limits apply afterwards"
     try testing.expectEqual(2000000, opts.memory_limit.?);
     try testing.expectEqual(false, opts.common.encrypted_filenames);
 
-    const cfg: config_mod.Config = .{ .encrypted_filenames = true };
-    try config_mod.save(cfg, allocator, io, &environ_map);
+    const cfg: config.Config = .{ .encrypted_filenames = true };
+    try config.save(cfg, allocator, io, &environ_map);
     var defaulted = try parseMountOptions(&.{ "enc", "mnt" }, allocator);
     defer defaulted.deinit(allocator);
     try applyV1Defaults(&defaulted, allocator, io, &environ_map);
@@ -1098,7 +1098,7 @@ test "a mountpoint inside the encrypted directory is refused" {
     try std.Io.Dir.createDirPath(.cwd(), io, root ++ "/enc/inside");
     try std.Io.Dir.createDirPath(.cwd(), io, root ++ "/mnt");
     defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
 
     try testing.expectError(error.InvalidArguments, runMount(&.{ "--force", root ++ "/enc", root ++ "/enc/inside" }, allocator, io, &environ_map));
@@ -1119,7 +1119,7 @@ test "init creates an empty container and refuses every other destination" {
     std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
     try std.Io.Dir.createDirPath(.cwd(), io, root);
     defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
     const master: [16]u8 = @splat(21);
     try keygen.writeKeyFile(key_path, master, null, allocator, io);
@@ -1169,8 +1169,8 @@ test "init creates an empty container and refuses every other destination" {
         try testing.expectError(error.AuthenticationFailed, container.readDescriptor(kept, descriptor_key, io));
     }
 
-    const cfg: config_mod.Config = .{ .encrypted_filenames = true };
-    try config_mod.save(cfg, allocator, io, &environ_map);
+    const cfg: config.Config = .{ .encrypted_filenames = true };
+    try config.save(cfg, allocator, io, &environ_map);
     try runInit(&.{ "--key", key_path, root ++ "/defaulted" }, allocator, io, &environ_map);
     {
         var defaulted = try std.Io.Dir.openDir(.cwd(), io, root ++ "/defaulted", .{});
@@ -1210,19 +1210,19 @@ test "an interrupted initialization leaves nothing of its own behind" {
 
     node_mod.armFaults(&.{.file_sync});
     try testing.expectError(error.InitFailed, initializeContainer(root ++ "/kept", descriptor_key, .{}, allocator, io));
-    try testing.expect(try isEmptyDirectory(root ++ "/kept", io));
+    try testing.expect(try isEmptyDir(root ++ "/kept", io));
 
     node_mod.armFaults(&.{.dir_sync});
     try testing.expectError(error.InitFailed, initializeContainer(root ++ "/kept", descriptor_key, .{}, allocator, io));
-    try testing.expect(try isEmptyDirectory(root ++ "/kept", io));
+    try testing.expect(try isEmptyDir(root ++ "/kept", io));
 
     node_mod.armFaults(&.{});
     try initializeContainer(root ++ "/kept", descriptor_key, .{}, allocator, io);
-    try testing.expect(!try isEmptyDirectory(root ++ "/kept", io));
+    try testing.expect(!try isEmptyDir(root ++ "/kept", io));
 
     // A leftover temporary file is reported, never removed.
     try std.Io.Dir.createDirPath(.cwd(), io, root ++ "/left");
-    const leftover = processor.temporaryName(1);
+    const leftover = processor.tmpName(1);
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = root ++ "/left/" ++ leftover, .data = "partial" });
     try testing.expectError(error.InvalidArguments, initializeContainer(root ++ "/left", descriptor_key, .{}, allocator, io));
     try testing.expect(utils.pathExists(root ++ "/left/" ++ leftover, io));
@@ -1238,7 +1238,7 @@ test "the mount decision follows the descriptor and never guesses around a colli
     try std.Io.Dir.createDirPath(.cwd(), io, root ++ "/stray");
     try std.Io.Dir.createDirPath(.cwd(), io, root ++ "/mnt");
     defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
     const master: [16]u8 = @splat(23);
     try keygen.writeKeyFile(key_path, master, null, allocator, io);

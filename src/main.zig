@@ -1,7 +1,7 @@
 const std = @import("std");
 const keygen = @import("keygen.zig");
 const key_loader = @import("key_loader.zig");
-const config_mod = @import("config.zig");
+const config = @import("config.zig");
 const container = @import("container.zig");
 const crypto = @import("crypto.zig");
 const processor = @import("processor.zig");
@@ -178,7 +178,7 @@ const Options = struct {
     in_place: bool = false,
     force: bool = false,
     enc_suffix: bool = false,
-    encrypt_filenames: bool = false,
+    encrypted_filenames: bool = false,
     ignore_symlinks: bool = false,
     quick: bool = false,
     dry_run: bool = false,
@@ -186,20 +186,20 @@ const Options = struct {
     exclude_patterns: std.ArrayList([]const u8) = .empty,
 };
 
-const enc_suffix = ".enc";
+const enc_extension = ".enc";
 
 fn hasEncSuffix(path: []const u8) bool {
-    return std.mem.endsWith(u8, path, enc_suffix);
+    return std.mem.endsWith(u8, path, enc_extension);
 }
 
 fn addEncSuffix(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return try std.mem.concat(allocator, u8, &[_][]const u8{ path, enc_suffix });
+    return try std.mem.concat(allocator, u8, &[_][]const u8{ path, enc_extension });
 }
 
 /// Null when the path has no suffix.
 fn stripEncSuffix(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
     if (!hasEncSuffix(path)) return null;
-    return try allocator.dupe(u8, path[0 .. path.len - enc_suffix.len]);
+    return try allocator.dupe(u8, path[0 .. path.len - enc_extension.len]);
 }
 
 /// Add the suffix for encryption, or strip it for decryption. Null when there is none to strip.
@@ -262,7 +262,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
         } else if (std.mem.eql(u8, arg, "--enc-suffix")) {
             opts.enc_suffix = true;
         } else if (std.mem.eql(u8, arg, "--encrypted-filenames")) {
-            opts.encrypt_filenames = true;
+            opts.encrypted_filenames = true;
         } else if (std.mem.eql(u8, arg, "--ignore-symlinks")) {
             opts.ignore_symlinks = true;
         } else if (std.mem.eql(u8, arg, "--password")) {
@@ -290,12 +290,12 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
         }
     }
 
-    var cfg = config_mod.load(allocator, io, environ_map) catch |err| blk: {
+    var cfg = config.load(allocator, io, environ_map) catch |err| blk: {
         // A config file that fails to load only costs its defaults.
         if (err != error.FileNotFound) {
             std.debug.print("Warning: Failed to load config file: {}\n", .{err});
         }
-        break :blk config_mod.Config{};
+        break :blk config.Config{};
     };
     defer cfg.deinit(allocator);
 
@@ -308,8 +308,8 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
     if (!opts.ignore_symlinks and cfg.ignore_symlinks != null) {
         opts.ignore_symlinks = cfg.ignore_symlinks.?;
     }
-    if (!opts.encrypt_filenames and cfg.encrypted_filenames != null) {
-        opts.encrypt_filenames = cfg.encrypted_filenames.?;
+    if (!opts.encrypted_filenames and cfg.encrypted_filenames != null) {
+        opts.encrypted_filenames = cfg.encrypted_filenames.?;
     }
 
     // Command line patterns replace the config patterns instead of adding to them.
@@ -320,7 +320,7 @@ fn parseOptions(args: []const []const u8, allocator: std.mem.Allocator, io: std.
         }
     }
 
-    if (opts.in_place and opts.encrypt_filenames) {
+    if (opts.in_place and opts.encrypted_filenames) {
         std.debug.print("Error: --in-place and --encrypted-filenames are incompatible\n", .{});
         std.debug.print("       In-place encryption cannot change filenames\n", .{});
         return error.InvalidArguments;
@@ -339,7 +339,7 @@ fn getThreadCount(opts: Options) !u32 {
 }
 
 fn explainConfigError(action: []const u8, err: anyerror, allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) void {
-    const config_path = config_mod.filePath(allocator, environ_map) catch {
+    const config_path = config.filePath(allocator, environ_map) catch {
         std.debug.print("Error: Cannot {s} the config file: {}\n", .{ action, err });
         return;
     };
@@ -347,15 +347,15 @@ fn explainConfigError(action: []const u8, err: anyerror, allocator: std.mem.Allo
     std.debug.print("Error: Cannot {s} config file '{s}': {}\n", .{ action, config_path, err });
 }
 
-fn loadConfig(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !config_mod.Config {
-    return config_mod.load(allocator, io, environ_map) catch |err| {
+fn loadConfig(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !config.Config {
+    return config.load(allocator, io, environ_map) catch |err| {
         explainConfigError("read", err, allocator, environ_map);
         return err;
     };
 }
 
-fn saveConfig(cfg: config_mod.Config, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
-    config_mod.save(cfg, allocator, io, environ_map) catch |err| {
+fn saveConfig(cfg: config.Config, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
+    config.save(cfg, allocator, io, environ_map) catch |err| {
         explainConfigError("write", err, allocator, environ_map);
         return err;
     };
@@ -442,7 +442,7 @@ const DirectoryScanContext = struct {
     allocator: std.mem.Allocator,
     enc_suffix: bool,
     is_encrypt: bool,
-    encrypt_filenames: bool,
+    encrypted_filenames: bool,
     key: [16]u8,
     exclude_patterns: std.ArrayList([]const u8),
     ignore_symlinks: bool,
@@ -464,7 +464,7 @@ const DirectoryScanContext = struct {
         }
 
         if (is_directory) {
-            try self.handleDirectory(relative_path);
+            try self.handleDir(relative_path);
             return;
         }
 
@@ -495,10 +495,10 @@ const DirectoryScanContext = struct {
     }
 
     /// Create the matching directory under the destination root.
-    fn handleDirectory(self: *DirectoryScanContext, relative_path: []const u8) !void {
+    fn handleDir(self: *DirectoryScanContext, relative_path: []const u8) !void {
         var transformed: ?[]u8 = null;
         defer if (transformed) |name| self.allocator.free(name);
-        if (self.encrypt_filenames) {
+        if (self.encrypted_filenames) {
             transformed = try self.transformPath(relative_path, "directory name");
         }
 
@@ -506,16 +506,16 @@ const DirectoryScanContext = struct {
 
         const dest_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ self.dest_base, transformed orelse relative_path });
         defer self.allocator.free(dest_dir);
-        try self.ensureOutputDirectory(dest_dir, null);
+        try self.ensureOutputDir(dest_dir, null);
     }
 
-    fn ensureOutputDirectory(self: *DirectoryScanContext, dest_dir: []const u8, for_file: ?[]const u8) !void {
+    fn ensureOutputDir(self: *DirectoryScanContext, dest_dir: []const u8, for_file: ?[]const u8) !void {
         try refuseContainerDestination(dest_dir, self.io);
-        utils.ensureDirectory(dest_dir, self.io) catch |err| {
+        utils.ensureDir(dest_dir, self.io) catch |err| {
             std.debug.print("\n[ERROR] Failed to create directory: {s}\n", .{dest_dir});
             if (for_file) |file| std.debug.print("        For file: {s}\n", .{file});
             std.debug.print("        Reason: {}\n", .{err});
-            if (self.encrypt_filenames and !self.is_encrypt) {
+            if (self.encrypted_filenames and !self.is_encrypt) {
                 std.debug.print("        Suggestion: The name may be corrupted or encrypted with a different key\n", .{});
             }
             return err;
@@ -530,12 +530,12 @@ const DirectoryScanContext = struct {
                 try addEncSuffix(self.allocator, relative_path)
             else
                 try self.allocator.dupe(u8, relative_path);
-            if (!self.encrypt_filenames) return named;
+            if (!self.encrypted_filenames) return named;
             defer self.allocator.free(named);
             return try self.transformPath(named, "filename");
         }
 
-        const named = if (self.encrypt_filenames)
+        const named = if (self.encrypted_filenames)
             try self.transformPath(relative_path, "filename")
         else
             try self.allocator.dupe(u8, relative_path);
@@ -595,7 +595,7 @@ const DirectoryScanContext = struct {
 
     fn ensureParent(self: *DirectoryScanContext, dest_path: []const u8, full_path: []const u8) !void {
         const dest_dir = std.fs.path.dirname(dest_path) orelse return;
-        try self.ensureOutputDirectory(dest_dir, full_path);
+        try self.ensureOutputDir(dest_dir, full_path);
     }
 };
 
@@ -647,7 +647,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
 
     const source_path = parsed.positional[0];
 
-    const is_dir = utils.isDirectory(source_path, io) catch false;
+    const is_dir = utils.isDir(source_path, io) catch false;
 
     var dest_path_buf: ?[]u8 = null;
     defer if (dest_path_buf) |buf| allocator.free(buf);
@@ -699,7 +699,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
     if (is_dir) {
         std.debug.print("{s} directory: {s} -> {s}\n", .{ op_name_cap, source_path, dest_path });
 
-        if (!opts.dry_run) try utils.ensureDirectory(dest_path, io);
+        if (!opts.dry_run) try utils.ensureDir(dest_path, io);
 
         const thread_count = try getThreadCount(opts);
 
@@ -713,7 +713,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .allocator = allocator,
                 .enc_suffix = opts.enc_suffix,
                 .is_encrypt = is_encrypt,
-                .encrypt_filenames = opts.encrypt_filenames,
+                .encrypted_filenames = opts.encrypted_filenames,
                 .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
@@ -723,7 +723,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
             };
             defer scan_ctx.mode.scan_only.deinit(allocator);
 
-            utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
+            utils.walkDir(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
                 std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
                 return err;
             };
@@ -783,7 +783,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 .allocator = allocator,
                 .is_encrypt = is_encrypt,
                 .enc_suffix = opts.enc_suffix,
-                .encrypt_filenames = opts.encrypt_filenames,
+                .encrypted_filenames = opts.encrypted_filenames,
                 .key = derived_keys.filename_key,
                 .exclude_patterns = opts.exclude_patterns,
                 .ignore_symlinks = opts.ignore_symlinks,
@@ -795,7 +795,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
                 } },
             };
 
-            utils.walkDirectory(source_path, DirectoryScanContext.callback, &ctx, allocator, opts.ignore_symlinks, io) catch |err| {
+            utils.walkDir(source_path, DirectoryScanContext.callback, &ctx, allocator, opts.ignore_symlinks, io) catch |err| {
                 tracker.stopDisplay();
                 pool.finish();
                 std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
@@ -817,7 +817,7 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         if (opts.dry_run) return dryRunSingleFile(source_path, "process", io);
 
         if (std.fs.path.dirname(dest_path)) |dest_dir| {
-            try utils.ensureDirectory(dest_dir, io);
+            try utils.ensureDir(dest_dir, io);
         }
 
         if (is_encrypt) {
@@ -878,7 +878,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
 
     const derived_keys = crypto.deriveKeys(key, opts.context);
 
-    const is_dir = utils.isDirectory(source_path, io) catch false;
+    const is_dir = utils.isDir(source_path, io) catch false;
 
     if (is_dir) {
         std.debug.print("Verifying directory: {s}\n", .{source_path});
@@ -894,7 +894,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
             .allocator = allocator,
             .enc_suffix = false, // Verify files with or without the suffix
             .is_encrypt = false, // Not used for verify
-            .encrypt_filenames = false,
+            .encrypted_filenames = false,
             .key = derived_keys.filename_key,
             .exclude_patterns = opts.exclude_patterns,
             .ignore_symlinks = opts.ignore_symlinks,
@@ -904,7 +904,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         };
         defer scan_ctx.mode.scan_only.deinit(allocator);
 
-        utils.walkDirectory(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
+        utils.walkDir(source_path, DirectoryScanContext.callback, &scan_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
             std.debug.print("\n[FATAL] Directory scanning failed\n", .{});
             return err;
         };
@@ -970,7 +970,6 @@ const ListContext = struct {
     file_sizes: std.ArrayList(u64),
     total_bytes: u64,
     total_files: u64,
-    decrypt_filenames: bool,
     filename_key: [16]u8,
     exclude_patterns: std.ArrayList([]const u8),
     io: std.Io,
@@ -1020,7 +1019,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
 
     const source_path = parsed.positional[0];
 
-    const is_dir = utils.isDirectory(source_path, io) catch {
+    const is_dir = utils.isDir(source_path, io) catch {
         std.debug.print("Error: Path is not a directory: {s}\n", .{source_path});
         return error.InvalidPath;
     };
@@ -1034,7 +1033,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
 
     // Only encrypted names need the key.
     var filename_key: [16]u8 = undefined;
-    if (opts.encrypt_filenames) {
+    if (opts.encrypted_filenames) {
         const key = key_loader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
             return key_loader.explainLoadError(allocator, err, opts.key, environ_map);
         };
@@ -1051,7 +1050,6 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
         .file_sizes = .empty,
         .total_bytes = 0,
         .total_files = 0,
-        .decrypt_filenames = opts.encrypt_filenames,
         .filename_key = filename_key,
         .exclude_patterns = opts.exclude_patterns,
         .io = io,
@@ -1062,7 +1060,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
         list_ctx.file_sizes.deinit(allocator);
     }
 
-    utils.walkDirectory(source_path, ListContext.callback, &list_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
+    utils.walkDir(source_path, ListContext.callback, &list_ctx, allocator, opts.ignore_symlinks, io) catch |err| {
         std.debug.print("Error: Failed to walk directory\n", .{});
         return err;
     };
@@ -1073,7 +1071,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     }
 
     for (list_ctx.file_paths.items, list_ctx.file_sizes.items) |file_path, file_size| {
-        const display_path = if (opts.encrypt_filenames) blk: {
+        const display_path = if (opts.encrypted_filenames) blk: {
             const decrypted = filename_crypto.decryptPathForFilesystem(allocator, file_path, filename_key, std.fs.path.sep) catch |err| {
                 std.debug.print("  {s} ({s}) [decrypt error: {}]\n", .{ file_path, formatSize(file_size), err });
                 continue;
@@ -1210,7 +1208,7 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
 const PatternOp = enum { add, remove };
 
 fn modifyExcludePattern(
-    cfg: *config_mod.Config,
+    cfg: *config.Config,
     pattern: []const u8,
     op: PatternOp,
     allocator: std.mem.Allocator,
@@ -1247,15 +1245,15 @@ fn modifyExcludePattern(
             std.debug.print("Added exclude pattern: {s}\n", .{pattern});
         },
         .remove => {
-            var found_idx: ?usize = null;
+            var found_index: ?usize = null;
             for (cfg.exclude_patterns, 0..) |existing, i| {
                 if (std.mem.eql(u8, existing, pattern)) {
-                    found_idx = i;
+                    found_index = i;
                     break;
                 }
             }
 
-            if (found_idx == null) {
+            if (found_index == null) {
                 std.debug.print("Pattern '{s}' not found in exclude list\n", .{pattern});
                 return;
             }
@@ -1266,15 +1264,15 @@ fn modifyExcludePattern(
                 cfg.exclude_patterns = &[_][]const u8{};
             } else {
                 var new_patterns = try allocator.alloc([]const u8, cfg.exclude_patterns.len - 1);
-                var new_idx: usize = 0;
+                var new_index: usize = 0;
                 for (cfg.exclude_patterns, 0..) |old_pattern, i| {
-                    if (i == found_idx.?) {
+                    if (i == found_index.?) {
                         allocator.free(old_pattern);
                         continue;
                     }
                     // The strings move to the new list.
-                    new_patterns[new_idx] = old_pattern;
-                    new_idx += 1;
+                    new_patterns[new_index] = old_pattern;
+                    new_index += 1;
                 }
 
                 allocator.free(cfg.exclude_patterns);
@@ -1360,7 +1358,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         cfg.key = new_key;
         try saveConfig(cfg, allocator, io, environ_map);
 
-        const config_path = try config_mod.filePath(allocator, environ_map);
+        const config_path = try config.filePath(allocator, environ_map);
         defer allocator.free(config_path);
 
         std.debug.print("Default key has been stored in config\n", .{});
@@ -1506,7 +1504,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         var cfg = try loadConfig(allocator, io, environ_map);
         defer cfg.deinit(allocator);
 
-        const config_path = try config_mod.filePath(allocator, environ_map);
+        const config_path = try config.filePath(allocator, environ_map);
         defer allocator.free(config_path);
 
         std.debug.print("Current configuration:\n", .{});
@@ -1683,7 +1681,7 @@ test "commands reject extra positional arguments before side effects" {
     std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
     try std.Io.Dir.createDirPath(.cwd(), io, root);
     defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
 
     try testing.expectError(error.InvalidArguments, cmdKeygen(&.{ key_path, "ignored" }, allocator, io, &environ_map));
@@ -1693,7 +1691,7 @@ test "commands reject extra positional arguments before side effects" {
     try testing.expectError(error.InvalidArguments, cmdList(&.{ "directory", "ignored" }, allocator, io, &environ_map));
     try testing.expectError(error.InvalidArguments, cmdChangePassword(&.{ key_path, "ignored" }, allocator, io, &environ_map));
     try testing.expectError(error.InvalidArguments, cmdConfig(&.{ "set-threads", "2", "ignored" }, allocator, io, &environ_map));
-    const config_path = try config_mod.filePath(allocator, &environ_map);
+    const config_path = try config.filePath(allocator, &environ_map);
     defer allocator.free(config_path);
     try testing.expect(!utils.pathExists(config_path, io));
     try testing.expectError(error.InvalidArguments, cmdBench(&.{"ignored"}, allocator, io));
@@ -1714,7 +1712,7 @@ test "directory processing returns an error when a worker fails" {
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/bad.enc", .data = "not ciphertext" });
     try keygen.writeKeyFile(key_path, @splat(7), null, allocator, io);
 
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
     const args = [_][]const u8{ "--threads", "1", "--key", key_path, source, destination };
     try testing.expectError(error.FileProcessingFailed, cmdProcess(&args, allocator, false, io, &environ_map));
@@ -1739,7 +1737,7 @@ test "dry run does not create directory or file destinations" {
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source_dir ++ "/nested/file", .data = "plain text" });
     try keygen.writeKeyFile(key_path, @splat(8), null, allocator, io);
 
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
     const dir_args = [_][]const u8{ "--dry-run", "--threads", "1", "--key", key_path, source_dir, dir_destination };
     try cmdProcess(&dir_args, allocator, true, io, &environ_map);
@@ -1765,7 +1763,7 @@ test "dry run does not verify a single file" {
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source, .data = "plain text" });
     try keygen.writeKeyFile(key_path, @splat(6), null, allocator, io);
 
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
     const args = [_][]const u8{ "--dry-run", "--key", key_path, source };
     try cmdVerify(&args, allocator, io, &environ_map);
@@ -1796,7 +1794,7 @@ test "decrypted filenames cannot escape the destination" {
     defer allocator.free(planted_path);
     try processor.encryptFile(plain_path, planted_path, derived_keys, allocator, io);
 
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
     const args = [_][]const u8{ "--threads", "1", "--encrypted-filenames", "--key", key_path, source, destination };
     try testing.expectError(filename_crypto.StrictError.UnsafeDecryptedFilename, cmdProcess(&args, allocator, false, io, &environ_map));
@@ -1816,7 +1814,7 @@ test "directory destination cannot be inside the source" {
     defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/file", .data = "plain" });
 
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
     const args = [_][]const u8{ source, destination };
     try testing.expectError(error.InvalidArguments, cmdProcess(&args, allocator, true, io, &environ_map));
@@ -1858,7 +1856,7 @@ test "the ordinary commands stop at a container operand before touching anything
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = box ++ "/sub/f", .data = "data" });
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = plain ++ "/p", .data = "plain" });
     try keygen.writeKeyFile(key_path, @splat(31), null, allocator, io);
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
 
     try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "--key", key_path, box, root ++ "/out" }, allocator, true, io, &environ_map));
@@ -1896,7 +1894,7 @@ test "a container met during the walk or in the output tree stops the command" {
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/nested/" ++ container.descriptor_name, .data = "marker" });
     try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/nested/b", .data = "b" });
     try keygen.writeKeyFile(key_path, @splat(32), null, allocator, io);
-    var environ_map = try config_mod.testEnviron(allocator, root);
+    var environ_map = try config.testEnviron(allocator, root);
     defer environ_map.deinit();
 
     // The walk aborts at the nested container, in streaming and in scan-first mode.

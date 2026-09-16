@@ -8,10 +8,10 @@ pub const env_var_name = "TURBOCRYPT_KEY_FILE";
 
 /// The key file path from the --key argument, else from TURBOCRYPT_KEY_FILE.
 /// Null means the key comes from the config file. The caller frees the result.
-pub fn resolveKeyPath(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, environ_map: *const std.process.Environ.Map) !?[]const u8 {
-    if (optional_cli_path) |cli_path| {
-        if (cli_path.len > 0) {
-            return try allocator.dupe(u8, cli_path);
+pub fn resolveKeyPath(allocator: std.mem.Allocator, cli_path: ?[]const u8, environ_map: *const std.process.Environ.Map) !?[]const u8 {
+    if (cli_path) |explicit| {
+        if (explicit.len > 0) {
+            return try allocator.dupe(u8, explicit);
         }
     }
 
@@ -26,12 +26,12 @@ pub fn resolveKeyPath(allocator: std.mem.Allocator, optional_cli_path: ?[]const 
 
 /// The key from the file that resolveKeyPath names, else from the config file.
 /// Returns error.KeyNotFound when nothing is configured.
-pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, password_opt: ?[]const u8, io: std.Io, environ_map: *const std.process.Environ.Map) ![16]u8 {
-    const key_path = try resolveKeyPath(allocator, optional_cli_path, environ_map);
+pub fn resolveKey(allocator: std.mem.Allocator, cli_path: ?[]const u8, maybe_password: ?[]const u8, io: std.Io, environ_map: *const std.process.Environ.Map) ![16]u8 {
+    const key_path = try resolveKeyPath(allocator, cli_path, environ_map);
 
     if (key_path) |path| {
         defer allocator.free(path);
-        return try keygen.readKeyFile(path, password_opt, io);
+        return try keygen.readKeyFile(path, maybe_password, io);
     } else {
         var cfg = try config.load(allocator, io, environ_map);
         defer cfg.deinit(allocator);
@@ -48,12 +48,12 @@ pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, 
                     return error.InvalidKeyFile;
                 }
 
-                const pwd = password_opt orelse return error.PasswordRequired;
+                const pass = maybe_password orelse return error.PasswordRequired;
 
                 var protected_data: [20]u8 = undefined;
                 @memcpy(&protected_data, key_data[1..keygen.protected_key_file_size]);
 
-                return try password.unprotectKey(protected_data, pwd);
+                return try password.unprotectKey(protected_data, pass);
             } else {
                 return error.InvalidKeyFile;
             }
@@ -64,8 +64,8 @@ pub fn resolveKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, 
 }
 
 /// Whether the key that resolveKey would use has a password.
-pub fn isProtected(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, io: std.Io, environ_map: *const std.process.Environ.Map) !bool {
-    if (try resolveKeyPath(allocator, optional_cli_path, environ_map)) |path| {
+pub fn isProtected(allocator: std.mem.Allocator, cli_path: ?[]const u8, io: std.Io, environ_map: *const std.process.Environ.Map) !bool {
+    if (try resolveKeyPath(allocator, cli_path, environ_map)) |path| {
         defer allocator.free(path);
         return prompt.isKeyPasswordProtected(path, io);
     }
@@ -77,20 +77,20 @@ pub fn isProtected(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8,
 
 /// Resolve the key with the usual precedence and ask for its password when it has one.
 /// `ask_password` forces the prompt, for the --password flag.
-pub fn loadKey(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, ask_password: bool, io: std.Io, environ_map: *const std.process.Environ.Map) ![16]u8 {
+pub fn loadKey(allocator: std.mem.Allocator, cli_path: ?[]const u8, ask_password: bool, io: std.Io, environ_map: *const std.process.Environ.Map) ![16]u8 {
     var password_buf: ?[]u8 = null;
     defer if (password_buf) |buf| {
         std.crypto.secureZero(u8, buf);
         allocator.free(buf);
     };
-    if (ask_password or try isProtected(allocator, optional_cli_path, io, environ_map)) {
+    if (ask_password or try isProtected(allocator, cli_path, io, environ_map)) {
         password_buf = try prompt.promptPassword(allocator, "Enter key password", false, io);
     }
-    return resolveKey(allocator, optional_cli_path, password_buf, io, environ_map);
+    return resolveKey(allocator, cli_path, password_buf, io, environ_map);
 }
 
 /// Explain a failed key load, naming the source of the key, and hand the error back.
-pub fn explainLoadError(allocator: std.mem.Allocator, err: anyerror, optional_cli_path: ?[]const u8, environ_map: *const std.process.Environ.Map) anyerror {
+pub fn explainLoadError(allocator: std.mem.Allocator, err: anyerror, cli_path: ?[]const u8, environ_map: *const std.process.Environ.Map) anyerror {
     switch (err) {
         error.KeyNotFound => std.debug.print(
             \\Error: no encryption key is configured
@@ -105,7 +105,7 @@ pub fn explainLoadError(allocator: std.mem.Allocator, err: anyerror, optional_cl
         error.PasswordRequired => std.debug.print("Error: this key is password-protected. Use the --password flag\n", .{}),
         error.InvalidPassword => std.debug.print("Error: wrong password\n", .{}),
         else => {
-            const source = describeKeySource(allocator, optional_cli_path, environ_map) catch null;
+            const source = describeKeySource(allocator, cli_path, environ_map) catch null;
             defer if (source) |s| allocator.free(s);
             std.debug.print("Error: cannot load {s}: {}\n", .{ source orelse "the key", err });
         },
@@ -114,9 +114,9 @@ pub fn explainLoadError(allocator: std.mem.Allocator, err: anyerror, optional_cl
 }
 
 /// Where resolveKey takes the key from, for messages.
-pub fn describeKeySource(allocator: std.mem.Allocator, optional_cli_path: ?[]const u8, environ_map: *const std.process.Environ.Map) ![]u8 {
-    if (optional_cli_path) |cli_path| {
-        if (cli_path.len > 0) return std.fmt.allocPrint(allocator, "key file {s} (--key)", .{cli_path});
+pub fn describeKeySource(allocator: std.mem.Allocator, cli_path: ?[]const u8, environ_map: *const std.process.Environ.Map) ![]u8 {
+    if (cli_path) |explicit| {
+        if (explicit.len > 0) return std.fmt.allocPrint(allocator, "key file {s} (--key)", .{explicit});
     }
     if (environ_map.get(env_var_name)) |env_path| {
         if (env_path.len > 0) return std.fmt.allocPrint(allocator, "key file {s} ({s})", .{ env_path, env_var_name });

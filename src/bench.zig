@@ -5,11 +5,11 @@ const processor = @import("processor.zig");
 const progress = @import("progress.zig");
 const worker = @import("worker.zig");
 
-const max_temp_dir_attempts = 16;
+const max_tmp_dir_attempts = 16;
 
-fn createTempDir(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+fn createTmpDir(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     var attempt: usize = 0;
-    while (attempt < max_temp_dir_attempts) : (attempt += 1) {
+    while (attempt < max_tmp_dir_attempts) : (attempt += 1) {
         var random: u64 = undefined;
         io.random(std.mem.asBytes(&random));
         const path = try std.fmt.allocPrint(allocator, ".turbocrypt-bench-{x}", .{random});
@@ -23,7 +23,7 @@ fn createTempDir(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
         };
         return path;
     }
-    return error.TempDirCollision;
+    return error.TmpDirCollision;
 }
 
 const Config = struct {
@@ -59,12 +59,12 @@ const Stats = struct {
         return std.mem.max(u64, self.durations_ns.items);
     }
 
-    fn stddev(self: Stats) f64 {
+    fn stdDev(self: Stats) f64 {
         if (self.durations_ns.items.len < 2) return 0.0;
-        const mean_val: f64 = @floatFromInt(self.mean());
+        const mean_ns: f64 = @floatFromInt(self.mean());
         var variance: f64 = 0.0;
         for (self.durations_ns.items) |d| {
-            const diff = @as(f64, @floatFromInt(d)) - mean_val;
+            const diff = @as(f64, @floatFromInt(d)) - mean_ns;
             variance += diff * diff;
         }
         variance /= @floatFromInt(self.durations_ns.items.len);
@@ -115,7 +115,7 @@ const Result = struct {
         const mean_s = @as(f64, @floatFromInt(stats.mean())) / 1_000_000_000.0;
         const min_s = @as(f64, @floatFromInt(stats.min())) / 1_000_000_000.0;
         const max_s = @as(f64, @floatFromInt(stats.max())) / 1_000_000_000.0;
-        const stddev_s = stats.stddev() / 1_000_000_000.0;
+        const stddev_s = stats.stdDev() / 1_000_000_000.0;
 
         const mean_throughput = (mb / mean_s) * 8.0;
 
@@ -186,9 +186,9 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derive
         for (0..config.measured_iterations) |_| {
             const start_time = std.Io.Clock.Timestamp.now(io, .awake);
             crypto.encryptZeroCopy(ciphertext, plaintext, derived_keys, io);
-            const encrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
+            const encrypt_ns: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             std.mem.doNotOptimizeAway(&ciphertext);
-            try encrypt_stats.add(encrypt_time, allocator);
+            try encrypt_stats.add(encrypt_ns, allocator);
         }
 
         const encrypt_result = Result{
@@ -212,9 +212,9 @@ fn benchSingleThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derive
         for (0..config.measured_iterations) |_| {
             const start_time = std.Io.Clock.Timestamp.now(io, .awake);
             try crypto.decryptZeroCopy(decrypted, ciphertext, derived_keys);
-            const decrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
+            const decrypt_ns: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
             std.mem.doNotOptimizeAway(&decrypted);
-            try decrypt_stats.add(decrypt_time, allocator);
+            try decrypt_stats.add(decrypt_ns, allocator);
         }
 
         const decrypt_result = Result{
@@ -363,8 +363,8 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
 
             const ok = try runOnThreads(threads, contexts, test_data.items, encrypted_outputs.items, chunks_per_thread, derived_keys, io, ThreadContext.encryptThread);
 
-            const encrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
-            try encrypt_stats.add(encrypt_time, allocator);
+            const encrypt_ns: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
+            try encrypt_stats.add(encrypt_ns, allocator);
             if (!ok) return error.EncryptionFailed;
         }
 
@@ -390,8 +390,8 @@ fn benchMultiThreadedInMemory(allocator: std.mem.Allocator, derived_keys: crypto
 
             const ok = try runOnThreads(threads, contexts, encrypted_outputs.items, decrypted_outputs.items, chunks_per_thread, derived_keys, io, ThreadContext.decryptThread);
 
-            const decrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
-            try decrypt_stats.add(decrypt_time, allocator);
+            const decrypt_ns: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
+            try decrypt_stats.add(decrypt_ns, allocator);
             if (!ok) return error.DecryptionFailed;
         }
 
@@ -482,9 +482,9 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
             if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
 
             for (file_paths.items) |path| {
-                const enc_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
-                defer allocator.free(enc_path);
-                std.Io.Dir.deleteFile(.cwd(), io, enc_path) catch {};
+                const encrypted_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
+                defer allocator.free(encrypted_path);
+                std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
             }
         }
 
@@ -510,13 +510,13 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                 try pool.waitAll();
                 if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
             }
-            const encrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
-            try encrypt_stats.add(encrypt_time, allocator);
+            const encrypt_ns: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
+            try encrypt_stats.add(encrypt_ns, allocator);
 
             for (file_paths.items) |path| {
-                const enc_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
-                defer allocator.free(enc_path);
-                std.Io.Dir.deleteFile(.cwd(), io, enc_path) catch {};
+                const encrypted_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
+                defer allocator.free(encrypted_path);
+                std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
             }
         }
 
@@ -576,9 +576,9 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
             if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
 
             for (file_paths.items) |path| {
-                const dec_path = try std.fmt.allocPrint(allocator, "{s}.dec", .{path});
-                defer allocator.free(dec_path);
-                std.Io.Dir.deleteFile(.cwd(), io, dec_path) catch {};
+                const decrypted_path = try std.fmt.allocPrint(allocator, "{s}.dec", .{path});
+                defer allocator.free(decrypted_path);
+                std.Io.Dir.deleteFile(.cwd(), io, decrypted_path) catch {};
             }
         }
 
@@ -604,13 +604,13 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
                 try pool.waitAll();
                 if (pool.hadErrors()) return error.BenchmarkFileProcessingFailed;
             }
-            const decrypt_time: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
-            try decrypt_stats.add(decrypt_time, allocator);
+            const decrypt_ns: u64 = @intCast(start_time.untilNow(io).raw.nanoseconds);
+            try decrypt_stats.add(decrypt_ns, allocator);
 
             for (file_paths.items) |path| {
-                const dec_path = try std.fmt.allocPrint(allocator, "{s}.dec", .{path});
-                defer allocator.free(dec_path);
-                std.Io.Dir.deleteFile(.cwd(), io, dec_path) catch {};
+                const decrypted_path = try std.fmt.allocPrint(allocator, "{s}.dec", .{path});
+                defer allocator.free(decrypted_path);
+                std.Io.Dir.deleteFile(.cwd(), io, decrypted_path) catch {};
             }
         }
 
@@ -625,9 +625,9 @@ fn benchMultiThreaded(allocator: std.mem.Allocator, derived_keys: crypto.Derived
         decrypt_result.printWithStats(decrypt_stats);
 
         for (file_paths.items) |path| {
-            const enc_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
-            defer allocator.free(enc_path);
-            std.Io.Dir.deleteFile(.cwd(), io, enc_path) catch {};
+            const encrypted_path = try std.fmt.allocPrint(allocator, "{s}.enc", .{path});
+            defer allocator.free(encrypted_path);
+            std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
         }
     }
 
@@ -654,7 +654,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     const key = keygen.generate(io);
     const derived_keys = crypto.deriveKeys(key, null);
 
-    const tmp_dir = try createTempDir(allocator, io);
+    const tmp_dir = try createTmpDir(allocator, io);
     defer allocator.free(tmp_dir);
     defer std.Io.Dir.deleteTree(.cwd(), io, tmp_dir) catch {};
 
@@ -671,7 +671,7 @@ test "benchmark files use an isolated temporary directory" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    const tmp_dir = try createTempDir(allocator, io);
+    const tmp_dir = try createTmpDir(allocator, io);
     defer allocator.free(tmp_dir);
     defer std.Io.Dir.deleteTree(.cwd(), io, tmp_dir) catch {};
     try testing.expect(std.mem.startsWith(u8, tmp_dir, ".turbocrypt-bench-"));

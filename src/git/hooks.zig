@@ -66,7 +66,7 @@ pub fn install(repo: *const Repo, exe_path: []const u8) !void {
         return;
     }
 
-    try utils.ensureDirectory(repo.hooks_dir, io);
+    try utils.ensureDir(repo.hooks_dir, io);
     for (names) |name| {
         const path = try std.fs.path.join(allocator, &.{ repo.hooks_dir, name });
         defer allocator.free(path);
@@ -118,7 +118,7 @@ pub fn run(name: []const u8, allocator: std.mem.Allocator, io: std.Io, environ_m
     if (!sync.storeExists(&repo)) return 0;
 
     const key = repo.loadKey() catch |err| switch (err) {
-        repo_mod.Error.RepoLocked => {
+        repo_mod.Error.RepositoryLocked => {
             if (pre and plainManifestExists(&repo)) {
                 std.debug.print("turbocrypt: this repository is locked, run: turbocrypt git unlock\n", .{});
                 return 1;
@@ -152,7 +152,7 @@ fn runPre(repo: *const Repo, keys: crypto.DerivedKeys, environ_map: *const std.p
     const index_file = environ_map.get("GIT_INDEX_FILE") orelse "";
     const partial = std.mem.indexOf(u8, index_file, "next-index") != null;
     const temp_index = std.mem.endsWith(u8, index_file, ".lock");
-    const index_was_clean = !partial and indexIsClean(repo);
+    const index_was_clean = !partial and isIndexClean(repo);
 
     sync.encrypt(repo, keys, .{ .validate_only = partial }, &report) catch |err| {
         printRows(&report);
@@ -201,7 +201,7 @@ fn runPost(repo: *const Repo, keys: crypto.DerivedKeys, name: []const u8) u8 {
     return 0;
 }
 
-fn indexIsClean(repo: *const Repo) bool {
+fn isIndexClean(repo: *const Repo) bool {
     const out = repo.run(&.{ "diff-index", "--cached", "--quiet", "HEAD", "--" }) catch return false;
     defer out.deinit(repo.allocator);
     return out.ok();

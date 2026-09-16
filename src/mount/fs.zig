@@ -141,7 +141,7 @@ fn mount() *Mount {
 }
 
 fn context() *fuse.Context {
-    return lib_ptr.get_context();
+    return lib_ptr.getContext();
 }
 
 pub const operations: fuse.Operations = .{
@@ -351,7 +351,7 @@ fn permitted(m: *Mount, st: *const fuse.Stat, want: Want) !bool {
 /// Retry with the reported size because libfuse returns the full count even when the buffer is too small.
 fn callerGroups(allocator: std.mem.Allocator) ![]std.c.gid_t {
     if (builtin.os.tag != .linux) return &.{};
-    const getgroups_fn = lib_ptr.getgroups orelse return &.{};
+    const getgroups_fn = lib_ptr.getGroups orelse return &.{};
     var list: []std.c.gid_t = &.{};
     while (true) {
         const count = getgroups_fn(@intCast(list.len), list.ptr);
@@ -513,18 +513,18 @@ const Located = struct {
 /// An oversized file spelling must not hide a valid directory spelling.
 fn locate(m: *Mount, parent: std.Io.Dir, name: []const u8) !Located {
     if (!utils.isPlainComponent(name)) return error.UnsafePath;
-    const file_name: ?[]u8 = m.mapper.toBacking(m.allocator, name, .file) catch |err| switch (err) {
+    const maybe_file_name: ?[]u8 = m.mapper.toBacking(m.allocator, name, .file) catch |err| switch (err) {
         error.NameTooLong => null,
         else => return err,
     };
-    if (file_name) |fname| {
-        errdefer m.allocator.free(fname);
-        if (names.Mapper.isReserved(fname)) return error.FileNotFound;
-        if (try statAt(parent, fname)) |st| {
-            if (S.ISREG(modeOf(&st))) return .{ .backing_name = fname, .kind = .file, .st = st };
-            if (!m.mapper.kindsDiffer() and S.ISDIR(modeOf(&st))) return .{ .backing_name = fname, .kind = .directory, .st = st };
+    if (maybe_file_name) |file_name| {
+        errdefer m.allocator.free(file_name);
+        if (names.Mapper.isReserved(file_name)) return error.FileNotFound;
+        if (try statAt(parent, file_name)) |st| {
+            if (S.ISREG(modeOf(&st))) return .{ .backing_name = file_name, .kind = .file, .st = st };
+            if (!m.mapper.kindsDiffer() and S.ISDIR(modeOf(&st))) return .{ .backing_name = file_name, .kind = .directory, .st = st };
         }
-        m.allocator.free(fname);
+        m.allocator.free(file_name);
     }
     if (!m.mapper.kindsDiffer()) return error.FileNotFound;
     const dir_name = try m.mapper.toBacking(m.allocator, name, .directory);
@@ -693,7 +693,7 @@ fn opendir(m: *Mount, path: []const u8, fi: *fuse.FileInfo) !void {
     fi.fh = @intFromPtr(handle);
 }
 
-fn readdir(m: *Mount, buf: ?*anyopaque, filler: fuse.FillDir, fi: ?*fuse.FileInfo) !void {
+fn readdir(m: *Mount, buf: ?*anyopaque, filler: fuse.FillDirFn, fi: ?*fuse.FileInfo) !void {
     const handle = try handleOf(DirHandle, fi);
     _ = filler(buf, ".", null, 0, 0);
     _ = filler(buf, "..", null, 0, 0);
@@ -810,7 +810,7 @@ fn create(m: *Mount, path: []const u8, mode: fuse.mode_t, fi: *fuse.FileInfo) !v
 
     // Publish only a complete ciphertext, even for an empty file.
     {
-        var atomic = try processor.AtomicOutput.createIn(parent.dir, .{ .permissions = .fromMode(0o600) }, m.allocator, m.io);
+        var atomic = try processor.AtomicOutput.initIn(parent.dir, .{ .permissions = .fromMode(0o600) }, m.allocator, m.io);
         defer atomic.deinit(m.io);
         var empty: [node_mod.overhead]u8 = undefined;
         crypto.encryptZeroCopy(&empty, "", m.keys, m.io);
@@ -969,11 +969,11 @@ fn fsyncdir(m: *Mount, fi: ?*fuse.FileInfo) !void {
             if (first_error == null) first_error = err;
         };
     }
-    syncDirectoryHandle(m, handle, &first_error);
+    syncDirHandle(m, handle, &first_error);
     if (first_error) |err| return err;
 }
 
-fn syncDirectoryHandle(m: *Mount, handle: *const DirHandle, first_error: *?anyerror) void {
+fn syncDirHandle(m: *Mount, handle: *const DirHandle, first_error: *?anyerror) void {
     if (m.marks.pin(handle.key)) |pinned_mark| {
         const synced = node_mod.syncFd(pinned_mark.dir.handle, .dir_sync);
         m.marks.unpin(handle.key, pinned_mark.generation, if (synced) true else |_| false);
@@ -1380,7 +1380,7 @@ fn rafCreate(m: *Mount, entry: *const NewEntry, backing_path: []const u8, mode: 
     var change = try m.marks.begin(parent.dir, parent.key());
     defer change.deinit();
 
-    const tmp = try processor.createTemporaryIn(parent.dir, .{ .read = true, .permissions = .fromMode(0o600) }, m.io);
+    const tmp = try processor.createTmpIn(parent.dir, .{ .read = true, .permissions = .fromMode(0o600) }, m.io);
     var published = false;
     errdefer if (!published) parent.dir.deleteFile(m.io, &tmp.name) catch {};
     node.createWith(tmp.file, &m.raf_inodes, &m.raf_key, m.allocator, m.io) catch |err| {
@@ -1502,7 +1502,7 @@ fn rafFsync(m: *Mount, fi: ?*fuse.FileInfo) !void {
     node.mutex.lockUncancelable(m.io);
     defer node.mutex.unlock(m.io);
     if (node.failed) |err| return err;
-    try syncRafNode(m, node);
+    try rafSyncNode(m, node);
     if (node.unlinked.load(.acquire)) return;
     // Avoid resolving parents when only file data changed.
     if (m.marks.count() == 0) return;
@@ -1544,16 +1544,16 @@ fn rafFsyncdir(m: *Mount, fi: ?*fuse.FileInfo) !void {
             if (first_error == null) first_error = err;
             continue;
         }
-        syncRafNode(m, node) catch |err| {
+        rafSyncNode(m, node) catch |err| {
             if (first_error == null) first_error = err;
         };
     }
-    syncDirectoryHandle(m, handle, &first_error);
+    syncDirHandle(m, handle, &first_error);
     if (first_error) |err| return err;
 }
 
 /// Caller must hold the node lock.
-fn syncRafNode(m: *Mount, node: *raf_mod.Node) !void {
+fn rafSyncNode(m: *Mount, node: *raf_mod.Node) !void {
     node_mod.syncFd(node.file.handle, .file_sync) catch |err| {
         m.countFailure();
         std.debug.print("turbocrypt mount: cannot sync {s}: {s}\n", .{ node.path, @errorName(err) });
@@ -1572,7 +1572,7 @@ fn rafDestroy(m: *Mount) void {
             std.debug.print("turbocrypt mount: {s} had a failed write ({s}) and was still open at unmount\n", .{ node.path, @errorName(err) });
             continue;
         }
-        if (node.writable) syncRafNode(m, node) catch {};
+        if (node.writable) rafSyncNode(m, node) catch {};
     }
     syncPendingMarks(m);
 }
@@ -1586,7 +1586,7 @@ fn rescue(m: *Mount, node: *Node) void {
 
 fn rescueNode(m: *Mount, node: *Node) !void {
     const io = m.io;
-    try utils.ensureDirectory(m.options.rescue_dir, io);
+    try utils.ensureDir(m.options.rescue_dir, io);
     var dir = try std.Io.Dir.openDir(.cwd(), io, m.options.rescue_dir, .{});
     defer dir.close(io);
     try dir.setPermissions(io, .fromMode(0o700));
@@ -1813,7 +1813,7 @@ fn cOpendir(path: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
     return result(m, opendir(m, std.mem.span(path), fi));
 }
 
-fn cReaddir(_: [*:0]const u8, buf: ?*anyopaque, filler: fuse.FillDir, _: fuse.off_t, fi: *fuse.FileInfo, _: c_uint) callconv(.c) c_int {
+fn cReaddir(_: [*:0]const u8, buf: ?*anyopaque, filler: fuse.FillDirFn, _: fuse.off_t, fi: *fuse.FileInfo, _: c_uint) callconv(.c) c_int {
     const m = mount();
     return result(m, readdir(m, buf, filler, fi));
 }

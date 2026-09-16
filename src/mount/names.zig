@@ -60,7 +60,7 @@ pub const Mapper = struct {
     /// Protect write-back debris and the container descriptor at every depth.
     /// Reserve descriptor aliases too, since case-insensitive filesystems treat them as the same file.
     pub fn isReserved(backing: []const u8) bool {
-        return processor.isTemporaryName(backing) or std.ascii.eqlIgnoreCase(backing, container.descriptor_name);
+        return processor.isTmpName(backing) or std.ascii.eqlIgnoreCase(backing, container.descriptor_name);
     }
 
     /// Report a conservative plaintext name limit to filesystem clients.

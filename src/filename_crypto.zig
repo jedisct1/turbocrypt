@@ -12,10 +12,10 @@ const max_stack_filename_length = 256;
 
 const max_stack_encoded_length = base84.standard.calcSizeUpperBound(max_stack_filename_length);
 
-const max_decoded_length = base84.standard.calcDecodedSizeUpperBound(filesystem_filename_limit);
+const max_decoded_length = base84.standard.calcDecodedSizeUpperBound(max_name_bytes);
 
 /// ext4, APFS and NTFS all stop at 255 bytes.
-const filesystem_filename_limit = 255;
+const max_name_bytes = 255;
 
 pub const Error = error{
     EncryptedFilenameTooLong,
@@ -63,7 +63,7 @@ pub fn encryptFilename(
         var encode_buf: [max_stack_encoded_length]u8 = undefined;
         const encoded = try base84.standard.encode(&encode_buf, ciphertext);
 
-        if (encoded.len > filesystem_filename_limit) {
+        if (encoded.len > max_name_bytes) {
             return Error.EncryptedFilenameTooLong;
         }
 
@@ -87,7 +87,7 @@ pub fn encryptFilename(
 
         const encoded = try base84.standard.encode(encode_buf, ciphertext);
 
-        if (encoded.len > filesystem_filename_limit) {
+        if (encoded.len > max_name_bytes) {
             return Error.EncryptedFilenameTooLong;
         }
 
@@ -131,7 +131,7 @@ fn decryptFilenameCanonical(
     filename_key: [16]u8,
     safety: DecryptionSafety,
 ) ![]u8 {
-    if (encrypted_name.len == 0 or encrypted_name.len > filesystem_filename_limit) {
+    if (encrypted_name.len == 0 or encrypted_name.len > max_name_bytes) {
         return StrictError.InvalidEncryptedFilename;
     }
 
@@ -340,7 +340,7 @@ test "filename encryption length validation" {
     const long_name = "tracing_attributes-9e84d350f1142111.tracing_attributes.cb6dd642f55c194a-cgu.15.rcgu.o";
     const encrypted = try encryptFilename(allocator, long_name, key);
     defer allocator.free(encrypted);
-    try testing.expect(encrypted.len <= filesystem_filename_limit);
+    try testing.expect(encrypted.len <= max_name_bytes);
 
     // Names of up to 197 bytes fit whatever the ciphertext looks like.
     const safe_lengths = [_]usize{ 50, 100, 150, 197 };
@@ -352,7 +352,7 @@ test "filename encryption length validation" {
         const enc = try encryptFilename(allocator, test_name, key);
         defer allocator.free(enc);
 
-        try testing.expect(enc.len <= filesystem_filename_limit);
+        try testing.expect(enc.len <= max_name_bytes);
     }
 
     // Names of 205 bytes or more never fit. The last length takes the heap path.

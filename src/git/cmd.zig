@@ -147,7 +147,7 @@ fn openRepo(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.pr
 /// A missing key gets a hint, and an unreadable one is an error, never a fallback to another source.
 fn loadRepoKey(repo: *const Repo) ![16]u8 {
     return repo.loadKey() catch |err| switch (err) {
-        repo_mod.Error.RepoLocked => {
+        repo_mod.Error.RepositoryLocked => {
             std.debug.print("Error: this repository has no key yet. Run: turbocrypt git unlock\n", .{});
             return err;
         },
@@ -174,7 +174,7 @@ const Selected = struct {
 fn selectKey(repo: *const Repo, flags: Flags) !Selected {
     const allocator = repo.allocator;
     const bound: ?[16]u8 = repo.loadKey() catch |err| switch (err) {
-        repo_mod.Error.RepoLocked => null,
+        repo_mod.Error.RepositoryLocked => null,
         else => {
             std.debug.print("Error: cannot read the repository key {s}: {}\n", .{ repo.key_path, err });
             return err;
@@ -227,7 +227,7 @@ pub fn writeStoreFiles(repo: *const Repo) !void {
     const allocator = repo.allocator;
     const store = try repo.absolutePath(sync.enc_dir);
     defer allocator.free(store);
-    try utils.ensureDirectory(store, repo.io);
+    try utils.ensureDir(store, repo.io);
 
     const marker = try std.fs.path.join(allocator, &.{ store, sync.marker_name });
     defer allocator.free(marker);
@@ -253,7 +253,7 @@ pub fn writeStoreFiles(repo: *const Repo) !void {
         error.PathAlreadyExists => {},
         else => return err,
     };
-    const tracked = try repo.lsFilesZ(&.{ "--", rel_readme });
+    const tracked = try repo.lsFilesNul(&.{ "--", rel_readme });
     defer utils.freeList(allocator, tracked);
     if (tracked.len == 0) try repo.addForce(&.{rel_readme});
 }
@@ -274,12 +274,12 @@ pub fn setupStore(repo: *const Repo) !void {
 }
 
 fn installIntegration(repo: *const Repo) !void {
-    const exe = try std.process.executablePathAlloc(repo.io, repo.allocator);
-    defer repo.allocator.free(exe);
+    const exe_path = try std.process.executablePathAlloc(repo.io, repo.allocator);
+    defer repo.allocator.free(exe_path);
     // sh reads a Windows path more easily with forward slashes.
-    if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, exe, std.fs.path.sep_windows, std.fs.path.sep_posix);
-    try repo.configSetLocal("turbocrypt.path", exe);
-    try hooks.install(repo, exe);
+    if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, exe_path, std.fs.path.sep_windows, std.fs.path.sep_posix);
+    try repo.configSetLocal("turbocrypt.path", exe_path);
+    try hooks.install(repo, exe_path);
 }
 
 fn cmdInit(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
@@ -296,7 +296,7 @@ fn cmdInit(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
     defer lock.release();
 
     if (!sync.storeExists(&repo)) try checkStoreLocation(&repo);
-    try setUp(&repo, flags, .init);
+    try setup(&repo, flags, .init);
 }
 
 /// A store can only be created where nothing else lives and where git will see it.
@@ -331,7 +331,7 @@ const Command = enum { init, unlock };
 
 /// What init and unlock share once the lock is held.
 /// unlock refuses a key without files, since a wrong key looks the same. init sets it up.
-fn setUp(repo: *const Repo, flags: Flags, command: Command) !void {
+fn setup(repo: *const Repo, flags: Flags, command: Command) !void {
     const allocator = repo.allocator;
     const selected = try selectKey(repo, flags);
     defer if (selected.source) |source| allocator.free(source);
@@ -418,7 +418,7 @@ fn cmdUnlock(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         std.debug.print("Error: no {s}/ store in this repository. Run: turbocrypt git init\n", .{sync.enc_dir});
         return error.InvalidArguments;
     }
-    try setUp(&repo, flags, .unlock);
+    try setup(&repo, flags, .unlock);
 }
 
 fn cmdExportKey(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
@@ -461,7 +461,7 @@ fn savePlainManifest(repo: *const Repo, manifest: Manifest) !void {
 
 /// Tracked files at or under a manifest entry, as git sees them.
 fn trackedUnder(repo: *const Repo, entry: manifest_mod.Entry) ![][]u8 {
-    const all = try repo.lsFilesZ(&.{ "--cached", "--", entry.path });
+    const all = try repo.lsFilesNul(&.{ "--cached", "--", entry.path });
     defer utils.freeList(repo.allocator, all);
 
     var list: std.ArrayList([]u8) = .empty;
@@ -669,7 +669,7 @@ fn cmdStatus(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         return;
     }
     const key = repo.loadKey() catch |err| switch (err) {
-        repo_mod.Error.RepoLocked => {
+        repo_mod.Error.RepositoryLocked => {
             std.debug.print("Key        : locked, run turbocrypt git unlock\n", .{});
             return;
         },

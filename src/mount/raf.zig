@@ -163,13 +163,13 @@ pub const Node = struct {
         return node.raf.length();
     }
 
-    /// A failed read poisons nothing, and the library leaves zeros in `out`.
-    pub fn read(node: *Node, out: []u8, offset: u64) !usize {
-        return node.raf.read(out, offset);
+    /// A failed read poisons nothing, and the library leaves zeros in `buffer`.
+    pub fn read(node: *Node, buffer: []u8, offset: u64) !usize {
+        return node.raf.read(buffer, offset);
     }
 
-    pub fn write(node: *Node, in: []const u8, offset: u64) !usize {
-        return node.raf.write(in, offset) catch |err| {
+    pub fn write(node: *Node, bytes: []const u8, offset: u64) !usize {
+        return node.raf.write(bytes, offset) catch |err| {
             node.recordFailure(err);
             return err;
         };

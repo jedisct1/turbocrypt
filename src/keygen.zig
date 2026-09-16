@@ -34,14 +34,14 @@ pub fn generate(io: std.Io) [key_length]u8 {
 pub fn writeKeyFile(
     path: []const u8,
     key: [key_length]u8,
-    password_opt: ?[]const u8,
+    maybe_password: ?[]const u8,
     allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
     var protected_file: [protected_key_file_size]u8 = undefined;
-    const data: []const u8 = if (password_opt) |pwd| blk: {
+    const data: []const u8 = if (maybe_password) |pass| blk: {
         protected_file[0] = @backingInt(KeyFormat.password_protected);
-        protected_file[1..].* = try password.protectKey(key, pwd);
+        protected_file[1..].* = try password.protectKey(key, pass);
         break :blk &protected_file;
     } else &key;
 
@@ -50,7 +50,7 @@ pub fn writeKeyFile(
 
 /// Read a key file. A protected key needs its password.
 /// Warns when other users can read the file.
-pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8, io: std.Io) ![key_length]u8 {
+pub fn readKeyFile(path: []const u8, maybe_password: ?[]const u8, io: std.Io) ![key_length]u8 {
     const file = try std.Io.Dir.openFile(.cwd(), io, path, .{});
     defer file.close(io);
 
@@ -59,10 +59,10 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8, io: std.Io) ![ke
     if (builtin.os.tag != .windows) {
         const mode = stat.permissions.toMode();
 
-        const group_perms = (mode >> 3) & 0o7;
-        const other_perms = mode & 0o7;
+        const group_bits = (mode >> 3) & 0o7;
+        const other_bits = mode & 0o7;
 
-        if (group_perms != 0 or other_perms != 0) {
+        if (group_bits != 0 or other_bits != 0) {
             std.debug.print("WARNING: Key file '{s}' has overly permissive permissions ({o}).\n", .{ path, mode & 0o777 });
             std.debug.print("         Recommended: chmod 600 {s}\n", .{path});
             std.debug.print("         Anyone with access to this file can decrypt your data!\n", .{});
@@ -93,9 +93,9 @@ pub fn readKeyFile(path: []const u8, password_opt: ?[]const u8, io: std.Io) ![ke
         var protected_data: [20]u8 = undefined;
         @memcpy(&protected_data, full_data[1..21]);
 
-        const pwd = password_opt orelse return error.PasswordRequired;
+        const pass = maybe_password orelse return error.PasswordRequired;
 
-        return try password.unprotectKey(protected_data, pwd);
+        return try password.unprotectKey(protected_data, pass);
     } else {
         return error.InvalidKeyFile;
     }

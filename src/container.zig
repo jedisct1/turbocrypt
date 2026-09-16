@@ -107,7 +107,7 @@ fn decodeDescriptor(bytes: []const u8, key: [16]u8) Error!Settings {
 }
 
 /// Write a fresh descriptor into an open, empty file. The caller publishes and syncs it.
-pub fn writeDescriptorFile(file: std.Io.File, descriptor_key: [16]u8, settings: Settings, io: std.Io) !void {
+pub fn writeDescriptor(file: std.Io.File, descriptor_key: [16]u8, settings: Settings, io: std.Io) !void {
     var random_field: [random_length]u8 = undefined;
     io.random(&random_field);
     const bytes = encodeDescriptor(buildSettings(settings), random_field, descriptor_key);
@@ -119,11 +119,11 @@ pub fn writeDescriptorFile(file: std.Io.File, descriptor_key: [16]u8, settings: 
 /// Stat before opening to reject FIFOs and devices without blocking.
 /// Read an extra byte to reject oversized files.
 pub fn readDescriptor(dir: std.Io.Dir, descriptor_key: [16]u8, io: std.Io) !Settings {
-    const st = dir.statFile(io, descriptor_name, .{ .follow_symlinks = false }) catch |err| switch (err) {
+    const stat = dir.statFile(io, descriptor_name, .{ .follow_symlinks = false }) catch |err| switch (err) {
         error.FileNotFound => return error.DescriptorMissing,
         else => return err,
     };
-    if (st.kind != .file) return error.InvalidDescriptor;
+    if (stat.kind != .file) return error.InvalidDescriptor;
 
     const file = try dir.openFile(io, descriptor_name, .{ .follow_symlinks = false, .allow_directory = false });
     defer file.close(io);
@@ -278,7 +278,7 @@ test "a descriptor round-trips through a directory and rejects other keys, conte
     {
         const file = try dir.createFile(io, descriptor_name, .{ .read = true, .exclusive = true });
         defer file.close(io);
-        try writeDescriptorFile(file, key, .{ .enc_suffix = true }, io);
+        try writeDescriptor(file, key, .{ .enc_suffix = true }, io);
         try testing.expectEqual(descriptor_size, try file.length(io));
     }
     try testing.expect(hasDescriptorAt(dir, io, "."));

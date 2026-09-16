@@ -55,7 +55,7 @@ pub fn printErrorDetails(err: anyerror, is_encrypt: bool) void {
 }
 
 fn handleJobError(
-    worker: *Pool,
+    pool: *Pool,
     job: FileJob,
     err: anyerror,
     error_prefix: []const u8,
@@ -65,8 +65,8 @@ fn handleJobError(
     std.debug.print("\n{s} {s}\n", .{ error_prefix, job.source_path });
     printErrorDetails(err, is_encrypt);
 
-    worker.markError();
-    worker.progress_tracker.addFileFailed();
+    pool.markError();
+    pool.progress_tracker.addFileFailed();
 }
 
 pub const Operation = enum {
@@ -86,7 +86,7 @@ pub const FileJob = struct {
 
 const WorkQueue = struct {
     mutex: std.Io.Mutex,
-    items: std.ArrayList(FileJob),
+    jobs: std.ArrayList(FileJob),
     allocator: std.mem.Allocator,
     done: bool,
     io: std.Io,
@@ -94,7 +94,7 @@ const WorkQueue = struct {
     pub fn init(allocator: std.mem.Allocator, io: std.Io) WorkQueue {
         return .{
             .mutex = std.Io.Mutex.init,
-            .items = .empty,
+            .jobs = .empty,
             .allocator = allocator,
             .done = false,
             .io = io,
@@ -102,17 +102,17 @@ const WorkQueue = struct {
     }
 
     pub fn deinit(self: *WorkQueue) void {
-        for (self.items.items) |job| {
+        for (self.jobs.items) |job| {
             self.allocator.free(job.source_path);
             if (job.dest_path) |dest_path| self.allocator.free(dest_path);
         }
-        self.items.deinit(self.allocator);
+        self.jobs.deinit(self.allocator);
     }
 
     pub fn push(self: *WorkQueue, job: FileJob) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        try self.items.append(self.allocator, job);
+        try self.jobs.append(self.allocator, job);
     }
 
     /// Null means the queue is done. An empty slice means more jobs can still come.
@@ -121,21 +121,21 @@ const WorkQueue = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        if (self.items.items.len == 0) {
+        if (self.jobs.items.len == 0) {
             if (self.done) return null;
             return try self.allocator.alloc(FileJob, 0);
         }
 
-        const batch_size = @min(max_count, self.items.items.len);
+        const batch_size = @min(max_count, self.jobs.items.len);
 
         const batch = try self.allocator.alloc(FileJob, batch_size);
-        @memcpy(batch, self.items.items[0..batch_size]);
+        @memcpy(batch, self.jobs.items[0..batch_size]);
 
-        const remaining = self.items.items.len - batch_size;
+        const remaining = self.jobs.items.len - batch_size;
         if (remaining > 0 and batch_size > 0) {
-            @memmove(self.items.items[0..remaining], self.items.items[batch_size..]);
+            @memmove(self.jobs.items[0..remaining], self.jobs.items[batch_size..]);
         }
-        self.items.shrinkRetainingCapacity(remaining);
+        self.jobs.shrinkRetainingCapacity(remaining);
 
         return batch;
     }
@@ -149,7 +149,7 @@ const WorkQueue = struct {
     pub fn isEmpty(self: *WorkQueue) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        return self.items.items.len == 0 and self.done;
+        return self.jobs.items.len == 0 and self.done;
     }
 };
 
@@ -205,9 +205,9 @@ pub const Pool = struct {
         self.allocator.free(self.threads);
     }
 
-    fn workerThread(worker: *Pool) void {
+    fn workerThread(pool: *Pool) void {
         // A thread-local arena keeps the workers from contending on the allocator.
-        var thread_arena = std.heap.ArenaAllocator.init(worker.allocator);
+        var thread_arena = std.heap.ArenaAllocator.init(pool.allocator);
         defer thread_arena.deinit();
         const thread_allocator = thread_arena.allocator();
 
@@ -216,36 +216,36 @@ pub const Pool = struct {
         var local_bytes_processed: u64 = 0;
 
         while (true) {
-            const maybe_batch = worker.work_queue.popBatch(max_batch_size) catch |err| {
+            const maybe_batch = pool.work_queue.popBatch(max_batch_size) catch |err| {
                 std.debug.print("[ERROR] Failed to pop batch: {}\n", .{err});
-                worker.markError();
+                pool.markError();
                 break;
             };
 
             const batch = maybe_batch orelse break;
-            defer worker.allocator.free(batch);
+            defer pool.allocator.free(batch);
 
             if (batch.len == 0) {
-                worker.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {};
+                pool.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {};
                 continue;
             }
 
-            for (batch, 0..) |job, idx| {
+            for (batch, 0..) |job, i| {
                 // The job owns its paths.
-                defer worker.allocator.free(job.source_path);
-                defer if (job.dest_path) |dp| worker.allocator.free(dp);
+                defer pool.allocator.free(job.source_path);
+                defer if (job.dest_path) |dest| pool.allocator.free(dest);
 
-                if (!worker.dry_run) {
+                if (!pool.dry_run) {
                     switch (job.operation) {
                         .encrypt => {
                             processor.encryptFile(
                                 job.source_path,
                                 job.dest_path.?,
-                                worker.derived_keys,
+                                pool.derived_keys,
                                 thread_allocator,
-                                worker.io,
+                                pool.io,
                             ) catch |err| {
-                                handleJobError(worker, job, err, "[ERROR] Failed to encrypt:", true);
+                                handleJobError(pool, job, err, "[ERROR] Failed to encrypt:", true);
                                 continue;
                             };
                         },
@@ -253,31 +253,31 @@ pub const Pool = struct {
                             processor.decryptFile(
                                 job.source_path,
                                 job.dest_path.?,
-                                worker.derived_keys,
+                                pool.derived_keys,
                                 thread_allocator,
-                                worker.io,
+                                pool.io,
                             ) catch |err| {
-                                handleJobError(worker, job, err, "[ERROR] Failed to decrypt:", false);
+                                handleJobError(pool, job, err, "[ERROR] Failed to decrypt:", false);
                                 continue;
                             };
                         },
                         .verify => {
                             processor.verifyFile(
                                 job.source_path,
-                                worker.derived_keys,
+                                pool.derived_keys,
                                 thread_allocator,
-                                worker.quick_verify,
-                                worker.io,
+                                pool.quick_verify,
+                                pool.io,
                             ) catch |err| {
-                                handleJobError(worker, job, err, "[VERIFY FAILED]", false);
+                                handleJobError(pool, job, err, "[VERIFY FAILED]", false);
                                 continue;
                             };
                         },
                     }
 
                     if (job.delete_source) {
-                        std.Io.Dir.deleteFile(.cwd(), worker.io, job.source_path) catch |err| {
-                            handleJobError(worker, job, err, "[ERROR] Failed to remove source file:", job.operation == .encrypt);
+                        std.Io.Dir.deleteFile(.cwd(), pool.io, job.source_path) catch |err| {
+                            handleJobError(pool, job, err, "[ERROR] Failed to remove source file:", job.operation == .encrypt);
                             continue;
                         };
                     }
@@ -286,10 +286,10 @@ pub const Pool = struct {
                 local_files_processed += 1;
                 local_bytes_processed += job.file_size;
 
-                if ((idx + 1) % progress_update_interval == 0 or idx == batch.len - 1) {
+                if ((i + 1) % progress_update_interval == 0 or i == batch.len - 1) {
                     if (local_files_processed > 0) {
-                        worker.progress_tracker.addFilesProcessed(local_files_processed);
-                        worker.progress_tracker.addBytesProcessed(local_bytes_processed);
+                        pool.progress_tracker.addFilesProcessed(local_files_processed);
+                        pool.progress_tracker.addBytesProcessed(local_bytes_processed);
                         local_files_processed = 0;
                         local_bytes_processed = 0;
                     }
@@ -300,8 +300,8 @@ pub const Pool = struct {
         }
 
         if (local_files_processed > 0) {
-            worker.progress_tracker.addFilesProcessed(local_files_processed);
-            worker.progress_tracker.addBytesProcessed(local_bytes_processed);
+            pool.progress_tracker.addFilesProcessed(local_files_processed);
+            pool.progress_tracker.addBytesProcessed(local_bytes_processed);
         }
     }
 
@@ -381,11 +381,11 @@ test "worker pool releases jobs that were never started" {
 
     const source = try allocator.dupe(u8, "source");
     errdefer allocator.free(source);
-    const destination = try allocator.dupe(u8, "destination");
-    errdefer allocator.free(destination);
+    const dest = try allocator.dupe(u8, "dest");
+    errdefer allocator.free(dest);
     try pool.submitJob(.{
         .source_path = source,
-        .dest_path = destination,
+        .dest_path = dest,
         .operation = .encrypt,
         .file_size = 0,
     });

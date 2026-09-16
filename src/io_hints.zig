@@ -4,9 +4,9 @@ const builtin = @import("builtin");
 pub const FileAdvice = enum {
     sequential,
     random,
-    willneed,
-    dontneed,
-    noreuse,
+    will_need,
+    dont_need,
+    no_reuse,
 };
 
 pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) void {
@@ -15,9 +15,9 @@ pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) 
             const linux_advice: usize = switch (advice) {
                 .sequential => std.os.linux.POSIX_FADV.SEQUENTIAL,
                 .random => std.os.linux.POSIX_FADV.RANDOM,
-                .willneed => std.os.linux.POSIX_FADV.WILLNEED,
-                .dontneed => std.os.linux.POSIX_FADV.DONTNEED,
-                .noreuse => std.os.linux.POSIX_FADV.NOREUSE,
+                .will_need => std.os.linux.POSIX_FADV.WILLNEED,
+                .dont_need => std.os.linux.POSIX_FADV.DONTNEED,
+                .no_reuse => std.os.linux.POSIX_FADV.NOREUSE,
             };
             _ = std.os.linux.fadvise(file.handle, offset, len, linux_advice);
         },
@@ -25,7 +25,7 @@ pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) 
             // macOS has no fadvise. Read-ahead covers the sequential hints.
             // F_NOCACHE is the closest thing to DONTNEED, but it also hurts later reads.
             switch (advice) {
-                .sequential, .willneed => {
+                .sequential, .will_need => {
                     _ = std.c.fcntl(file.handle, std.c.F.RDAHEAD, @as(c_int, 1));
                 },
                 else => {},
@@ -38,8 +38,8 @@ pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) 
 pub const MemoryAdvice = enum {
     sequential,
     random,
-    willneed,
-    dontneed,
+    will_need,
+    dont_need,
 };
 
 pub fn adviseMemory(ptr: [*]align(std.heap.page_size_min) u8, len: usize, advice: MemoryAdvice) void {
@@ -48,8 +48,8 @@ pub fn adviseMemory(ptr: [*]align(std.heap.page_size_min) u8, len: usize, advice
     const posix_advice: u32 = switch (advice) {
         .sequential => std.posix.MADV.SEQUENTIAL,
         .random => std.posix.MADV.RANDOM,
-        .willneed => std.posix.MADV.WILLNEED,
-        .dontneed => std.posix.MADV.DONTNEED,
+        .will_need => std.posix.MADV.WILLNEED,
+        .dont_need => std.posix.MADV.DONTNEED,
     };
 
     std.posix.madvise(ptr, len, posix_advice) catch {};

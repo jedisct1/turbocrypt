@@ -239,7 +239,7 @@ pub const Statvfs = switch (builtin.os.tag) {
     else => void,
 };
 
-pub const FillDir = *const fn (?*anyopaque, [*:0]const u8, ?*const Stat, off_t, c_int) callconv(.c) c_int;
+pub const FillDirFn = *const fn (?*anyopaque, [*:0]const u8, ?*const Stat, off_t, c_int) callconv(.c) c_int;
 
 pub const GetattrFn = *const fn ([*:0]const u8, *Stat, ?*FileInfo) callconv(.c) c_int;
 pub const ReadlinkFn = *const fn ([*:0]const u8, [*]u8, usize) callconv(.c) c_int;
@@ -259,7 +259,7 @@ pub const FsyncFn = *const fn ([*:0]const u8, c_int, *FileInfo) callconv(.c) c_i
 pub const SetxattrFn = *const fn ([*:0]const u8, [*:0]const u8, [*]const u8, usize, c_int) callconv(.c) c_int;
 pub const GetxattrFn = *const fn ([*:0]const u8, [*:0]const u8, [*]u8, usize) callconv(.c) c_int;
 pub const ListxattrFn = *const fn ([*:0]const u8, [*]u8, usize) callconv(.c) c_int;
-pub const ReaddirFn = *const fn ([*:0]const u8, ?*anyopaque, FillDir, off_t, *FileInfo, c_uint) callconv(.c) c_int;
+pub const ReaddirFn = *const fn ([*:0]const u8, ?*anyopaque, FillDirFn, off_t, *FileInfo, c_uint) callconv(.c) c_int;
 pub const InitFn = *const fn (*ConnInfo, *Config) callconv(.c) ?*anyopaque;
 pub const DestroyFn = *const fn (?*anyopaque) callconv(.c) void;
 pub const AccessFn = *const fn ([*:0]const u8, c_int) callconv(.c) c_int;
@@ -349,20 +349,20 @@ const static = struct {
 
 pub const Library = struct {
     dyn: ?std.DynLib,
-    opt_add_arg: *const fn (*Args, [*:0]const u8) callconv(.c) c_int,
-    opt_free_args: *const fn (*Args) callconv(.c) void,
+    optAddArg: *const fn (*Args, [*:0]const u8) callconv(.c) c_int,
+    optFreeArgs: *const fn (*Args) callconv(.c) void,
     new: *const fn (*Args, *const Operations, usize, ?*anyopaque) callconv(.c) ?*Fuse,
     mount: *const fn (*Fuse, [*:0]const u8) callconv(.c) c_int,
     unmount: *const fn (*Fuse) callconv(.c) void,
     destroy: *const fn (*Fuse) callconv(.c) void,
-    get_session: *const fn (*Fuse) callconv(.c) *Session,
-    set_signal_handlers: *const fn (*Session) callconv(.c) c_int,
-    remove_signal_handlers: *const fn (*Session) callconv(.c) void,
-    session_exit: *const fn (*Session) callconv(.c) void,
+    getSession: *const fn (*Fuse) callconv(.c) *Session,
+    setSignalHandlers: *const fn (*Session) callconv(.c) c_int,
+    removeSignalHandlers: *const fn (*Session) callconv(.c) void,
+    sessionExit: *const fn (*Session) callconv(.c) void,
     loop: *const fn (*Fuse) callconv(.c) c_int,
-    loop_mt: *const fn (*Fuse, c_int) callconv(.c) c_int,
-    get_context: *const fn () callconv(.c) *Context,
-    getgroups: ?GetgroupsFn,
+    loopMt: *const fn (*Fuse, c_int) callconv(.c) c_int,
+    getContext: *const fn () callconv(.c) *Context,
+    getGroups: ?GetgroupsFn,
 
     const paths: []const [:0]const u8 = switch (builtin.os.tag) {
         .macos => &.{
@@ -376,41 +376,41 @@ pub const Library = struct {
         if (builtin.os.tag == .linux) {
             return .{
                 .dyn = null,
-                .opt_add_arg = static.fuse_opt_add_arg,
-                .opt_free_args = static.fuse_opt_free_args,
+                .optAddArg = static.fuse_opt_add_arg,
+                .optFreeArgs = static.fuse_opt_free_args,
                 .new = static.fuse_new_31,
                 .mount = static.fuse_mount,
                 .unmount = static.fuse_unmount,
                 .destroy = static.fuse_destroy,
-                .get_session = static.fuse_get_session,
-                .set_signal_handlers = static.fuse_set_signal_handlers,
-                .remove_signal_handlers = static.fuse_remove_signal_handlers,
-                .session_exit = static.fuse_session_exit,
+                .getSession = static.fuse_get_session,
+                .setSignalHandlers = static.fuse_set_signal_handlers,
+                .removeSignalHandlers = static.fuse_remove_signal_handlers,
+                .sessionExit = static.fuse_session_exit,
                 .loop = static.fuse_loop,
-                .loop_mt = static.fuse_loop_mt_31,
-                .get_context = static.fuse_get_context,
-                .getgroups = static.fuse_getgroups,
+                .loopMt = static.fuse_loop_mt_31,
+                .getContext = static.fuse_get_context,
+                .getGroups = static.fuse_getgroups,
             };
         }
         var dyn = openAny() orelse return error.LibraryNotFound;
         errdefer dyn.close();
         return .{
             .dyn = dyn,
-            .opt_add_arg = try lookup(&dyn, @FieldType(Library, "opt_add_arg"), "fuse_opt_add_arg"),
-            .opt_free_args = try lookup(&dyn, @FieldType(Library, "opt_free_args"), "fuse_opt_free_args"),
+            .optAddArg = try lookup(&dyn, @FieldType(Library, "optAddArg"), "fuse_opt_add_arg"),
+            .optFreeArgs = try lookup(&dyn, @FieldType(Library, "optFreeArgs"), "fuse_opt_free_args"),
             .new = dyn.lookup(@FieldType(Library, "new"), "fuse_new_31") orelse
                 try lookup(&dyn, @FieldType(Library, "new"), "fuse_new"),
             .mount = try lookup(&dyn, @FieldType(Library, "mount"), "fuse_mount"),
             .unmount = try lookup(&dyn, @FieldType(Library, "unmount"), "fuse_unmount"),
             .destroy = try lookup(&dyn, @FieldType(Library, "destroy"), "fuse_destroy"),
-            .get_session = try lookup(&dyn, @FieldType(Library, "get_session"), "fuse_get_session"),
-            .set_signal_handlers = try lookup(&dyn, @FieldType(Library, "set_signal_handlers"), "fuse_set_signal_handlers"),
-            .remove_signal_handlers = try lookup(&dyn, @FieldType(Library, "remove_signal_handlers"), "fuse_remove_signal_handlers"),
-            .session_exit = try lookup(&dyn, @FieldType(Library, "session_exit"), "fuse_session_exit"),
+            .getSession = try lookup(&dyn, @FieldType(Library, "getSession"), "fuse_get_session"),
+            .setSignalHandlers = try lookup(&dyn, @FieldType(Library, "setSignalHandlers"), "fuse_set_signal_handlers"),
+            .removeSignalHandlers = try lookup(&dyn, @FieldType(Library, "removeSignalHandlers"), "fuse_remove_signal_handlers"),
+            .sessionExit = try lookup(&dyn, @FieldType(Library, "sessionExit"), "fuse_session_exit"),
             .loop = try lookup(&dyn, @FieldType(Library, "loop"), "fuse_loop"),
-            .loop_mt = try lookup(&dyn, @FieldType(Library, "loop_mt"), "fuse_loop_mt_31"),
-            .get_context = try lookup(&dyn, @FieldType(Library, "get_context"), "fuse_get_context"),
-            .getgroups = dyn.lookup(GetgroupsFn, "fuse_getgroups"),
+            .loopMt = try lookup(&dyn, @FieldType(Library, "loopMt"), "fuse_loop_mt_31"),
+            .getContext = try lookup(&dyn, @FieldType(Library, "getContext"), "fuse_get_context"),
+            .getGroups = dyn.lookup(GetgroupsFn, "fuse_getgroups"),
         };
     }
 
@@ -462,11 +462,11 @@ const stop_signals = [_]std.c.SIG{ .TERM, .INT, .HUP };
 /// Run the session through cleanup so failure counters are final when this returns.
 pub fn run(lib: *const Library, allocator: std.mem.Allocator, io: std.Io, options: RunOptions) Error!Outcome {
     var args: Args = .{};
-    defer lib.opt_free_args(&args);
+    defer lib.optFreeArgs(&args);
     for (options.args) |arg| {
         const arg_z = try allocator.dupeSentinel(u8, arg, 0);
         defer allocator.free(arg_z);
-        if (lib.opt_add_arg(&args, arg_z) != 0) return error.OutOfMemory;
+        if (lib.optAddArg(&args, arg_z) != 0) return error.OutOfMemory;
     }
     const mountpoint_z = try allocator.dupeSentinel(u8, options.mountpoint, 0);
     defer allocator.free(mountpoint_z);
@@ -475,10 +475,10 @@ pub fn run(lib: *const Library, allocator: std.mem.Allocator, io: std.Io, option
     defer lib.destroy(fuse);
     if (lib.mount(fuse, mountpoint_z) != 0) return error.MountFailed;
 
-    const session = lib.get_session(fuse);
-    _ = lib.set_signal_handlers(session);
+    const session = lib.getSession(fuse);
+    _ = lib.setSignalHandlers(session);
     exit_session = session;
-    exit_fn = lib.session_exit;
+    exit_fn = lib.sessionExit;
     signal_seen.store(false, .seq_cst);
     var saved: [stop_signals.len]std.c.Sigaction = undefined;
     const act: std.c.Sigaction = .{
@@ -488,7 +488,7 @@ pub fn run(lib: *const Library, allocator: std.mem.Allocator, io: std.Io, option
     };
     for (stop_signals, 0..) |sig, i| std.posix.sigaction(sig, &act, &saved[i]);
 
-    const loop_result = if (options.single_thread) lib.loop(fuse) else lib.loop_mt(fuse, 0);
+    const loop_result = if (options.single_thread) lib.loop(fuse) else lib.loopMt(fuse, 0);
 
     const outcome: Outcome = .{
         .loop_result = loop_result,
@@ -498,7 +498,7 @@ pub fn run(lib: *const Library, allocator: std.mem.Allocator, io: std.Io, option
 
     for (stop_signals, 0..) |sig, i| std.posix.sigaction(sig, &saved[i], null);
     exit_session = null;
-    lib.remove_signal_handlers(session);
+    lib.removeSignalHandlers(session);
     lib.unmount(fuse);
     return outcome;
 }
@@ -586,7 +586,7 @@ pub fn negErrno(e: std.c.E) c_int {
 }
 
 pub fn privateData(lib: *const Library, comptime T: type) *T {
-    return @ptrCast(@alignCast(lib.get_context().private_data.?));
+    return @ptrCast(@alignCast(lib.getContext().private_data.?));
 }
 
 /// Emit ABI measurements for comparison with C headers in tests/fuse_abi.sh.

@@ -60,7 +60,7 @@ pub const Baseline = struct {
 };
 
 /// The plain file as it is now.
-pub const Cur = struct {
+pub const Current = struct {
     plain: [crypto.fingerprint_length]u8,
     exec: bool,
 };
@@ -76,17 +76,17 @@ pub const New = struct {
 pub const Values = struct {
     old: ?Baseline,
     new: ?New,
-    cur: ?Cur,
+    cur: ?Current,
     /// Known only after the entry was decrypted and compared.
-    cur_eq_new: ?bool = null,
+    cur_eql_new: ?bool = null,
 
-    pub fn newEqOld(v: Values) bool {
+    pub fn newEqlOld(v: Values) bool {
         const o = v.old orelse return false;
         const n = v.new orelse return false;
         return std.mem.eql(u8, &o.id, &n.id) and o.exec == n.exec;
     }
 
-    pub fn curEqOld(v: Values) bool {
+    pub fn curEqlOld(v: Values) bool {
         const o = v.old orelse return false;
         const c = v.cur orelse return false;
         return std.mem.eql(u8, &o.plain, &c.plain) and o.exec == c.exec;
@@ -111,7 +111,7 @@ pub const Decision = enum {
 };
 
 fn compareOr(v: Values, equal: Decision, different: Decision) Decision {
-    const eq = v.cur_eq_new orelse return .need_compare;
+    const eq = v.cur_eql_new orelse return .need_compare;
     return if (eq) equal else different;
 }
 
@@ -121,10 +121,10 @@ pub fn decideDecrypt(v: Values, force: bool) Decision {
     if (v.old == null and v.cur == null) return .write_plain;
     if (v.old == null) return compareOr(v, .record, if (force) .write_plain else .conflict);
     if (v.new == null and v.cur == null) return .drop_baseline;
-    if (v.new == null) return if (v.curEqOld() or force) .delete_plain else .warn_removed;
+    if (v.new == null) return if (v.curEqlOld() or force) .delete_plain else .warn_removed;
     if (v.cur == null) return .write_plain;
-    if (v.newEqOld()) return .none;
-    if (v.curEqOld()) return .write_plain;
+    if (v.newEqlOld()) return .none;
+    if (v.curEqlOld()) return .write_plain;
     return compareOr(v, .record, if (force) .write_plain else .conflict);
 }
 
@@ -138,8 +138,8 @@ pub fn decideEncrypt(v: Values, force: bool) Decision {
     if (v.new == null and v.cur == null) return .drop_baseline;
     if (v.new == null) return if (force) .encrypt else .warn_removed;
     if (v.cur == null) return .warn_missing;
-    if (v.newEqOld()) return if (v.curEqOld()) .none else .encrypt;
-    if (v.curEqOld()) return .write_plain;
+    if (v.newEqlOld()) return if (v.curEqlOld()) .none else .encrypt;
+    if (v.curEqlOld()) return .write_plain;
     return compareOr(v, .record, if (force) .encrypt else .abort_both_changed);
 }
 
@@ -505,7 +505,7 @@ pub const Context = struct {
     /// The tracked paths and the unmerged store entries, from one listing of the index.
     fn loadIndex(self: *Context) !void {
         const allocator = self.allocator;
-        const lines = try self.repo.lsFilesZ(&.{"--stage"});
+        const lines = try self.repo.lsFilesNul(&.{"--stage"});
         defer utils.freeList(allocator, lines);
 
         var tracked: std.ArrayList([]u8) = .empty;
@@ -610,7 +610,7 @@ pub fn checkSameFilesystem(repo: *const Repo) !void {
     try repo.ensureDirs();
     const store = try repo.absolutePath(enc_dir);
     defer allocator.free(store);
-    try utils.ensureDirectory(store, repo.io);
+    try utils.ensureDir(store, repo.io);
     const probe = try std.fs.path.join(allocator, &.{ store, ".probe" });
     defer allocator.free(probe);
     defer std.Io.Dir.deleteFile(.cwd(), repo.io, probe) catch {};
@@ -707,7 +707,7 @@ pub fn collectCandidates(ctx: *const Context, manifest: Manifest) !Candidates {
     defer argv.deinit(allocator);
     try argv.appendSlice(allocator, &.{ "--others", "--ignored", exclude_from });
     try argv.appendSlice(allocator, pathspec.items);
-    const all = try repo.lsFilesZ(argv.items);
+    const all = try repo.lsFilesNul(argv.items);
     defer utils.freeList(allocator, all);
 
     const gitignored = try listGitignored(ctx, pathspec.items);
@@ -760,7 +760,7 @@ fn listGitignored(ctx: *const Context, pathspec: []const []const u8) ![][]u8 {
     if (arg) |a| try argv.append(allocator, a);
     try argv.appendSlice(allocator, pathspec);
 
-    return repo.lsFilesZ(argv.items);
+    return repo.lsFilesNul(argv.items);
 }
 
 /// The global excludes file, or null when there is none.
@@ -811,7 +811,7 @@ fn snapshot(ctx: *const Context, abs: []const u8, limit: u64, key: [crypto.key_l
 }
 
 /// The plain file of a path, fingerprinted, or null when it is absent.
-fn readCur(ctx: *const Context, plain: []const u8, bytes_out: ?*?[]u8) !?Cur {
+fn readCur(ctx: *const Context, plain: []const u8, bytes_out: ?*?[]u8) !?Current {
     const abs = try ctx.repo.absolutePath(plain);
     defer ctx.allocator.free(abs);
     const snap = (try snapshot(ctx, abs, max_file_size, ctx.keys.fingerprint_key, bytes_out)) orelse return null;
@@ -993,7 +993,7 @@ fn compare(ctx: *const Context, info: *PathInfo, report: *Report) !void {
     const new = info.values.new orelse return;
     const cur = info.values.cur orelse return;
     const decrypted = crypto.fingerprint(info.decrypted.?, ctx.keys.fingerprint_key);
-    info.values.cur_eq_new = std.mem.eql(u8, &decrypted, &cur.plain) and cur.exec == new.exec;
+    info.values.cur_eql_new = std.mem.eql(u8, &decrypted, &cur.plain) and cur.exec == new.exec;
 }
 
 /// A bad path stops the encrypt direction and is left alone by the decrypt direction.
@@ -1030,21 +1030,21 @@ fn decide(ctx: *const Context, info: *PathInfo, direction: Direction, force: boo
     info.decision = decision;
 }
 
-/// Delete `rel` under `root` through directory handles, then remove the directories it leaves empty.
-fn deleteThroughHandles(io: std.Io, root: []const u8, rel: []const u8) !void {
-    if (try utils.openParent(io, root, rel, false)) |parent| {
+/// Delete `sub_path` under `root` through directory handles, then remove the directories it leaves empty.
+fn deleteThroughHandles(io: std.Io, root: []const u8, sub_path: []const u8) !void {
+    if (try utils.openParent(io, root, sub_path, false)) |parent| {
         var dir = parent;
         defer dir.close(io);
-        dir.deleteFile(io, std.fs.path.basename(rel)) catch |err| switch (err) {
+        dir.deleteFile(io, std.fs.path.basename(sub_path)) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
     }
-    pruneEmptyParents(io, root, rel);
+    pruneEmptyParents(io, root, sub_path);
 }
 
-fn pruneEmptyParents(io: std.Io, root: []const u8, rel: []const u8) void {
-    var ancestor = std.fs.path.dirname(rel);
+fn pruneEmptyParents(io: std.Io, root: []const u8, sub_path: []const u8) void {
+    var ancestor = std.fs.path.dirname(sub_path);
     while (ancestor) |path| : (ancestor = std.fs.path.dirname(path)) {
         const parent = (utils.openParent(io, root, path, false) catch break) orelse break;
         var dir = parent;
@@ -1053,12 +1053,12 @@ fn pruneEmptyParents(io: std.Io, root: []const u8, rel: []const u8) void {
     }
 }
 
-const SwapError = error{ Unsupported, NotFound, Failed };
+const ExchangeError = error{ Unsupported, NotFound, Failed };
 
 /// Swap two directory entries in one step, so the displaced file can still be inspected at the source path.
 /// The standard library has no portable call for this, and Windows has no such operation.
-fn exchange(allocator: std.mem.Allocator, a_dir: std.Io.Dir, a: []const u8, b_dir: std.Io.Dir, b: []const u8) (SwapError || std.mem.Allocator.Error)!void {
-    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return SwapError.Unsupported;
+fn exchange(allocator: std.mem.Allocator, a_dir: std.Io.Dir, a: []const u8, b_dir: std.Io.Dir, b: []const u8) (ExchangeError || std.mem.Allocator.Error)!void {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return ExchangeError.Unsupported;
 
     const a_z = try allocator.dupeSentinel(u8, a, 0);
     defer allocator.free(a_z);
@@ -1069,18 +1069,18 @@ fn exchange(allocator: std.mem.Allocator, a_dir: std.Io.Dir, a: []const u8, b_di
             const rc = std.os.linux.renameat2(a_dir.handle, a_z, b_dir.handle, b_z, .{ .EXCHANGE = true });
             return switch (std.os.linux.errno(rc)) {
                 .SUCCESS => {},
-                .NOENT => SwapError.NotFound,
-                .INVAL, .OPNOTSUPP, .NOSYS => SwapError.Unsupported,
-                else => SwapError.Failed,
+                .NOENT => ExchangeError.NotFound,
+                .INVAL, .OPNOTSUPP, .NOSYS => ExchangeError.Unsupported,
+                else => ExchangeError.Failed,
             };
         },
         .macos => {
             const rc = std.c.renameatx_np(a_dir.handle, a_z, b_dir.handle, b_z, .{ .SWAP = true });
             return switch (std.c.errno(rc)) {
                 .SUCCESS => {},
-                .NOENT => SwapError.NotFound,
-                .INVAL, .OPNOTSUPP => SwapError.Unsupported,
-                else => SwapError.Failed,
+                .NOENT => ExchangeError.NotFound,
+                .INVAL, .OPNOTSUPP => ExchangeError.Unsupported,
+                else => ExchangeError.Failed,
             };
         },
         else => unreachable,
@@ -1088,7 +1088,7 @@ fn exchange(allocator: std.mem.Allocator, a_dir: std.Io.Dir, a: []const u8, b_di
 }
 
 /// True when the file at `path` is what the analysis saw for the entry.
-fn matchesAnalysis(ctx: *const Context, path: []const u8, cur: ?Cur) !bool {
+fn matchesAnalysis(ctx: *const Context, path: []const u8, cur: ?Current) !bool {
     const now = snapshot(ctx, path, max_file_size, ctx.keys.fingerprint_key, null) catch |err| switch (err) {
         Error.FileTooLarge => return false,
         else => return err,
@@ -1105,10 +1105,10 @@ fn fileHolds(ctx: *const Context, path: []const u8, expected: []const u8) !bool 
 }
 
 /// A fresh name in the private temporary directory.
-fn asidePath(ctx: *const Context, prefix: []const u8, name: []const u8) ![]u8 {
+fn asidePath(ctx: *const Context, tag: []const u8, name: []const u8) ![]u8 {
     var rand: u64 = undefined;
     ctx.io.random(std.mem.asBytes(&rand));
-    return std.fmt.allocPrint(ctx.allocator, "{s}/{s}.{s}.{x}", .{ ctx.repo.tmp_dir, prefix, name, rand });
+    return std.fmt.allocPrint(ctx.allocator, "{s}/{s}.{s}.{x}", .{ ctx.repo.tmp_dir, tag, name, rand });
 }
 
 /// A file that held a save made during the sync is moved aside rather than deleted.
@@ -1147,7 +1147,7 @@ fn writePlain(ctx: *const Context, info: *PathInfo) !void {
     if ((existing != null) != (info.values.cur != null)) return Error.ChangedDuringSync;
 
     const exec = info.values.new.?.exec;
-    var atomic = try processor.AtomicOutput.create(name, .{}, ctx.repo.tmp_dir, allocator, ctx.io);
+    var atomic = try processor.AtomicOutput.init(name, .{}, ctx.repo.tmp_dir, allocator, ctx.io);
     defer atomic.deinit(ctx.io);
     try atomic.file.writeStreamingAll(ctx.io, info.decrypted.?);
     try atomic.setPermissions(ctx.io, plainPermissions(exec, existing));
@@ -1204,9 +1204,9 @@ fn takePlace(ctx: *const Context, atomic: *const processor.AtomicOutput, dir: st
 
     exchange(allocator, .cwd(), atomic.tmp_path, dir, name) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        SwapError.NotFound => return Error.ChangedDuringSync,
-        SwapError.Unsupported => return moveAside(ctx, atomic, dir, name, plain),
-        SwapError.Failed => return Error.UnsafePath,
+        ExchangeError.NotFound => return Error.ChangedDuringSync,
+        ExchangeError.Unsupported => return moveAside(ctx, atomic, dir, name, plain),
+        ExchangeError.Failed => return Error.UnsafePath,
     };
     exchanged = true;
     return .{ .path = at_tmp, .aside = false };
@@ -1288,8 +1288,8 @@ fn encryptPlain(ctx: *const Context, info: *PathInfo, stage: *std.ArrayList([]u8
 
     const encrypted = try crypto.encryptBound(plain_bytes.?, info.plain, ctx.keys, allocator, ctx.io);
     defer allocator.free(encrypted);
-    const perms = if (cur.exec) cipher_exec_permissions else cipher_file_permissions;
-    try processor.writeFileAtomicIn(dir, std.fs.path.basename(cipher_rel), encrypted, perms, ctx.repo.tmp_dir, allocator, ctx.io);
+    const permissions = if (cur.exec) cipher_exec_permissions else cipher_file_permissions;
+    try processor.writeFileAtomicIn(dir, std.fs.path.basename(cipher_rel), encrypted, permissions, ctx.repo.tmp_dir, allocator, ctx.io);
 
     info.values.new = .{ .id = crypto.ciphertextId(encrypted, ctx.keys.cipher_id_key), .exec = cur.exec };
     info.values.cur = cur;
@@ -1348,7 +1348,7 @@ pub fn updateExcludeFile(repo: *const Repo, manifests: []const *const Manifest, 
     defer allocator.free(text);
     if (existing != null and std.mem.eql(u8, existing.?, text)) return;
 
-    if (std.fs.path.dirname(repo.exclude_path)) |dir| try utils.ensureDirectory(dir, io);
+    if (std.fs.path.dirname(repo.exclude_path)) |dir| try utils.ensureDir(dir, io);
     try repo.ensureDirs();
     try processor.writeFileAtomic(repo.exclude_path, text, null, repo.tmp_dir, allocator, io);
 }
@@ -1708,7 +1708,7 @@ test "exchange and rename preserve" {
     try testing.expectError(error.FileNotFound, std.Io.Dir.renamePreserve(.cwd(), "tmp/swap/a", .cwd(), "tmp/swap/d", io));
 
     exchange(testing.allocator, .cwd(), "tmp/swap/c", .cwd(), "tmp/swap/b") catch |err| switch (err) {
-        SwapError.Unsupported => return error.SkipZigTest,
+        ExchangeError.Unsupported => return error.SkipZigTest,
         else => return err,
     };
     const c = try std.Io.Dir.readFileAlloc(.cwd(), io, "tmp/swap/c", testing.allocator, .limited(8));
@@ -1767,7 +1767,7 @@ test "replace without an exchange keeps the old file inspectable" {
 
     var dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/aside/tree", .{});
     defer dir.close(io);
-    var atomic = try processor.AtomicOutput.create("note.md", .{}, tmp_dir, allocator, io);
+    var atomic = try processor.AtomicOutput.init("note.md", .{}, tmp_dir, allocator, io);
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, "new");
 
@@ -1798,18 +1798,18 @@ test "key directory names" {
 test "decrypt direction decisions" {
     const testing = std.testing;
     const b1 = Baseline{ .plain = @splat(1), .exec = false, .id = @splat(9) };
-    const c_same = Cur{ .plain = @splat(1), .exec = false };
-    const c_other = Cur{ .plain = @splat(2), .exec = false };
-    const c_exec = Cur{ .plain = @splat(1), .exec = true };
+    const c_same = Current{ .plain = @splat(1), .exec = false };
+    const c_other = Current{ .plain = @splat(2), .exec = false };
+    const c_exec = Current{ .plain = @splat(1), .exec = true };
     const n_same = New{ .id = @splat(9), .exec = false };
     const n_other = New{ .id = @splat(8), .exec = false };
 
     try testing.expectEqual(Decision.none, decideDecrypt(.{ .old = null, .new = null, .cur = c_same }, false));
     try testing.expectEqual(Decision.write_plain, decideDecrypt(.{ .old = null, .new = n_same, .cur = null }, false));
     try testing.expectEqual(Decision.need_compare, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same }, false));
-    try testing.expectEqual(Decision.record, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eq_new = true }, false));
-    try testing.expectEqual(Decision.conflict, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eq_new = false }, false));
-    try testing.expectEqual(Decision.write_plain, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eq_new = false }, true));
+    try testing.expectEqual(Decision.record, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = true }, false));
+    try testing.expectEqual(Decision.conflict, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, false));
+    try testing.expectEqual(Decision.write_plain, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, true));
     try testing.expectEqual(Decision.drop_baseline, decideDecrypt(.{ .old = b1, .new = null, .cur = null }, false));
     try testing.expectEqual(Decision.delete_plain, decideDecrypt(.{ .old = b1, .new = null, .cur = c_same }, false));
     try testing.expectEqual(Decision.warn_removed, decideDecrypt(.{ .old = b1, .new = null, .cur = c_other }, false));
@@ -1819,9 +1819,9 @@ test "decrypt direction decisions" {
     try testing.expectEqual(Decision.none, decideDecrypt(.{ .old = b1, .new = n_same, .cur = c_other }, false));
     try testing.expectEqual(Decision.write_plain, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_same }, false));
     try testing.expectEqual(Decision.need_compare, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other }, false));
-    try testing.expectEqual(Decision.record, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = true }, false));
-    try testing.expectEqual(Decision.conflict, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = false }, false));
-    try testing.expectEqual(Decision.write_plain, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = false }, true));
+    try testing.expectEqual(Decision.record, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = true }, false));
+    try testing.expectEqual(Decision.conflict, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, false));
+    try testing.expectEqual(Decision.write_plain, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, true));
     try testing.expectEqual(Decision.write_plain, decideDecrypt(.{ .old = b1, .new = .{ .id = @splat(9), .exec = true }, .cur = c_same }, false));
     try testing.expectEqual(Decision.need_compare, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_exec }, false));
 }
@@ -1829,9 +1829,9 @@ test "decrypt direction decisions" {
 test "encrypt direction decisions" {
     const testing = std.testing;
     const b1 = Baseline{ .plain = @splat(1), .exec = false, .id = @splat(9) };
-    const c_same = Cur{ .plain = @splat(1), .exec = false };
-    const c_other = Cur{ .plain = @splat(2), .exec = false };
-    const c_exec = Cur{ .plain = @splat(1), .exec = true };
+    const c_same = Current{ .plain = @splat(1), .exec = false };
+    const c_other = Current{ .plain = @splat(2), .exec = false };
+    const c_exec = Current{ .plain = @splat(1), .exec = true };
     const n_same = New{ .id = @splat(9), .exec = false };
     const n_other = New{ .id = @splat(8), .exec = false };
 
@@ -1839,9 +1839,9 @@ test "encrypt direction decisions" {
     try testing.expectEqual(Decision.encrypt, decideEncrypt(.{ .old = null, .new = null, .cur = c_same }, false));
     try testing.expectEqual(Decision.warn_missing, decideEncrypt(.{ .old = null, .new = n_same, .cur = null }, false));
     try testing.expectEqual(Decision.need_compare, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same }, false));
-    try testing.expectEqual(Decision.record, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eq_new = true }, false));
-    try testing.expectEqual(Decision.abort_no_baseline, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eq_new = false }, false));
-    try testing.expectEqual(Decision.encrypt, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eq_new = false }, true));
+    try testing.expectEqual(Decision.record, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = true }, false));
+    try testing.expectEqual(Decision.abort_no_baseline, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, false));
+    try testing.expectEqual(Decision.encrypt, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, true));
     try testing.expectEqual(Decision.drop_baseline, decideEncrypt(.{ .old = b1, .new = null, .cur = null }, false));
     try testing.expectEqual(Decision.warn_removed, decideEncrypt(.{ .old = b1, .new = null, .cur = c_same }, false));
     try testing.expectEqual(Decision.encrypt, decideEncrypt(.{ .old = b1, .new = null, .cur = c_same }, true));
@@ -1851,14 +1851,14 @@ test "encrypt direction decisions" {
     try testing.expectEqual(Decision.encrypt, decideEncrypt(.{ .old = b1, .new = n_same, .cur = c_exec }, false));
     try testing.expectEqual(Decision.write_plain, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_same }, false));
     try testing.expectEqual(Decision.need_compare, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other }, false));
-    try testing.expectEqual(Decision.record, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = true }, false));
-    try testing.expectEqual(Decision.abort_both_changed, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = false }, false));
-    try testing.expectEqual(Decision.encrypt, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eq_new = false }, true));
+    try testing.expectEqual(Decision.record, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = true }, false));
+    try testing.expectEqual(Decision.abort_both_changed, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, false));
+    try testing.expectEqual(Decision.encrypt, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, true));
 }
 
 test "bad path decisions" {
     const testing = std.testing;
-    const cur = Cur{ .plain = @splat(1), .exec = false };
+    const cur = Current{ .plain = @splat(1), .exec = false };
 
     var plain_only = PathInfo{ .plain = @constCast("a"), .values = .{ .old = null, .new = null, .cur = cur }, .bad = true };
     try testing.expectEqual(Decision.abort_plain, badDecision(&plain_only, .encrypt, true));

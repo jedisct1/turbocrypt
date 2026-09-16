@@ -10,7 +10,7 @@ pub const Error = error{
     NotAGitRepository,
     BareRepository,
     GitCommandFailed,
-    RepoLocked,
+    RepositoryLocked,
     Locked,
 };
 
@@ -188,7 +188,7 @@ pub const Repo = struct {
     }
 
     /// NUL separated paths from `git ls-files -z` with extra arguments.
-    pub fn lsFilesZ(self: *const Repo, args: []const []const u8) ![][]u8 {
+    pub fn lsFilesNul(self: *const Repo, args: []const []const u8) ![][]u8 {
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(self.allocator);
         try argv.appendSlice(self.allocator, &.{ "ls-files", "-z" });
@@ -280,7 +280,7 @@ pub const Repo = struct {
 
     pub fn loadKey(self: *const Repo) ![16]u8 {
         return keygen.readKeyFile(self.key_path, null, self.io) catch |err| switch (err) {
-            error.FileNotFound => return Error.RepoLocked,
+            error.FileNotFound => return Error.RepositoryLocked,
             else => return err,
         };
     }

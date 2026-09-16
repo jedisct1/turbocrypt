@@ -316,7 +316,7 @@ pub fn writeBack(
     var change = try marks.begin(parent, markKey(try fuse.statFd(parent.handle)));
     defer change.deinit();
 
-    var atomic = try processor.AtomicOutput.createIn(parent, .{ .permissions = .fromMode(0o600) }, table.allocator, io);
+    var atomic = try processor.AtomicOutput.initIn(parent, .{ .permissions = .fromMode(0o600) }, table.allocator, io);
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, node.ciphertextSlice());
 
