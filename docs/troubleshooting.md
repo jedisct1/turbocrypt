@@ -42,7 +42,9 @@ Use the same key and context as before. If you're working with ordinary names bu
 
 ### Some files are missing from the result
 
-Check your exclusions with `turbocrypt config show`, then try the job with `--dry-run` to see its file count and total size. If you've supplied `--exclude` on the command line, those patterns replace the saved list.
+Check your exclusions with `turbocrypt config show`, then try the job with `--dry-run` to see its file count and total size.
+
+If you've supplied `--exclude` on the command line, those patterns replace the saved list.
 
 Also check whether you're using `--enc-suffix` during decryption. That option skips files whose names don't end in `.enc`.
 
@@ -54,9 +56,13 @@ Try a smaller worker count on a representative folder and compare the time it ta
 turbocrypt encrypt --threads 2 documents/ encrypted-documents/
 ```
 
-Reducing the worker count also means fewer files are processed at once, which can help with memory use. If necessary, try `--threads 1` and close other apps that use a lot of memory.
+Reducing the worker count also means fewer files are processed at once, which can help with memory use.
 
-Storage speed and the mix of file sizes affect the result, so compare runs on the drive you'll actually use. `turbocrypt bench` runs performance measurements in the current directory if you want to investigate further.
+If necessary, try `--threads 1` and close other apps that use a lot of memory.
+
+Storage speed and the mix of file sizes affect the result, so compare runs on the drive you'll actually use.
+
+`turbocrypt bench` runs performance measurements in the current directory if you want to investigate further.
 
 For memory limits while using a mount, see [working with larger files](mount.md#work-with-larger-files).
 
@@ -102,7 +108,9 @@ If appropriate, change its owner or group, or copy it to a folder you own and wo
 
 The new encrypted copy couldn't be saved. Common causes are a full disk, a disconnected network drive, or changed permissions.
 
-Keep the mount running while you fix the cause, then try saving or closing the file again. TurboCrypt keeps the pending contents in memory and retries when the file is flushed or closed.
+Keep the mount running while you fix the cause, then try saving or closing the file again.
+
+TurboCrypt keeps the pending contents in memory and retries when the file is flushed or closed.
 
 At unmount, it tries to save any remaining files as encrypted rescue copies. Read the printed messages to find them, then decrypt a rescue file into a new destination:
 
@@ -110,7 +118,9 @@ At unmount, it tries to save any remaining files as encrypted rescue copies. Rea
 turbocrypt decrypt --key secret.key /path/to/rescued-file.enc recovered-file
 ```
 
-Replace the source path with the one TurboCrypt printed, and use the same context if you mounted with one. Check the recovered file before moving it back. See [rescue folders](mount.md#recover-a-file-that-couldnt-be-saved) for choosing where these copies go.
+Replace the source path with the one TurboCrypt printed, and use the same context if you mounted with one.
+
+Check the recovered file before moving it back. See [rescue folders](mount.md#recover-a-file-that-couldnt-be-saved) for choosing where these copies go.
 
 ### "still in the mount table"
 
@@ -122,7 +132,9 @@ umount ~/Volumes/documents
 
 ### "is a TurboCrypt container" or "is inside the TurboCrypt container"
 
-You ran `encrypt`, `decrypt`, `verify` or `list` on a container, or on a folder inside one. Those commands only handle ordinary encrypted files. Mount the container and copy the files through the mounted view:
+You ran `encrypt`, `decrypt`, `verify` or `list` on a container, or on a folder inside one.
+
+Those commands only handle ordinary encrypted files. Mount the container and copy the files through the mounted view:
 
 ```bash
 mkdir -p ~/Volumes/container
@@ -135,21 +147,27 @@ A recursive job stops at the first container it meets, so files before that poin
 
 ### "is not a valid container descriptor"
 
-The folder holds a file named `.turbocrypt-raf` that isn't a container descriptor. If the folder is an ordinary encrypted folder, that name is reserved: move or delete the file, then mount again. If the folder is a container, its descriptor is damaged; restore that file from a backup of the container.
+The folder holds a file named `.turbocrypt-raf` that isn't a container descriptor. If the folder is an ordinary encrypted folder, that name is reserved: move or delete the file, then mount again.
 
-`--force` doesn't help here. It skips the key check of an ordinary folder, and a container has no such check to skip.
+If the folder is a container, its descriptor is damaged; restore that file from a backup of the container.
 
 ### "wrong key, wrong context, or damaged descriptor" on a container
 
-A container needs the key and the context that were given to `turbocrypt init`. Check both, as for [an ordinary file](#wrong-decryption-key-wrong-context-or-corrupted-file-header). If they're right, the descriptor at the root of the container is damaged; restore it from a backup.
+A container needs the key and the context that were given to `turbocrypt init`. Check both, as for [an ordinary file](#wrong-decryption-key-wrong-context-or-corrupted-file-header).
+
+If they're right, the descriptor at the root of the container is damaged; restore it from a backup.
 
 ### "was initialized with plain names" or "without the suffix"
 
-You passed `--encrypted-filenames` or `--enc-suffix` to a mount of a container that was created without it. The container remembers its own settings, so drop the option. Your saved filename default is ignored for containers.
+You passed `--encrypted-filenames` or `--enc-suffix` to a mount of a container that was created without it.
+
+The container remembers its own settings, so drop the option. Your saved filename default is ignored for containers.
 
 ### "does not apply to a container" or "not to a container"
 
-`--max-file-size`, `--memory-limit`, `--rescue-dir` and `--force` belong to mounts of ordinary encrypted folders. A container mount keeps no file in memory, has no rescue copies, and checks the key through its descriptor. Leave those options out.
+`--max-file-size`, `--memory-limit`, `--rescue-dir` and `--force` belong to mounts of ordinary encrypted folders.
+
+Leave those options out when mounting a container.
 
 ### "A container is mounted at its root"
 
@@ -157,19 +175,33 @@ You asked to mount a folder that lies inside a container. Mount the container it
 
 ### "is not empty" from init
 
-`init` needs a folder that doesn't exist yet or that is empty. It never converts existing files. If the message names a `.tc-` file, an earlier `init` was interrupted: look at the folder, remove that file yourself, and run `init` again.
+Give `init` a new or empty folder, then add files through the mounted view.
+
+If the message names a `.tc-` file, an earlier `init` was interrupted: look at the folder, remove that file yourself, and run `init` again.
 
 ### "cannot write" a file in a container
 
-A write to a container file failed, for example because the disk is full or a drive disconnected. Unlike an ordinary mount, a container has no copy in memory to retry from: the chunk being written may be damaged, the open file keeps reporting the error, and a fresh open reads what survived. Free space or reconnect the drive, then check the file and restore it from a backup if part of it is unreadable.
+A write to a container file failed, for example because the disk is full or a drive disconnected.
+
+The chunk being written may be damaged. The open file keeps reporting the error until it's closed; reopen it to read the stored contents.
+
+Free space or reconnect the drive, then check the file and restore it from a backup if part of it is unreadable.
 
 ### "is already open under another name"
 
-On a case-insensitive filesystem, such as the default on macOS, `Report.pdf` and `report.pdf` are one file. A container file is open under one spelling at a time, because two open views of one file would write over each other. Close the file in the app that has it open, or use the same spelling.
+On a case-insensitive filesystem, such as the default on macOS, `Report.pdf` and `report.pdf` are one file.
+
+A container file is open under one spelling at a time, because two open views of one file would write over each other.
+
+Close the file in the app that has it open, or use the same spelling.
 
 ### "does not authenticate" or "is not a container file" while listing
 
-A file in the container can't be read with the mount's key. Either it's damaged, or it's a file that was copied into the stored folder directly, such as an ordinary encrypted file. The listing shows a size taken from the stored file so that you can still see and remove it, but opening it gives an input/output error. Restore the file from a backup, or remove it.
+A file in the container can't be read with the mount's key. Either it's damaged, or it's a file that was copied into the stored folder directly, such as an ordinary encrypted file.
+
+The listing shows a size taken from the stored file so that you can still see and remove it, but opening it gives an input/output error.
+
+Restore the file from a backup, or remove it.
 
 ### File details look out of date on macOS
 
@@ -181,7 +213,9 @@ If that gets in the way, unmount and start it again with caching disabled:
 turbocrypt mount --daemon -o noattrcache encrypted-documents/ ~/Volumes/documents
 ```
 
-For a mount problem you can't explain, try running without `--daemon` and add `--debug` to see its messages. On macOS, fuse-t also writes logs under `~/Library/Logs/fuse-t`. Those logs can include the mount path, so review them before sharing them.
+For a mount problem you can't explain, try running without `--daemon` and add `--debug` to see its messages.
+
+On macOS, fuse-t also writes logs under `~/Library/Logs/fuse-t`. Those logs can include the mount path, so review them before sharing them.
 
 ## Git integration
 
@@ -210,7 +244,9 @@ Replace `docs/internal.md` with the path in the error. `--cached` leaves your wo
 
 ### A merge conflict on a private file
 
-Git can't combine two encrypted versions of a file. First, save a separate copy of any local edits you need to keep. Then open the readable private file and edit it until it contains the version you want.
+First, save a separate copy of any local edits you need to keep.
+
+Then open the readable private file and edit it until it contains the version you want.
 
 To encrypt that version and resolve its entry, run:
 
@@ -220,7 +256,11 @@ turbocrypt git encrypt --force NOTES.md
 
 Check `git status`, resolve any other conflicts, and finish the merge with `git commit`. If you're in a rebase, follow Git's instruction to run `git rebase --continue` instead.
 
-If you want to inspect an encrypted version before deciding, `turbocrypt git show NOTES.md` tells you its path under `.enc/`. After selecting a version of that entry in Git, `turbocrypt git decrypt --force NOTES.md` replaces the readable file with it. Save your local edits first.
+If you want to inspect an encrypted version before deciding, `turbocrypt git show NOTES.md` tells you its path under `.enc/`.
+
+After selecting a version of that entry in Git, `turbocrypt git decrypt --force NOTES.md` replaces the readable file with it.
+
+Save your local edits first.
 
 ### "entry cannot be committed as it is"
 
@@ -240,7 +280,11 @@ The checkout keeps the key it was set up with, even if you've since changed your
 
 Check that you've selected the intended key. To use a separate collection of private files, it's often easiest to make another clone and unlock it with that collection's key.
 
-If you deliberately want to replace this checkout's key, repeat `init` or `unlock` with `--force`. `unlock` requires a key that already has a store in the repository; `init` also accepts a new key. Existing `.gitprivate` selections remain, so review them before the next commit. This doesn't change the keys used by earlier commits.
+If you deliberately want to replace this checkout's key, repeat `init` or `unlock` with `--force`.
+
+`unlock` requires a key that already has a store in the repository; `init` also accepts a new key.
+
+Existing `.gitprivate` selections remain, so review them before the next commit. This doesn't change the keys used by earlier commits.
 
 ### "the store has no files for" a key
 

@@ -6,11 +6,13 @@ A useful encrypted backup needs two things: a working copy of your files and the
 
 ## Keep a separate copy of your key
 
-Create keys with `turbocrypt keygen`, then back them up somewhere separate from the encrypted files. If your only key is on the same drive as the backup, losing that drive means losing both.
+Create keys with `turbocrypt keygen`, then back them up somewhere separate from the encrypted files.
 
-A saved default key is another copy on your computer, but it won't help if that computer is lost. Keep a separate key file that you know how to restore.
+If your only key is on the same drive as the backup, losing that drive means losing both.
 
-If you protect the key with a password, keep a reliable way to recover that password, too. TurboCrypt can't reset it for you.
+A saved default key is another copy on your computer. Keep a separate key file somewhere you can reach if that computer is lost.
+
+If you protect the key with a password, keep a reliable way to recover that password, too.
 
 ## Try restoring before you need to
 
@@ -26,7 +28,7 @@ Then restore it to a new folder:
 turbocrypt decrypt encrypted-documents/ restored-documents/
 ```
 
-Open some of the restored files and compare the folder with what you meant to save. Verification checks the encrypted files that are present. It can't tell you that you excluded a folder by mistake or that a file is missing from the backup.
+Open some of the restored files and compare the folder with what you meant to save, including the files and subfolders you expected to include.
 
 Keep your originals until you're satisfied with the result. Repeat this check after moving a backup to another drive or changing how you store it.
 
@@ -40,16 +42,22 @@ A context has to match exactly. If you intend it to be secret, store it with you
 
 Changing a key file's password doesn't change the encryption key inside it. Update the saved default afterward with `turbocrypt config set-key`, and remember that older copies of the key still have their previous password protection.
 
-Someone who already has the key can still read files protected by it. To protect future files from that person, use a new key. Changing a password won't take back access to copies they've already received.
+Someone who already has the key can still read files protected by it. To protect future files from that person, use a new key.
 
 ## Take care with in-place jobs
 
-`--in-place` replaces the originals, so make a separate backup first. Each file is replaced only after its new copy has been written, but the whole folder isn't changed in one operation. An interrupted job can leave a mixture of readable and encrypted files.
+`--in-place` replaces the originals, so make a separate backup first. Each file is replaced only after its new copy has been written, but the whole folder isn't changed in one operation.
 
-Replacing or deleting a readable file also doesn't guarantee that older copies are gone from snapshots, backups, or the drive itself.
+An interrupted job can leave a mixture of readable and encrypted files.
+
+Manage any older readable copies in snapshots and backups separately.
 
 ## Save your work before disconnecting storage
 
-For a mounted folder, save and close your files, then unmount it before unplugging a drive or disconnecting remote storage. If a save fails, keep the mount running while you fix the problem. The [mount guide](mount.md#recover-a-file-that-couldnt-be-saved) explains rescue copies.
+For a mounted folder, save and close your files, then unmount it before unplugging a drive or disconnecting remote storage.
 
-For private files in Git, run `turbocrypt git encrypt` and commit before cleaning a checkout. Avoid `git stash --all`, which saves readable private files in local Git storage. See [the Git recovery steps](git.md#recover-files-after-a-cleanup).
+If a save fails, keep the mount running while you fix the problem. The [mount guide](mount.md#recover-a-file-that-couldnt-be-saved) explains rescue copies.
+
+For private files in Git, run `turbocrypt git encrypt` and commit before cleaning a checkout.
+
+Avoid `git stash --all`, which saves readable private files in local Git storage. See [the Git recovery steps](git.md#recover-files-after-a-cleanup).

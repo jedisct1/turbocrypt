@@ -13,7 +13,9 @@ turbocrypt keygen --password shared.key
 turbocrypt encrypt --key shared.key report.pdf report.pdf.enc
 ```
 
-Send `report.pdf.enc` to the recipient, and share `shared.key` and its password through a separate trusted channel. Anyone with that key and password can open every file encrypted with the key, so use a separate key if you don't want to share access to your other files.
+Send `report.pdf.enc` to the recipient, and share `shared.key` and its password through a separate trusted channel.
+
+Anyone with that key and password can open every file encrypted with the key, so use a separate key if you don't want to share access to your other files.
 
 Once the recipient has TurboCrypt installed, they can restore the document with:
 
@@ -71,7 +73,9 @@ A successful quick check confirms that the headers match the key. Run a full `ve
 
 ## Move encrypted files to another computer
 
-Install TurboCrypt on the new computer, then copy over your encrypted folder and transfer the key separately. Ordinary encrypted files can be moved between supported systems without converting them.
+Install TurboCrypt on the new computer, then copy over your encrypted folder and transfer the key separately.
+
+Ordinary encrypted files can be moved between supported systems without converting them.
 
 Save the key as your default on the new computer, then restore your files:
 
@@ -95,7 +99,9 @@ Later, use `--key work.key` again when decrypting. This doesn't change your save
 
 ## Start a container for a mounted folder
 
-If you mostly work through a mounted folder, and your files are large or change often, a container suits that better than a folder of ordinary encrypted files. Create an empty one with the key you'll mount it with, then fill it through the mounted view:
+If you mostly work through a mounted folder, and your files are large or change often, a container suits that better than a folder of ordinary encrypted files.
+
+Create an empty one with the key you'll mount it with, then fill it through the mounted view:
 
 ```bash
 turbocrypt init --key work.key encrypted-container/
@@ -105,7 +111,9 @@ cp -R work-documents/. ~/Volumes/work/
 turbocrypt unmount ~/Volumes/work
 ```
 
-`init` needs a missing or empty folder; it never converts existing files. The ordinary `encrypt`, `decrypt`, `verify` and `list` commands don't read containers, so keep using the mount to get files in and out. The [mount guide](mount.md#use-a-container-for-random-access) explains the differences.
+`init` creates a container in a new or empty folder. Copy files in and out through the mounted view.
+
+The [mount guide](mount.md#use-a-container-for-random-access) explains the differences.
 
 ## Find help for your installed version
 
@@ -118,4 +126,6 @@ turbocrypt mount --help
 turbocrypt init --help
 ```
 
-If you need to report a problem, include the output of `turbocrypt version` along with the command you ran and the error message. The [troubleshooting guide](troubleshooting.md) covers the most common problems.
+If you need to report a problem, include the output of `turbocrypt version` along with the command you ran and the error message.
+
+The [troubleshooting guide](troubleshooting.md) covers the most common problems.

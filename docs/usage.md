@@ -2,7 +2,9 @@
 
 [Back to the main README](../README.md)
 
-Once you've [created a key](getting-started.md), the same commands work on a single file or a whole folder. The examples here use your saved default key. Add `--key secret.key` if you'd like to choose a different one.
+Once you've [created a key](getting-started.md), the same commands work on a single file or a whole folder.
+
+The examples here use your saved default key. Add `--key secret.key` if you'd like to choose a different one.
 
 ## Make an encrypted copy
 
@@ -40,7 +42,9 @@ Use the same option when restoring them:
 turbocrypt decrypt --encrypted-filenames encrypted-documents/ restored-documents/
 ```
 
-The names in the encrypted folder will look like random text. People can still see the folder structure, the number of files, and their sizes. See [what encryption protects](cryptography.md) for more on that.
+The names in the encrypted folder will look like random text. People can still see the folder structure, the number of files, and their sizes.
+
+See [what encryption protects](cryptography.md) for more on that.
 
 ## Leave out files you don't need
 
@@ -66,7 +70,9 @@ turbocrypt encrypt --dry-run \
 
 Once the totals look right, run it again without `--dry-run`. You can use dry runs with `decrypt` and `verify`, too.
 
-If you often skip the same files, [save the exclusions in your settings](configuration.md#skip-the-same-files-each-time). Any `--exclude` options on a command replace that saved list for the run, so include every pattern you need.
+If you often skip the same files, [save the exclusions in your settings](configuration.md#skip-the-same-files-each-time).
+
+Any `--exclude` options on a command replace that saved list for the run, so include every pattern you need.
 
 ## Check a backup
 
@@ -76,7 +82,9 @@ Run a full check after encrypting files or copying them to another drive:
 turbocrypt verify encrypted-documents/
 ```
 
-This checks every file's contents with your key. It doesn't write readable copies, and it doesn't compare the backup with your original folder. To check that everything you meant to save is there, restore to a separate folder and compare it with the source.
+This checks every file's contents with your key while keeping the files encrypted.
+
+To check that everything you meant to save is there, restore to a separate folder and compare it with the source.
 
 If you only need to check whether you have the right key, use:
 
@@ -84,7 +92,7 @@ If you only need to check whether you have the right key, use:
 turbocrypt verify --quick encrypted-documents/
 ```
 
-The quick check reads just the beginning of each file. It won't detect damage elsewhere in the file, so use the full check before relying on a backup.
+The quick check verifies each file's header. Use the full check to verify the contents before relying on a backup.
 
 ## See what's in an encrypted folder
 
@@ -144,7 +152,7 @@ turbocrypt decrypt --context "work-archive" encrypted-documents/ restored-docume
 
 Keep a record of it with your backup instructions. The label isn't stored in the encrypted files, and a missing or mistyped context makes the key check fail.
 
-For everyday use, it's fine to leave contexts out. They don't replace a strong password or give different people separate access to files encrypted with a shared key.
+Contexts are optional. Use separate keys when sharing different collections with different people.
 
 ## Mark encrypted files with .enc
 
@@ -173,4 +181,4 @@ turbocrypt decrypt --in-place documents/
 
 TurboCrypt writes each replacement to a temporary file before putting it in place. A folder is still processed one file at a time, so an interrupted job can leave a mix of encrypted and readable files.
 
-In-place processing can't be combined with encrypted filenames. It also doesn't securely erase older copies that may remain in backups, snapshots, or free disk space.
+To encrypt filenames as well, write to a separate destination with `--encrypted-filenames`.

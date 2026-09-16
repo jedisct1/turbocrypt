@@ -6,9 +6,11 @@ TurboCrypt chooses the encryption settings for you. Your main choices are which 
 
 ## Protect the contents of a file
 
-When you encrypt a file, someone without the key can't read its contents. TurboCrypt also checks for changes to the encrypted contents when you decrypt or verify it. If that check fails, it reports an error instead of saving the damaged result as a restored file.
+When you encrypt a file, someone without the key can't read its contents. TurboCrypt also checks for changes to the encrypted contents when you decrypt or verify it.
 
-That doesn't make an encrypted copy a substitute for a backup. Someone can still delete it, damage it, or replace it with an older encrypted version. Keep another copy when you need to recover from those situations.
+If that check fails, it reports an error instead of saving the damaged result as a restored file.
+
+Keep a separate backup so you can recover from accidental changes, damaged storage, or deleted files.
 
 ## Decide whether names should be private
 
@@ -20,9 +22,9 @@ Use `--encrypted-filenames` to hide file and folder names as well:
 turbocrypt encrypt --encrypted-filenames documents/ encrypted-documents/
 ```
 
-People can still see how many files there are, their sizes, and the folder structure. Repeated names also produce the same encrypted name under the same key and context, so those repetitions remain visible. Longer encrypted names reveal information about the original name's length.
+Filename encryption is deterministic: the same name produces the same encrypted name under the same key and context. File sizes and folder structure remain visible.
 
-Keep these limits in mind when deciding where to store or share a folder. The [Git guide](git.md#what-stays-visible) describes what remains visible in a public repository.
+The [Git guide](git.md#what-stays-visible) describes what remains visible in a public repository.
 
 ## Put a password on a key you carry or share
 
@@ -32,9 +34,11 @@ A key file contains the secret needed to open your files. Adding a password prot
 turbocrypt change-password secret.key
 ```
 
-Use a long, unique password. Someone with a protected key file can try guesses on their own computer, without TurboCrypt being able to limit their attempts. Password protection makes those guesses more expensive, but a short or reused password is still a weak point.
+Use a long, unique password. TurboCrypt uses Argon2id to make password guesses more expensive.
 
-The password protects the key file; it doesn't replace the key. Changing it leaves the underlying encryption key unchanged, and other copies of that key remain usable. See [how to keep track of those copies](safety.md#keep-track-of-key-copies).
+Changing the password updates the key file's protection while keeping the underlying encryption key the same.
+
+See [how to keep track of key copies](safety.md#keep-track-of-key-copies).
 
 ## Use a full check when the contents matter
 
@@ -44,34 +48,46 @@ A normal verification checks the complete encrypted files:
 turbocrypt verify encrypted-documents/
 ```
 
-`verify --quick` only checks the beginning of each file. That's useful for checking whether you selected the right key and context, but it doesn't check the rest of the contents.
+`verify --quick` checks the file headers to confirm the key and context. Use the full check to verify the contents.
 
-Neither check compares the backup with your original files or proves that it's the newest copy. For that, restore to a separate folder and compare what you get.
+To check a backup against your originals, restore it to a separate folder and compare what you get.
+
+These commands check ordinary encrypted files. For a container, mount it and read or copy all the files through the mounted view to check their contents.
+
+The mount authenticates each chunk as it's read.
 
 ## Know when a context is useful
 
 A context lets you use the same key file with a different label for a collection. Changing the label changes the encryption result, so you must remember the exact label to open those files later.
 
-It's an optional way to separate collections. It isn't a replacement for a password, and it doesn't give people with a shared key different access rights. Use separate keys when different people should be able to read different files.
+Use contexts to separate collections, and separate keys when different people should be able to read different files.
 
 If you choose a context, keep a record of it. The [usage guide](usage.md#use-a-context-for-a-separate-collection) shows how to use it in commands.
 
-## Understand the limits of a container
+## How a container encrypts files
 
-A [container](mount.md#use-a-container-for-random-access) encrypts each file in chunks of 16 KiB, so a mount can read and write a small part of a large file. Each chunk is encrypted and checked on its own, with the file and the chunk's position bound to it. Someone without the key can't read the contents, and a changed or swapped chunk is detected when it's read. The container's key comes from the same key file and context as ordinary files, through a separate derivation, and a wrong key or context is refused when the container is mounted, even if it's empty. The check is the marker file `.turbocrypt-raf` at the root. It holds the filename settings and a random value, authenticated with AEGIS-128X2-MAC under a second derived key. Only the right key and context pass that check. The random value keeps two containers of one key from looking alike.
+A [container](mount.md#use-a-container-for-random-access) encrypts each file in chunks of 16 KiB, so a mount can read and write a small part of a large file.
 
-Some things an ordinary encrypted file gives you are different here:
+Each file gets a random identifier used to derive its own keys. Each chunk is encrypted with AEGIS-128X2 and a fresh random nonce, with the file identifier and the chunk's position and size bound to it.
 
-- Chunks are checked one by one, not the file as a whole. Someone who can write to the stored files can put back an older version of one chunk, or of one whole file, without the mount noticing. A container doesn't protect against being rolled back to an earlier state; keep backups for that.
-- A write updates the stored file in place. A write cut short by a full disk or a lost connection can leave that chunk unreadable, as [the mount guide explains](mount.md#know-what-happens-when-a-write-fails). An ordinary mount replaces the whole file at once and keeps the old copy until then.
-- Like ordinary encrypted folders, a container reveals the number of files, their approximate sizes, and the folder structure. Sizes are rounded up to the chunk, and every change to a chunk shows as a change of the stored file.
+The container's key comes from your key file and context through a derivation separate from ordinary file encryption.
 
-Containers inside containers aren't supported. A mount of the outer one decrypts the files of the inner one too when both were created with the same key and context: the key is what protects the files, not the folder they're in. Files and folders inside a container keep their normal permissions.
+When mounting, TurboCrypt authenticates the marker file `.turbocrypt-raf` at the root to check the key, context, and filename settings.
+
+The marker uses AEGISMAC-128X2 with a separate derived key and includes a random value that makes independently created markers different.
+
+File headers record the exact plaintext sizes, and files and folders keep their normal permissions.
+
+Keep backups of the container, including its marker, as described in the [mount guide](mount.md#use-a-container-for-random-access).
 
 ## Move encrypted files or share them
 
-Files created with ordinary `encrypt` commands can be moved or renamed without encrypting them again. Encrypting the same contents twice normally produces different encrypted files, so different results don't by themselves mean anything went wrong.
+Files created with ordinary `encrypt` commands can be moved or renamed without encrypting them again.
 
-Private files in Git have an extra check that ties each encrypted copy to its original path. Use `turbocrypt git` commands to manage those files instead of moving entries around inside `.enc/`.
+Each encryption uses a fresh random nonce, so encrypting the same contents twice normally produces different encrypted files.
+
+Private files in Git have an extra check that ties each encrypted copy to its original path.
+
+Use `turbocrypt git` commands to manage those files instead of moving entries around inside `.enc/`.
 
 Anyone you give the key to can decrypt the files protected by it. Before sharing a key, check which other files and older backups use it, too.

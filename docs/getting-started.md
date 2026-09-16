@@ -6,7 +6,9 @@ This guide takes you from installing TurboCrypt to restoring your first encrypte
 
 ## 1. Install TurboCrypt
 
-Download the archive for your system from the [releases page](https://github.com/jedisct1/turbocrypt/releases) and extract it. Put `turbocrypt` in a directory on your `PATH` so you can run it from any folder. On Windows, the program is called `turbocrypt.exe`.
+Download the archive for your system from the [releases page](https://github.com/jedisct1/turbocrypt/releases) and extract it.
+
+Put `turbocrypt` in a directory on your `PATH` so you can run it from any folder. On Windows, the program is called `turbocrypt.exe`.
 
 Then open a terminal and check that it runs:
 
@@ -38,7 +40,9 @@ turbocrypt keygen secret.key
 
 Save this key outside the folder you're about to encrypt, and keep a backup somewhere separate. If you lose every copy, you won't be able to recover your encrypted files.
 
-Anyone with the key can read files encrypted with it. If you'd like a password on the key file as well, use `turbocrypt keygen --password secret.key` when creating it. TurboCrypt will ask for that password whenever it needs to open the key.
+Anyone with the key can read files encrypted with it. If you'd like a password on the key file as well, use `turbocrypt keygen --password secret.key` when creating it.
+
+TurboCrypt will ask for that password whenever it needs to open the key.
 
 ## 3. Save your default key
 

@@ -102,4 +102,6 @@ TurboCrypt stores your settings in `config.json`:
 
 Use the config commands to change it. If you've saved a default key, treat this file as another copy of that key when backing up or sharing your computer's settings.
 
-After changing a key file's password, run `turbocrypt config set-key` again to update the saved copy. See [password-protected keys](usage.md#add-a-password-to-your-key) for the steps.
+After changing a key file's password, run `turbocrypt config set-key` again to update the saved copy.
+
+See [password-protected keys](usage.md#add-a-password-to-your-key) for the steps.
