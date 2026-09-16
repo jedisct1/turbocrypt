@@ -1,6 +1,6 @@
 .{
     .name = .turbocrypt,
-    .version = "0.9.4",
+    .version = "0.9.5",
     .fingerprint = 0x91314726da0657f0, // Changing this has security and trust implications.
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
