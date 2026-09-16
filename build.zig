@@ -53,10 +53,16 @@ pub fn build(b: *std.Build) void {
 
     const fuse_default = target.result.os.tag == .macos or target.result.os.tag == .linux;
     const fuse = b.option(bool, "fuse", "Build the mount command (default: on for macOS and Linux)") orelse fuse_default;
+    const fuse_t_static = b.option([]const u8, "fuse-t-static", "Path to fuse-t's static libfuse3.a (macOS only)");
+    const macos_sdk = b.option([]const u8, "macos-sdk", "macOS SDK path for static fuse-t framework dependencies");
+    if (fuse_t_static != null and (!fuse or target.result.os.tag != .macos)) {
+        @panic("-Dfuse-t-static requires a macOS target with -Dfuse=true");
+    }
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
     build_options.addOption(bool, "fuse", fuse);
+    build_options.addOption(bool, "fuse_t_static", fuse_t_static != null);
 
     const exe = b.addExecutable(.{
         .name = "turbocrypt",
@@ -82,6 +88,14 @@ pub fn build(b: *std.Build) void {
     // The git integration does the same through libiconv, which it loads with dlopen.
     if (target.result.os.tag == .macos) {
         exe.root_module.link_libc = true;
+    }
+
+    if (fuse_t_static) |path| {
+        const sdk = macos_sdk orelse @panic("-Dfuse-t-static requires -Dmacos-sdk (xcrun --show-sdk-path)");
+        exe.root_module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+        exe.root_module.addObjectFile(.{ .cwd_relative = path });
+        exe.root_module.linkFramework("CoreFoundation", .{});
+        exe.root_module.linkFramework("DiskArbitration", .{});
     }
 
     if (fuse and target.result.os.tag == .linux) {

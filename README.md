@@ -17,7 +17,14 @@ TurboCrypt encrypts anything from a single document to a whole directory of back
 
 ## Install TurboCrypt
 
-Download the archive for your system from the [releases page](https://github.com/jedisct1/turbocrypt/releases), extract it, and put `turbocrypt` somewhere on your `PATH`.
+On macOS, install the signed universal binary with Homebrew. Trust the tap first, then install:
+
+```sh
+brew trust jedisct1/turbocrypt
+brew install jedisct1/turbocrypt/turbocrypt
+```
+
+You can also download the archive for your system from the [releases page](https://github.com/jedisct1/turbocrypt/releases), extract it, and put `turbocrypt` somewhere on your `PATH`.
 
 If you'd rather build it yourself, install the master version of [Zig](https://ziglang.org/download/), then run:
 

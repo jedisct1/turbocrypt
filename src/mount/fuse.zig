@@ -1,9 +1,10 @@
-//! FUSE ABI bindings for dynamically loaded fuse-t and statically linked libfuse.
+//! FUSE ABI bindings for fuse-t and libfuse, with optional static linking on macOS.
 //!
 //! Access only fields with stable layouts; tests/fuse_abi.sh checks them against the C headers.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 pub const Error = error{
     LibraryNotFound,
@@ -373,7 +374,7 @@ pub const Library = struct {
     };
 
     pub fn load() Error!Library {
-        if (builtin.os.tag == .linux) {
+        if (builtin.os.tag == .linux or build_options.fuse_t_static) {
             return .{
                 .dyn = null,
                 .optAddArg = static.fuse_opt_add_arg,

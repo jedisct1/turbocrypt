@@ -6,7 +6,14 @@ This guide takes you from installing TurboCrypt to restoring your first encrypte
 
 ## 1. Install TurboCrypt
 
-Download the archive for your system from the [releases page](https://github.com/jedisct1/turbocrypt/releases) and extract it.
+On macOS 13 or later, Homebrew installs a signed binary for Apple Silicon and Intel Macs. Trust the tap first, then install:
+
+```sh
+brew trust jedisct1/turbocrypt
+brew install jedisct1/turbocrypt/turbocrypt
+```
+
+For a manual installation, download the archive for your system from the [releases page](https://github.com/jedisct1/turbocrypt/releases) and extract it.
 
 Put `turbocrypt` in a directory on your `PATH` so you can run it from any folder. On Windows, the program is called `turbocrypt.exe`.
 

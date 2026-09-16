@@ -10,3 +10,5 @@ tmp
 zig-out
 zig-pkg/
 fuse-mount-progress.md
+/dist/
+__pycache__/
