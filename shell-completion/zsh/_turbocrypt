@@ -1,7 +1,7 @@
 #compdef turbocrypt
 
 local -a subs
-subs=( keygen change-password encrypt decrypt verify list config git mount unmount bench version )
+subs=( keygen change-password encrypt decrypt verify list config git mount unmount init bench version )
 
 if (( CURRENT == 2 )); then
   compadd -a subs
@@ -132,6 +132,17 @@ case $subcmd in
     _files -/ && return 0
     ;;
   unmount)
+    _files -/ && return 0
+    ;;
+  init)
+    if [[ ${words[CURRENT]} == --* || ${words[CURRENT]} == -* ]]; then
+      compadd -- --key --password --context --encrypted-filenames --enc-suffix
+      return 0
+    fi
+    case ${words[CURRENT-1]} in
+      --key) _files; return 0 ;;
+      --context) return 0 ;;
+    esac
     _files -/ && return 0
     ;;
   bench|version)

@@ -11,6 +11,8 @@ if [ $# -ge 1 ]; then
 else
     bin="$root/zig-out/bin/turbocrypt"
 fi
+# Some checks run the binary from another directory, so its path must be absolute.
+bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")"
 work="$root/tmp/mount_e2e"
 export HOME="$work/home"
 export XDG_DATA_HOME="$work/home/data"
@@ -52,6 +54,13 @@ expect_eq() { [ "$1" = "$2" ] || fail "expected '$2', got '$1'"; }
 expect_file() { [ -f "$1" ] || fail "missing file $1"; }
 expect_no_file() { [ ! -e "$1" ] || fail "unexpected file $1"; }
 expect_content() { expect_file "$1"; expect_eq "$(cat "$1")" "$2"; }
+expect_refused() {
+    pattern=$1; what=$2; shift 2
+    "$@" > "$work/refused.log" 2>&1 && fail "$what succeeded"
+    grep -q "$pattern" "$work/refused.log" || fail "no message for $what: $(cat "$work/refused.log")"
+}
+expect_eio() { cat "$1" 2>&1 | grep -qi "input/output" || fail "$2"; }
+size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
 quiet() { "$@" >/dev/null 2>&1; }
 if command -v uv >/dev/null 2>&1; then py() { uv run --quiet python3 "$@"; }; else py() { python3 "$@"; }; fi
 nap() { perl -e 'select(undef, undef, undef, 0.2)'; }
@@ -61,10 +70,12 @@ sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 mnt="$work/mnt"
 enc="$work/enc"
+box="$work/box"
 plain="$work/plain"
 key="$work/secret.key"
 mount_pid=""
 mount_log="$work/mount.log"
+backing="$enc"
 
 is_mounted() { mount | grep -q " on $mnt "; }
 
@@ -84,9 +95,9 @@ faults=""
 mount_fs() {
     : > "$mount_log"
     if [ -n "$faults" ]; then
-        TURBOCRYPT_MOUNT_FAULTS="$faults" "$bin" mount --key "$key" "$@" "$enc" "$mnt" > "$mount_log" 2>&1 &
+        TURBOCRYPT_MOUNT_FAULTS="$faults" "$bin" mount --key "$key" "$@" "$backing" "$mnt" > "$mount_log" 2>&1 &
     else
-        "$bin" mount --key "$key" "$@" "$enc" "$mnt" > "$mount_log" 2>&1 &
+        "$bin" mount --key "$key" "$@" "$backing" "$mnt" > "$mount_log" 2>&1 &
     fi
     mount_pid=$!
     n=0
@@ -115,8 +126,15 @@ wait_exit() {
     return $status
 }
 
+# The client can report the volume busy for a moment after a burst of file operations.
 unmount_fs() {
-    "$bin" unmount "$mnt" || fail "unmount failed"
+    n=0
+    while ! "$bin" unmount "$mnt" > "$work/unmount.log" 2>&1; do
+        grep -qi "busy" "$work/unmount.log" || { cat "$work/unmount.log"; fail "unmount failed"; }
+        n=$((n + 1))
+        [ $n -gt 25 ] && { cat "$work/unmount.log"; fail "the volume stayed busy"; }
+        nap
+    done
     wait_exit
 }
 
@@ -166,8 +184,8 @@ for names in "" "--encrypted-filenames" "--enc-suffix" "--encrypted-filenames --
     expect_content "$mnt/hello.txt" "hello world"
     expect_content "$mnt/sub/deeper/d.txt" "deep"
     cmp -s "$mnt/sub/random.bin" "$plain/sub/random.bin" || fail "random.bin differs"
-    expect_eq "$(wc -c < "$mnt/empty" | tr -d ' ')" "0"
-    expect_eq "$(wc -c < "$mnt/hello.txt" | tr -d ' ')" "12"
+    expect_eq "$(size_of "$mnt/empty")" "0"
+    expect_eq "$(size_of "$mnt/hello.txt")" "12"
     expect_unmount 0
 done
 
@@ -179,7 +197,7 @@ echo "line two" >> "$mnt/new.txt"
 printf 'XX' | dd of="$mnt/new.txt" bs=1 seek=5 conv=notrunc 2>/dev/null
 expect_eq "$(cat "$mnt/new.txt" | tr '\n' '|')" "line XXe|line two|"
 printf 'Z' | dd of="$mnt/new.txt" bs=1 seek=40 conv=notrunc 2>/dev/null
-expect_eq "$(wc -c < "$mnt/new.txt" | tr -d ' ')" "41"
+expect_eq "$(size_of "$mnt/new.txt")" "41"
 truncate -s 4 "$mnt/new.txt"
 expect_content "$mnt/new.txt" "line"
 truncate -s 6 "$mnt/new.txt"
@@ -710,7 +728,7 @@ if [ "$macos" = 1 ]; then
     if [ -n "$ramdev" ] && quiet diskutil erasevolume HFS+ tcram "$ramdev"; then
         small="/Volumes/tcram"
         rm -rf "$small/enc"; mkdir "$small/enc"
-        enc_saved="$enc"; enc="$small/enc"
+        enc_saved="$enc"; enc="$small/enc"; backing="$enc"
         # Fill the disk externally because failed write-backs remove their temporary files.
         # Leave less than one allocation block so the next write-back cannot allocate a file.
         fill_disk() { dd if=/dev/zero of="$small/filler" bs=4096 2>/dev/null; dd if=/dev/zero of="$small/filler2" bs=512 2>/dev/null; }
@@ -746,7 +764,7 @@ PY
         expect_eq "$(mode "$work/rescue")" "700"
         quiet "$bin" decrypt --key "$key" "$rescued" "$work/rescued.txt" || fail "decrypt of the rescue copy"
         expect_content "$work/rescued.txt" "rescued at unmount"
-        enc="$enc_saved"
+        enc="$enc_saved"; backing="$enc"
         hdiutil detach "$ramdev" >/dev/null 2>&1
         ramdev=""
     else
@@ -792,6 +810,573 @@ for names in "" "--encrypted-filenames"; do
         expect_unmount 0
     done
 done
+
+##### Containers made by "turbocrypt init" #####
+
+backing="$box"
+descriptor=".turbocrypt-raf"
+chunk=16384
+record=16416
+
+fresh_plain() {
+    rm -rf "$plain"
+    mkdir -p "$plain/sub/deeper"
+    echo "hello world" > "$plain/hello.txt"
+    head -c 100000 /dev/urandom > "$plain/sub/random.bin"
+    echo "deep" > "$plain/sub/deeper/d.txt"
+    : > "$plain/empty"
+}
+
+fresh_box() {
+    rm -rf "$box" "$mnt"
+    mkdir -p "$mnt"
+    "$bin" init --key "$key" "$@" "$box" > "$work/init.log" 2>&1 || fail "init with '$*': $(cat "$work/init.log")"
+}
+
+# The AppleDouble sidecars that macOS writes next to copied files are not part of the test.
+visible() { ls "$1" | grep -v '^\._' | tr '\n' ' '; }
+descriptor_size=65
+
+step "container 1: init, mount, and the hidden descriptor in the three name modes"
+fresh_plain
+for names in "" "--encrypted-filenames" "--enc-suffix" "--encrypted-filenames --enc-suffix"; do
+    fresh_box $names
+    expect_eq "$(size_of "$box/$descriptor")" "$descriptor_size"
+    expect_eq "$(ls -a "$box" | grep -cxF "$descriptor")" "1"
+    mount_fs || fail "mount of a container made with '$names'"
+    cp -R "$plain/." "$mnt/" 2>/dev/null
+    expect_eq "$(visible "$mnt")" "empty hello.txt sub "
+    expect_eq "$(ls -a "$mnt" | grep -c turbocrypt-raf)" "0"
+    cat "$mnt/$descriptor" 2>&1 | grep -qi "no such file" || fail "the descriptor is visible with '$names'"
+    expect_content "$mnt/hello.txt" "hello world"
+    expect_content "$mnt/sub/deeper/d.txt" "deep"
+    cmp -s "$mnt/sub/random.bin" "$plain/sub/random.bin" || fail "random.bin differs"
+    expect_eq "$(size_of "$mnt/empty")" "0"
+    expect_unmount 0
+    expect_eq "$(size_of "$box/$descriptor")" "$descriptor_size"
+    # The settings live in the descriptor: a later mount needs no filename option.
+    mount_fs || fail "second mount without options"
+    expect_content "$mnt/sub/deeper/d.txt" "deep"
+    expect_unmount 0
+    if [ "$names" = "--encrypted-filenames --enc-suffix" ]; then
+        expect_eq "$(ls "$box" | grep -c '\.enc$')" "0"
+    fi
+done
+
+step "container 2: the reserved name cannot be created, replaced, renamed or removed"
+fresh_box
+mount_fs || fail "mount"
+echo "x" > "$mnt/hello.txt"
+cat > "$work/reserved.py" <<'PY'
+import os, sys, errno
+reserved, other = sys.argv[1], sys.argv[2]
+def attempt(call):
+    try:
+        call()
+        return "ok"
+    except OSError as e:
+        return errno.errorcode.get(e.errno, str(e.errno))
+print("create", attempt(lambda: os.close(os.open(reserved, os.O_WRONLY | os.O_CREAT))))
+print("mkdir", attempt(lambda: os.mkdir(reserved)))
+print("rename", attempt(lambda: os.rename(other, reserved)))
+print("unlink", attempt(lambda: os.unlink(reserved)))
+print("open", attempt(lambda: os.close(os.open(reserved, os.O_RDONLY))))
+PY
+# Another spelling of the name reaches the same file on a case-insensitive filesystem.
+for spelling in "$descriptor" ".TURBOCRYPT-RAF" ".Turbocrypt-Raf"; do
+    out=$(py "$work/reserved.py" "$mnt/$spelling" "$mnt/hello.txt" 2>&1)
+    echo "$out" | grep -q "^create EPERM" || fail "create of $spelling: $out"
+    echo "$out" | grep -q "^mkdir EPERM" || fail "mkdir of $spelling: $out"
+    echo "$out" | grep -q "^rename EPERM" || fail "rename onto $spelling: $out"
+    echo "$out" | grep -q "^unlink ENOENT" || fail "unlink of $spelling: $out"
+    echo "$out" | grep -q "^open ENOENT" || fail "open of $spelling: $out"
+done
+expect_content "$mnt/hello.txt" "x"
+expect_unmount 0
+expect_eq "$(size_of "$box/$descriptor")" "$descriptor_size"
+mount_fs || fail "the descriptor did not survive the reserved-name attempts"
+expect_content "$mnt/hello.txt" "x"
+expect_unmount 0
+expect_eq "$(size_of "$box/$descriptor")" "$descriptor_size"
+# With encrypted names the plain name maps elsewhere, and the descriptor is untouched.
+fresh_box --encrypted-filenames
+mount_fs || fail "mount"
+echo "mine" > "$mnt/$descriptor" || fail "a user file with the reserved plain name was refused with encrypted names"
+expect_content "$mnt/$descriptor" "mine"
+expect_unmount 0
+expect_eq "$(size_of "$box/$descriptor")" "$descriptor_size"
+# The user file has an encrypted name; macOS adds a sidecar next to it.
+[ "$(ls -A "$box" | wc -l | tr -d ' ')" -ge 2 ] || fail "the user file did not land in the container"
+mount_fs || fail "remount"
+expect_content "$mnt/$descriptor" "mine"
+expect_unmount 0
+
+step "container 3: filename options must agree with the descriptor, and the saved default is ignored"
+fresh_box
+expect_refused "initialized with plain names" "a conflicting --encrypted-filenames" "$bin" mount --key "$key" --encrypted-filenames "$box" "$mnt"
+expect_refused "initialized without the suffix" "a conflicting --enc-suffix" "$bin" mount --key "$key" --enc-suffix "$box" "$mnt"
+is_mounted && fail "mounted despite the conflict"
+quiet "$bin" config set-encrypted-filenames true || fail "config"
+mount_fs || fail "mount with a saved default that differs from the descriptor"
+echo "plain names" > "$mnt/named.txt"
+expect_unmount 0
+expect_file "$box/named.txt"
+quiet "$bin" config set-encrypted-filenames false || fail "config"
+fresh_box --enc-suffix
+mount_fs --enc-suffix || fail "an agreeing --enc-suffix was refused"
+echo "s" > "$mnt/s.txt"
+expect_unmount 0
+expect_file "$box/s.txt.enc"
+
+step "container 4: create, append, write at offsets, truncate, sizes, and a remount"
+fresh_box
+mount_fs || fail "mount"
+echo "line one" > "$mnt/new.txt"
+echo "line two" >> "$mnt/new.txt"
+printf 'XX' | dd of="$mnt/new.txt" bs=1 seek=5 conv=notrunc 2>/dev/null
+expect_eq "$(cat "$mnt/new.txt" | tr '\n' '|')" "line XXe|line two|"
+printf 'Z' | dd of="$mnt/new.txt" bs=1 seek=40 conv=notrunc 2>/dev/null
+expect_eq "$(size_of "$mnt/new.txt")" "41"
+truncate -s 4 "$mnt/new.txt"
+expect_content "$mnt/new.txt" "line"
+truncate -s 6 "$mnt/new.txt"
+expect_eq "$(od -An -c "$mnt/new.txt" | tr -d ' \n')" 'line\0\0'
+: > "$mnt/zero"
+expect_eq "$(size_of "$box/zero")" "64"
+expect_eq "$(size_of "$box/new.txt")" "$((64 + record))"
+head -c $chunk /dev/urandom > "$work/one_chunk.bin"
+head -c $((chunk + 1)) /dev/urandom > "$work/one_chunk_and_one.bin"
+cp "$work/one_chunk.bin" "$mnt/one_chunk.bin"
+cp "$work/one_chunk_and_one.bin" "$mnt/one_chunk_and_one.bin"
+expect_eq "$(size_of "$box/one_chunk.bin")" "$((64 + record))"
+expect_eq "$(size_of "$box/one_chunk_and_one.bin")" "$((64 + 2 * record))"
+cat > "$work/straddle.py" <<'PY'
+import os, sys
+p = sys.argv[1]
+chunk = 16384
+fd = os.open(p, os.O_RDWR)
+os.pwrite(fd, b"ABCDEFGH", chunk - 4)
+assert os.pread(fd, 8, chunk - 4) == b"ABCDEFGH"
+os.pwrite(fd, b"Q", 3 * chunk + 7)
+os.fsync(fd)
+os.close(fd)
+with open(p, "rb") as f:
+    data = f.read()
+assert len(data) == 3 * chunk + 8, len(data)
+assert data[chunk - 4:chunk + 4] == b"ABCDEFGH"
+assert data[chunk + 4:3 * chunk + 7] == bytes(2 * chunk + 3), "the gap is not zero"
+assert data[-1:] == b"Q"
+print("straddle ok")
+PY
+py "$work/straddle.py" "$mnt/one_chunk_and_one.bin" 2>&1 | grep -q "straddle ok" || fail "the straddling write or the gap failed"
+expect_eq "$(size_of "$box/one_chunk_and_one.bin")" "$((64 + 4 * record))"
+truncate -s $((chunk + 1)) "$mnt/one_chunk_and_one.bin"
+expect_eq "$(size_of "$box/one_chunk_and_one.bin")" "$((64 + 2 * record))"
+expect_unmount 0
+mount_fs || fail "remount"
+expect_eq "$(od -An -c "$mnt/new.txt" | tr -d ' \n')" 'line\0\0'
+cmp -s "$mnt/one_chunk.bin" "$work/one_chunk.bin" || fail "one_chunk.bin differs after the remount"
+expect_eq "$(size_of "$mnt/one_chunk_and_one.bin")" "$((chunk + 1))"
+expect_unmount 0
+
+step "container 5: a 64 MiB file, mmap, and the hash after a remount"
+mount_fs || fail "mount"
+cp "$work/big.bin" "$mnt/big.bin"
+expect_eq "$(sha "$mnt/big.bin")" "$(sha "$work/big.bin")"
+expect_eq "$(size_of "$box/big.bin")" "$((64 + 4096 * record))"
+echo "hello world" > "$mnt/hello.txt"
+if command -v python3 >/dev/null 2>&1; then
+    py "$work/mm.py" "$mnt/hello.txt" || fail "mmap"
+    expect_content "$mnt/hello.txt" "HELLO world"
+fi
+expect_unmount 0
+mount_fs || fail "remount"
+expect_eq "$(sha "$mnt/big.bin")" "$(sha "$work/big.bin")"
+expect_unmount 0
+
+step "container 6: mv and rm, closed and open, a directory rename with an open descendant, and a rename over an open destination"
+fresh_box
+mount_fs || fail "mount"
+echo "hello world" > "$mnt/hello.txt"
+mv "$mnt/hello.txt" "$mnt/renamed.txt"
+expect_no_file "$mnt/hello.txt"
+expect_content "$mnt/renamed.txt" "hello world"
+expect_eq "$( (exec 3<"$mnt/renamed.txt"; mv "$mnt/renamed.txt" "$mnt/open-moved.txt"; cat <&3) )" "hello world"
+expect_content "$mnt/open-moved.txt" "hello world"
+rm "$mnt/open-moved.txt"
+expect_no_file "$mnt/open-moved.txt"
+echo "to delete" > "$mnt/gone.txt"
+( exec 3<"$mnt/gone.txt"; rm "$mnt/gone.txt"; expect_eq "$(cat <&3)" "to delete" )
+expect_no_file "$mnt/gone.txt"
+expect_eq "$(ls -a "$box" | grep -c '^\.tc-')" "0"
+mkdir "$mnt/dir1"
+(
+    exec 3>"$mnt/dir1/live.txt"
+    printf 'live data' >&3
+    mv "$mnt/dir1" "$mnt/dir2"
+    printf ' more' >&3
+    exec 3>&-
+)
+expect_no_file "$mnt/dir1"
+expect_content "$mnt/dir2/live.txt" "live data more"
+echo "old" > "$mnt/dest.txt"
+echo "new" > "$mnt/src.txt"
+expect_eq "$( (exec 3<"$mnt/dest.txt"; mv "$mnt/src.txt" "$mnt/dest.txt"; cat <&3) )" "old"
+expect_content "$mnt/dest.txt" "new"
+expect_no_file "$mnt/src.txt"
+mkdir "$mnt/d1"
+echo x > "$mnt/d1/f"
+rmdir "$mnt/d1" 2>/dev/null && fail "rmdir of a non-empty directory succeeded"
+rm "$mnt/d1/f"
+rmdir "$mnt/d1"
+expect_no_file "$box/d1"
+expect_unmount 0
+mount_fs || fail "remount"
+expect_content "$mnt/dir2/live.txt" "live data more"
+expect_content "$mnt/dest.txt" "new"
+expect_eq "$(ls "$box" | grep -c "src.txt")" "0"
+expect_unmount 0
+
+step "container 7: concurrent writers on two files, and two appenders on one file"
+mount_fs || fail "mount"
+( i=0; while [ $i -lt 200 ]; do echo "a$i" >> "$mnt/wa.txt"; i=$((i + 1)); done ) &
+wa=$!
+( i=0; while [ $i -lt 200 ]; do echo "b$i" >> "$mnt/wb.txt"; i=$((i + 1)); done ) &
+wb=$!
+wait $wa; wait $wb
+expect_eq "$(wc -l < "$mnt/wa.txt" | tr -d ' ')" "200"
+expect_eq "$(wc -l < "$mnt/wb.txt" | tr -d ' ')" "200"
+expect_eq "$(tail -1 "$mnt/wb.txt")" "b199"
+( i=0; while [ $i -lt 100 ]; do echo "x$i" >> "$mnt/shared.txt"; i=$((i + 1)); done ) &
+xa=$!
+( i=0; while [ $i -lt 100 ]; do echo "y$i" >> "$mnt/shared.txt"; i=$((i + 1)); done ) &
+xb=$!
+wait $xa; wait $xb
+expect_eq "$(wc -l < "$mnt/shared.txt" | tr -d ' ')" "200"
+expect_eq "$(sort "$mnt/shared.txt" | uniq -d | wc -l | tr -d ' ')" "0"
+expect_unmount 0
+
+step "container 8: --read-only refuses writes, and a write-only open still updates records"
+mount_fs --read-only || fail "mount"
+touch "$mnt/nope" 2>&1 | grep -qi "read-only" || fail "touch did not fail with EROFS"
+expect_content "$mnt/dest.txt" "new"
+expect_unmount 0
+mount_fs || fail "mount"
+cat > "$work/wronly.py" <<'PY'
+import os, sys
+p = sys.argv[1]
+fd = os.open(p, os.O_WRONLY)
+os.pwrite(fd, b"WO", 1)
+os.close(fd)
+fd = os.open(p, os.O_WRONLY | os.O_APPEND)
+os.write(fd, b"+")
+os.close(fd)
+with open(p, "rb") as f:
+    print(f.read().decode())
+PY
+expect_eq "$(py "$work/wronly.py" "$mnt/dest.txt" 2>&1 | tr -d '\n')" "nWO+"
+# On a case-insensitive filesystem two spellings reach one inode; only one context may hold it.
+: > "$mnt/CaseAlias"
+if [ -e "$mnt/casealias" ]; then
+    cat > "$work/alias.py" <<'PY'
+import os, sys, errno
+first, second = sys.argv[1], sys.argv[2]
+a = os.open(first, os.O_RDWR)
+os.pwrite(a, b"A", 0)
+try:
+    b = os.open(second, os.O_RDWR)
+    os.close(b)
+    print("second open ok")
+except OSError as e:
+    print("second open", errno.errorcode.get(e.errno, str(e.errno)))
+os.close(a)
+b = os.open(second, os.O_RDWR)
+os.pwrite(b, b"B", 1)
+os.close(b)
+print("alias write done")
+PY
+    out=$(py "$work/alias.py" "$mnt/CaseAlias" "$mnt/casealias" 2>&1)
+    echo "$out" | grep -q "second open ok" && fail "an alias of an open file got its own context: $out"
+    echo "$out" | grep -q "alias write done" || fail "the write through the alias failed: $out"
+    grep -q "already open under another name" "$mount_log" || fail "no alias message: $(cat "$mount_log")"
+    # The client caches attributes per spelling, so the stored bytes are checked through a fresh mount.
+    expect_unmount 0
+    mount_fs || fail "remount"
+    expect_eq "$(cat "$mnt/CaseAlias")" "AB"
+    expect_eq "$(cat "$mnt/casealias")" "AB"
+else
+    echo "   (case-sensitive filesystem, the alias check is skipped)"
+fi
+expect_unmount 0
+
+step "container 9: wrong key and context, refused options, duplicate mounts, and mounts inside"
+expect_refused "wrong key, wrong context" "a mount with the wrong key" "$bin" mount --key "$work/wrong.key" "$box" "$mnt"
+expect_refused "wrong key, wrong context" "a mount with another context" "$bin" mount --key "$key" --context other "$box" "$mnt"
+expect_refused "wrong key, wrong context" "--force with the wrong key" "$bin" mount --key "$work/wrong.key" --force "$box" "$mnt"
+expect_refused "does not apply to a container" "--force on a container" "$bin" mount --key "$key" --force "$box" "$mnt"
+for opt in "--max-file-size 1073741824" "--memory-limit 4294967296" "--rescue-dir $work/r"; do
+    expect_refused "not to a container" "$opt on a container" "$bin" mount --key "$key" $opt "$box" "$mnt"
+done
+is_mounted && fail "mounted after a refused option"
+mount_fs || fail "mount"
+mkdir -p "$work/mnt2"
+expect_refused "already mounted" "a second mount of the same container" "$bin" mount --key "$key" "$box" "$work/mnt2"
+expect_refused "already a container" "init of a mounted container" "$bin" init --key "$key" "$box"
+mkdir -p "$mnt/inside"
+expect_refused "inside the container" "a mount inside the container" "$bin" mount --key "$key" "$box/inside" "$work/mnt2"
+expect_refused "inside the container" "init inside a container" "$bin" init --key "$key" "$box/inside/deeper"
+expect_no_file "$box/inside/deeper"
+expect_unmount 0
+rmdir "$work/mnt2"
+rm -rf "$work/empty"; mkdir "$work/empty"
+backing="$work/empty"
+mount_fs || fail "mount of an empty v1 tree"
+expect_refused "in use by another turbocrypt process" "init of a mounted empty directory" "$bin" init --key "$key" "$work/empty"
+expect_unmount 0
+backing="$box"
+
+step "container 10: the ordinary commands and a v1 mount refuse a container"
+expect_refused "Mount it and copy" "list of a container" "$bin" list "$box"
+expect_refused "Mount it and copy" "verify of a container" "$bin" verify --key "$key" "$box"
+expect_refused "Mount it and copy" "decrypt of a container" "$bin" decrypt --key "$key" "$box" "$work/dec-box"
+expect_no_file "$work/dec-box"
+expect_refused "Mount it and copy" "encrypt into a container" "$bin" encrypt --key "$key" "$plain" "$box/into"
+expect_no_file "$box/into"
+# Resolve bare destinations against the container working directory.
+in_box() { ( cd "$box" && "$@" ); }
+quiet "$bin" encrypt --key "$key" "$plain/hello.txt" "$work/for-cwd.v1" || fail "encrypt"
+expect_refused "inside the TurboCrypt container" "decrypt to a bare name inside the container" in_box "$bin" decrypt --key "$key" "$work/for-cwd.v1" leaked.txt
+expect_no_file "$box/leaked.txt"
+expect_refused "inside the TurboCrypt container" "encrypt to a bare name inside the container" in_box "$bin" encrypt --key "$key" "$plain/hello.txt" new.enc
+expect_no_file "$box/new.enc"
+expect_refused "inside the container" "init of a bare name inside the container" in_box "$bin" init --key "$key" nested
+expect_no_file "$box/nested"
+fresh_tree
+mkdir -p "$enc/nested"
+: > "$enc/nested/$descriptor"
+expect_refused "is a TurboCrypt container" "list of a tree with a nested container" "$bin" list "$enc"
+rm -rf "$enc/nested"
+# A stray file under the reserved name refuses a v1 mount, and --force does not help.
+echo "mine" > "$enc/$descriptor"
+backing="$enc"
+expect_refused "$descriptor is not a valid container descriptor" "a v1 mount with a stray descriptor" "$bin" mount --key "$key" "$enc" "$mnt"
+grep -q "move or delete that file" "$work/refused.log" || fail "no advice in the message: $(cat "$work/refused.log")"
+expect_refused "$descriptor" "--force on a v1 tree with a stray descriptor" "$bin" mount --key "$key" --force "$enc" "$mnt"
+rm "$enc/$descriptor"
+mount_fs || fail "the v1 tree does not mount once the stray file is gone"
+expect_content "$mnt/hello.txt" "hello world"
+expect_unmount 0
+backing="$box"
+
+step "container 11: damaged, stray, crafted and hard-linked files stay listable and removable"
+fresh_box
+mount_fs || fail "mount"
+head -c 40000 /dev/urandom > "$work/dmg.bin"
+cp "$work/dmg.bin" "$mnt/dmg"
+cp "$work/dmg.bin" "$mnt/hdr"
+echo "small" > "$mnt/small"
+echo "linkme" > "$mnt/linkme"
+expect_unmount 0
+cat > "$work/damage.py" <<'PY'
+import sys
+path, offset = sys.argv[1], int(sys.argv[2])
+with open(path, "r+b") as f:
+    f.seek(offset)
+    b = f.read(1)
+    f.seek(offset)
+    f.write(bytes([b[0] ^ 0x80]))
+PY
+py "$work/damage.py" "$box/dmg" $((64 + record + 16 + 5)) || fail "damage"
+py "$work/damage.py" "$box/hdr" 50 || fail "damage"
+# The ordinary command refuses to write into a container, so the stray file is moved in by hand.
+quiet "$bin" encrypt --key "$key" "$plain/hello.txt" "$work/stray.v1" || fail "encrypt"
+mv "$work/stray.v1" "$box/stray.v1"
+cat > "$work/craft.py" <<'PY'
+import sys, struct
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, "rb") as f:
+    hdr = bytearray(f.read(64))
+hdr[16:24] = struct.pack("<Q", 2**64 - 1)
+with open(dst, "wb") as f:
+    f.write(hdr)
+PY
+py "$work/craft.py" "$box/small" "$box/crafted" || fail "craft"
+ln "$box/linkme" "$box/linked"
+mount_fs || fail "mount"
+expect_eq "$(size_of "$mnt/dmg")" "40000"
+expect_eq "$(size_of "$mnt/hdr")" "40000"
+expect_eq "$(size_of "$mnt/stray.v1")" "60"
+expect_eq "$(size_of "$mnt/crafted")" "64"
+expect_eio "$mnt/dmg" "no EIO for the damaged record"
+expect_eio "$mnt/hdr" "no EIO for the damaged header"
+expect_eio "$mnt/stray.v1" "no EIO for the stray v1 file"
+expect_eio "$mnt/crafted" "no EIO for the crafted header"
+# The NFS client of fuse-t shows EOPNOTSUPP from open as a permission error.
+cat "$mnt/linked" 2>&1 | grep -qi "not supported\|permission denied" || fail "a hard-linked file was opened"
+cat "$mnt/linkme" 2>&1 | grep -qi "not supported\|permission denied" || fail "the other name of a hard-linked file was opened"
+grep -q "linked has 2 links; a container file must have one" "$mount_log" || fail "no hard-link message: $(cat "$mount_log")"
+expect_content "$mnt/small" "small"
+grep -q "hdr does not authenticate; its size comes from the unauthenticated header" "$mount_log" || fail "no probe message: $(cat "$mount_log")"
+grep -q "stray.v1 is not a container file" "$mount_log" || fail "no stray-file message: $(cat "$mount_log")"
+rm "$mnt/dmg" "$mnt/hdr" "$mnt/stray.v1" "$mnt/crafted" "$mnt/linked" || fail "removal of damaged files failed"
+expect_content "$mnt/linkme" "linkme"
+expect_no_file "$box/dmg"
+expect_no_file "$box/crafted"
+expect_unmount 0
+expect_eq "$(grep -c "internal error" "$mount_log")" "0"
+
+step "container 12: symlinks in a recursive copy are reported, and the other files land"
+fresh_plain
+ln -s hello.txt "$plain/link"
+mount_fs || fail "mount"
+cp -R "$plain/." "$mnt/" > "$work/cp.log" 2>&1 && fail "cp -R with a symlink reported success"
+# GNU cp says "symbolic link", BSD cp says "symlink", and the NFS client of fuse-t shows EOPNOTSUPP as EIO.
+grep -qi "link.*not supported\|link.*input/output error" "$work/cp.log" || fail "no error for the symlink: $(cat "$work/cp.log")"
+expect_content "$mnt/hello.txt" "hello world"
+expect_content "$mnt/sub/deeper/d.txt" "deep"
+expect_no_file "$mnt/link"
+expect_unmount 0
+rm "$plain/link"
+
+step "container 13: chmod, and cp -p keeps the mtime"
+mount_fs $fresh_attrs || fail "mount"
+chmod 600 "$mnt/empty"
+expect_eq "$(mode "$mnt/empty")" "600"
+expect_eq "$(mode "$box/empty")" "600"
+touch -t 202001010000 "$plain/hello.txt"
+cp -p "$plain/hello.txt" "$mnt/copied.txt" 2>/dev/null
+expect_eq "$(mtime "$mnt/copied.txt")" "$(mtime "$plain/hello.txt")"
+# The fault scenarios below append to this file, so it must exist before a fault is armed.
+head -c 20000 /dev/urandom > "$work/two.bin"
+cp "$work/two.bin" "$mnt/two.bin"
+expect_unmount 0
+expect_eq "$(mtime "$box/copied.txt")" "$(mtime "$plain/hello.txt")"
+expect_eq "$(mode "$box/empty")" "600"
+
+faults=raf_writev_short; mount_fs || fail "mount"
+if faults_armed; then
+    step "container 14: a torn record poisons the open file, and a fresh open sees the damage"
+    cat > "$work/torn.py" <<'PY'
+import os, sys, errno
+p = sys.argv[1]
+fd = os.open(p, os.O_RDWR)
+size = os.fstat(fd).st_size
+seen = []
+try:
+    os.pwrite(fd, b"appended", size)
+    os.fsync(fd)
+except OSError as e:
+    seen.append(errno.errorcode.get(e.errno, str(e.errno)))
+try:
+    os.pread(fd, 10, 0)
+except OSError as e:
+    seen.append(errno.errorcode.get(e.errno, str(e.errno)))
+# A sync of the directory must not report success while the open file has a failed write.
+d = os.open(os.path.dirname(p), os.O_RDONLY)
+try:
+    os.fsync(d)
+    seen.append("dirsync-ok")
+except OSError as e:
+    seen.append("dirsync-" + errno.errorcode.get(e.errno, str(e.errno)))
+os.close(d)
+try:
+    os.close(fd)
+except OSError as e:
+    seen.append(errno.errorcode.get(e.errno, str(e.errno)))
+print("seen", " ".join(seen))
+PY
+    out=$(py "$work/torn.py" "$mnt/two.bin" 2>&1)
+    grep -q "cannot write two.bin: InputOutput" "$mount_log" || fail "the torn write was not reported: $(cat "$mount_log") / $out"
+    if [ "$macos" = 0 ]; then
+        echo "$out" | grep -q "EIO" || fail "the application did not see the error: $out"
+        echo "$out" | grep -q "dirsync-EIO" || fail "the directory sync hid the failed write: $out"
+    fi
+    expect_eq "$(size_of "$mnt/two.bin")" "20000"
+    expect_eio "$mnt/two.bin" "the torn record still reads"
+    rm "$mnt/two.bin"
+    expect_unmount 0
+    expect_eq "$(grep -c "internal error" "$mount_log")" "0"
+
+    step "container 15: a refused length change fails a growth with ENOSPC and leaves the file readable"
+    faults=raf_set_length; mount_fs || fail "mount"
+    cat > "$work/grow_fail.py" <<'PY'
+import os, sys, errno
+p = sys.argv[1]
+fd = os.open(p, os.O_RDWR)
+seen = []
+try:
+    os.pwrite(fd, b"more", 16384 * 2)
+    os.fsync(fd)
+except OSError as e:
+    seen.append(errno.errorcode.get(e.errno, str(e.errno)))
+try:
+    os.close(fd)
+except OSError as e:
+    seen.append(errno.errorcode.get(e.errno, str(e.errno)))
+print("seen", " ".join(seen))
+PY
+    out=$(py "$work/grow_fail.py" "$mnt/small" 2>&1)
+    grep -q "cannot write small: NoSpaceLeft" "$mount_log" || fail "the refused growth was not reported: $(cat "$mount_log") / $out"
+    if [ "$macos" = 0 ]; then
+        echo "$out" | grep -q "ENOSPC" || fail "the application did not see ENOSPC: $out"
+    fi
+    expect_content "$mnt/small" "small"
+    expect_unmount 0
+
+    step "container 16: a failed sync of a container file is reported"
+    faults=file_sync; mount_fs || fail "mount"
+    out=$(py "$work/fsync.py" "$mnt/synced.txt" 2>&1)
+    if [ "$macos" = 1 ]; then
+        grep -q "cannot sync synced.txt" "$mount_log" || fail "the sync fault did not fire: $out"
+    else
+        echo "$out" | grep -q "first fsync failed" || fail "the sync fault did not fire: $out"
+    fi
+    echo "$out" | grep -q "second fsync ok" || fail "the second fsync failed: $out"
+    expect_content "$mnt/synced.txt" "synced data"
+    expect_unmount 3
+    faults=""
+else
+    unmount_fs
+    echo "   (faults are not armed in this build, container scenarios 14 to 16 skipped)"
+fi
+faults=""
+
+if [ -n "${TURBOCRYPT_E2E_BIG:-}" ]; then
+    step "container 17: a file above the old 1 GiB limit, random access past 1 GiB, and flat memory"
+    fresh_box
+    mount_fs || fail "mount"
+    rss() { ps -o rss= -p "$mount_pid" | tr -d ' '; }
+    rss_before=$(rss)
+    head -c $((1024 * 1024 * 1024 + 1024 * 1024)) /dev/urandom > "$work/huge.bin"
+    cp "$work/huge.bin" "$mnt/huge.bin"
+    rss_after=$(rss)
+    echo "   mount RSS: $rss_before KiB before, $rss_after KiB after a 1 GiB + 1 MiB copy"
+    [ $((rss_after - rss_before)) -lt 65536 ] || fail "the mount's memory grew with the file: $rss_before -> $rss_after KiB"
+    expect_eq "$(sha "$mnt/huge.bin")" "$(sha "$work/huge.bin")"
+    cat > "$work/far.py" <<'PY'
+import os, sys, hashlib
+p, ref = sys.argv[1], sys.argv[2]
+fd = os.open(p, os.O_RDWR)
+size = os.fstat(fd).st_size
+for off in (size - 5, 1024 * 1024 * 1024 + 3, 1024 * 1024 * 1024 - 7, 12345678):
+    os.pwrite(fd, b"MARK", off)
+    assert os.pread(fd, 4, off) == b"MARK", off
+os.close(fd)
+with open(ref, "r+b") as f:
+    for off in (size - 5, 1024 * 1024 * 1024 + 3, 1024 * 1024 * 1024 - 7, 12345678):
+        f.seek(off)
+        f.write(b"MARK")
+print("far ok")
+PY
+    py "$work/far.py" "$mnt/huge.bin" "$work/huge.bin" 2>&1 | grep -q "far ok" || fail "random access past 1 GiB failed"
+    expect_unmount 0
+    mount_fs || fail "remount"
+    expect_eq "$(sha "$mnt/huge.bin")" "$(sha "$work/huge.bin")"
+    expect_unmount 0
+    rm -f "$work/huge.bin"
+fi
+
+backing="$enc"
 
 cleanup
 echo "mount_e2e: all scenarios passed"

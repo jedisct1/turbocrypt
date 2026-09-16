@@ -46,6 +46,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const aegis_raf = b.dependency("aegis_raf", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const fuse_default = target.result.os.tag == .macos or target.result.os.tag == .linux;
     const fuse = b.option(bool, "fuse", "Build the mount command (default: on for macOS and Linux)") orelse fuse_default;
 
@@ -62,6 +67,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "hctr2", .module = hctr2.module("hctr2") },
                 .{ .name = "base84", .module = base84.module("base84") },
+                .{ .name = "aegis_raf", .module = aegis_raf.module("aegis_raf") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),

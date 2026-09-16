@@ -1,6 +1,7 @@
 //! Map filenames without persistent metadata; hide backing entries that cannot be represented safely.
 
 const std = @import("std");
+const container = @import("../container.zig");
 const filename_crypto = @import("../filename_crypto.zig");
 const processor = @import("../processor.zig");
 
@@ -40,9 +41,9 @@ pub const Mapper = struct {
 
     /// Return an owned plaintext name, or null for a hidden entry.
     ///
-    /// Hide temporary files, noncanonical encodings, and files missing a required suffix.
+    /// Hide temporary files, the container descriptor, noncanonical encodings, and files missing a required suffix.
     pub fn toPlain(self: Mapper, allocator: std.mem.Allocator, backing: []const u8, kind: Kind) Error!?[]u8 {
-        if (processor.isTemporaryName(backing)) return null;
+        if (isReserved(backing)) return null;
         const decoded = if (self.filename_key) |key|
             filename_crypto.decryptFilenameForFilesystem(allocator, backing, key) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -56,9 +57,10 @@ pub const Mapper = struct {
         return try allocator.dupe(u8, decoded[0 .. decoded.len - suffix.len]);
     }
 
-    /// Reserve temporary names so user entries cannot be mistaken for write-back debris.
+    /// Protect write-back debris and the container descriptor at every depth.
+    /// Reserve descriptor aliases too, since case-insensitive filesystems treat them as the same file.
     pub fn isReserved(backing: []const u8) bool {
-        return processor.isTemporaryName(backing);
+        return processor.isTemporaryName(backing) or std.ascii.eqlIgnoreCase(backing, container.descriptor_name);
     }
 
     /// Report a conservative plaintext name limit to filesystem clients.
@@ -94,6 +96,36 @@ test "plain names pass through and temporary names stay hidden" {
     try testing.expect(Mapper.isReserved(".tc-0123456789abcdef.tmp"));
     try testing.expect(!Mapper.isReserved("notes.txt"));
     try testing.expectEqual(255, mapper.nameMax());
+}
+
+test "the container descriptor stays hidden under every filename setting" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const key: [16]u8 = @splat(5);
+    const raw = container.descriptor_name;
+    try testing.expect(Mapper.isReserved(raw));
+    try testing.expect(Mapper.isReserved(".TURBOCRYPT-RAF"));
+    try testing.expect(Mapper.isReserved(".Turbocrypt-Raf"));
+    try testing.expect(!Mapper.isReserved(".turbocrypt-raf2"));
+
+    for ([_]Mapper{ .{}, .{ .enc_suffix = true }, .{ .filename_key = key }, .{ .filename_key = key, .enc_suffix = true } }) |mapper| {
+        for ([_]Kind{ .file, .directory }) |kind| {
+            try testing.expectEqual(null, try mapper.toPlain(allocator, raw, kind));
+        }
+    }
+    try testing.expectEqual(null, try (Mapper{}).toPlain(allocator, ".TURBOCRYPT-RAF", .file));
+
+    // A plaintext name may map elsewhere; only a collision with the raw descriptor is reserved.
+    for ([_]struct { mapper: Mapper, kind: Kind, reserved: bool }{
+        .{ .mapper = .{}, .kind = .file, .reserved = true },
+        .{ .mapper = .{ .enc_suffix = true }, .kind = .file, .reserved = false },
+        .{ .mapper = .{ .enc_suffix = true }, .kind = .directory, .reserved = true },
+        .{ .mapper = .{ .filename_key = key }, .kind = .file, .reserved = false },
+    }) |case| {
+        const backing = try case.mapper.toBacking(allocator, raw, case.kind);
+        defer allocator.free(backing);
+        try testing.expectEqual(case.reserved, Mapper.isReserved(backing));
+    }
 }
 
 test "suffix mode adds the suffix to files only and hides files without it" {

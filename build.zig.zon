@@ -17,6 +17,10 @@
             .hash = "N-V-__8AAH7hpQBGgn_WYJ7zWhp38R2aFrmFmmYqDUpTz_D7",
             .lazy = true,
         },
+        .aegis_raf = .{
+            .url = "git+https://github.com/jedisct1/zig-aegis-raf.git?ref=0.3.0#2b70241b624be8a7c42bd51d49f1bbb4c21c6b1d",
+            .hash = "aegis_raf-0.3.0-uXR9I6bFAQB9UfWFHxQPitvZBqUa9runRBk6c3CfI6mW",
+        },
     },
     .paths = .{
         "build.zig",

@@ -93,6 +93,20 @@ turbocrypt verify --key work.key encrypted-work/
 
 Later, use `--key work.key` again when decrypting. This doesn't change your saved default or the keys used by existing Git checkouts.
 
+## Start a container for a mounted folder
+
+If you mostly work through a mounted folder, and your files are large or change often, a container suits that better than a folder of ordinary encrypted files. Create an empty one with the key you'll mount it with, then fill it through the mounted view:
+
+```bash
+turbocrypt init --key work.key encrypted-container/
+mkdir -p ~/Volumes/work
+turbocrypt mount --daemon --key work.key encrypted-container/ ~/Volumes/work
+cp -R work-documents/. ~/Volumes/work/
+turbocrypt unmount ~/Volumes/work
+```
+
+`init` needs a missing or empty folder; it never converts existing files. The ordinary `encrypt`, `decrypt`, `verify` and `list` commands don't read containers, so keep using the mount to get files in and out. The [mount guide](mount.md#use-a-container-for-random-access) explains the differences.
+
 ## Find help for your installed version
 
 The built-in help lists the commands and options your copy supports:
@@ -101,6 +115,7 @@ The built-in help lists the commands and options your copy supports:
 turbocrypt --help
 turbocrypt git help
 turbocrypt mount --help
+turbocrypt init --help
 ```
 
 If you need to report a problem, include the output of `turbocrypt version` along with the command you ran and the error message. The [troubleshooting guide](troubleshooting.md) covers the most common problems.

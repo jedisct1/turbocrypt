@@ -2,6 +2,7 @@ const std = @import("std");
 const keygen = @import("keygen.zig");
 const key_loader = @import("key_loader.zig");
 const config_mod = @import("config.zig");
+const container = @import("container.zig");
 const crypto = @import("crypto.zig");
 const processor = @import("processor.zig");
 const utils = @import("utils.zig");
@@ -136,6 +137,7 @@ const usage_text =
 const mount_usage_text = if (build_options.fuse)
     \\  turbocrypt mount [options] <encrypted-dir> <mountpoint>
     \\      Show the encrypted files of <encrypted-dir> as plain files at <mountpoint>
+    \\      <encrypted-dir> is a directory of encrypted files or a container
     \\      Stays in the foreground until the volume is unmounted, --daemon returns
     \\      at once
     \\      Run "turbocrypt mount --help" for the options
@@ -143,12 +145,18 @@ const mount_usage_text = if (build_options.fuse)
     \\  turbocrypt unmount <mountpoint>
     \\      Unmount a directory mounted with "turbocrypt mount"
     \\
+    \\  turbocrypt init [options] <container-dir>
+    \\      Create an empty container for "turbocrypt mount", optimized for
+    \\      random access. Fill it by copying files into the mounted view.
+    \\      Run "turbocrypt init --help" for the options
+    \\
 else
     "";
 
 const mount_examples_text = if (build_options.fuse)
     \\  turbocrypt mount encrypted/ ~/Volumes/plain
     \\  turbocrypt unmount ~/Volumes/plain
+    \\  turbocrypt init container/ && turbocrypt mount container/ ~/Volumes/plain
     \\
 else
     "";
@@ -498,11 +506,17 @@ const DirectoryScanContext = struct {
 
         const dest_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ self.dest_base, transformed orelse relative_path });
         defer self.allocator.free(dest_dir);
+        try self.ensureOutputDirectory(dest_dir, null);
+    }
+
+    fn ensureOutputDirectory(self: *DirectoryScanContext, dest_dir: []const u8, for_file: ?[]const u8) !void {
+        try refuseContainerDestination(dest_dir, self.io);
         utils.ensureDirectory(dest_dir, self.io) catch |err| {
             std.debug.print("\n[ERROR] Failed to create directory: {s}\n", .{dest_dir});
+            if (for_file) |file| std.debug.print("        For file: {s}\n", .{file});
             std.debug.print("        Reason: {}\n", .{err});
             if (self.encrypt_filenames and !self.is_encrypt) {
-                std.debug.print("        Suggestion: Directory name may be corrupted or encrypted with a different key\n", .{});
+                std.debug.print("        Suggestion: The name may be corrupted or encrypted with a different key\n", .{});
             }
             return err;
         };
@@ -581,15 +595,7 @@ const DirectoryScanContext = struct {
 
     fn ensureParent(self: *DirectoryScanContext, dest_path: []const u8, full_path: []const u8) !void {
         const dest_dir = std.fs.path.dirname(dest_path) orelse return;
-        utils.ensureDirectory(dest_dir, self.io) catch |err| {
-            std.debug.print("\n[ERROR] Failed to create destination directory: {s}\n", .{dest_dir});
-            std.debug.print("        For file: {s}\n", .{full_path});
-            std.debug.print("        Reason: {}\n", .{err});
-            if (self.encrypt_filenames and !self.is_encrypt) {
-                std.debug.print("        Suggestion: Filename may be corrupted or encrypted with a different key\n", .{});
-            }
-            return err;
-        };
+        try self.ensureOutputDirectory(dest_dir, full_path);
     }
 };
 
@@ -597,6 +603,20 @@ const DirectoryScanContext = struct {
 fn dryRunSingleFile(source_path: []const u8, verb: []const u8, io: std.Io) !void {
     _ = try std.Io.Dir.statFile(.cwd(), io, source_path, .{});
     std.debug.print("[DRY RUN] Would {s} 1 file...\n", .{verb});
+}
+
+/// Ordinary commands support v1 only; containers must be accessed through a mount.
+fn refuseContainerOperand(path: []const u8, allocator: std.mem.Allocator, io: std.Io) !void {
+    const enclosure = (try container.enclosingRoot(path, allocator, io)) orelse return;
+    defer enclosure.deinit(allocator);
+    container.explainRefusal(enclosure.path, enclosure.root);
+    return error.InvalidArguments;
+}
+
+fn refuseContainerDestination(dest_dir: []const u8, io: std.Io) !void {
+    if (!container.hasDescriptorAt(.cwd(), io, dest_dir)) return;
+    container.explainRefusal(dest_dir, dest_dir);
+    return error.ContainerInTree;
 }
 
 fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt: bool, io: std.Io, environ_map: *const std.process.Environ.Map) !void {
@@ -660,6 +680,10 @@ fn cmdProcess(args: []const []const u8, allocator: std.mem.Allocator, is_encrypt
         std.debug.print("Error: Destination directory must not be inside the source directory\n", .{});
         return error.InvalidArguments;
     }
+
+    // Reject containers before prompting for a key or creating output.
+    try refuseContainerOperand(source_path, allocator, io);
+    if (relation != .same) try refuseContainerOperand(dest_path, allocator, io);
 
     const key = key_loader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
         return key_loader.explainLoadError(allocator, err, opts.key, environ_map);
@@ -841,6 +865,7 @@ fn cmdVerify(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
     }
 
     const source_path = parsed.positional[0];
+    try refuseContainerOperand(source_path, allocator, io);
 
     const key = key_loader.loadKey(allocator, opts.key, opts.password, io, environ_map) catch |err| {
         return key_loader.explainLoadError(allocator, err, opts.key, environ_map);
@@ -1000,6 +1025,7 @@ fn cmdList(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io, e
         std.debug.print("Usage: turbocrypt list works only with directories\n", .{});
         return error.InvalidPath;
     }
+    try refuseContainerOperand(source_path, allocator, io);
 
     // Only encrypted names need the key.
     var filename_key: [16]u8 = undefined;
@@ -1618,6 +1644,11 @@ pub fn main(init: std.process.Init) !void {
         mount_cmd.runUnmount(command_args, allocator, io) catch {
             std.process.exit(1);
         };
+    } else if (std.mem.eql(u8, command, "init")) {
+        if (comptime !build_options.fuse) noMountSupport();
+        mount_cmd.runInit(command_args, allocator, io, init.environ_map) catch {
+            std.process.exit(1);
+        };
     } else {
         std.debug.print("Error: Unknown command '{s}'\n\n", .{command});
         printUsage();
@@ -1767,12 +1798,87 @@ test "directory destination cannot be inside the source" {
     try testing.expect(!utils.pathExists(linked_destination, io));
 }
 
+test "the ordinary commands stop at a container operand before touching anything" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_container_operand";
+    const box = root ++ "/box";
+    const plain = root ++ "/plain";
+    const key_path = root ++ "/key";
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, box ++ "/sub");
+    try std.Io.Dir.createDirPath(.cwd(), io, plain);
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = box ++ "/" ++ container.descriptor_name, .data = "marker" });
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = box ++ "/sub/f", .data = "data" });
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = plain ++ "/p", .data = "plain" });
+    try keygen.writeKeyFile(key_path, @splat(31), null, allocator, io);
+    var environ_map = try config_mod.testEnviron(allocator, root);
+    defer environ_map.deinit();
+
+    try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "--key", key_path, box, root ++ "/out" }, allocator, true, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "--key", key_path, box ++ "/sub", root ++ "/out" }, allocator, false, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "--key", key_path, box ++ "/sub/f", root ++ "/out/f" }, allocator, false, io, &environ_map));
+    try testing.expect(!utils.pathExists(root ++ "/out", io));
+
+    // Refusal must leave no output behind.
+    try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "--key", key_path, plain, box }, allocator, true, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "--key", key_path, plain, box ++ "/new" }, allocator, true, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "--key", key_path, plain ++ "/p", box ++ "/new/p" }, allocator, true, io, &environ_map));
+    try testing.expect(!utils.pathExists(box ++ "/new", io));
+    try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "--in-place", "--key", key_path, box }, allocator, true, io, &environ_map));
+    try testing.expect(!utils.pathExists(box ++ "/sub/" ++ container.descriptor_name, io));
+
+    try testing.expectError(error.InvalidArguments, cmdVerify(&.{ "--key", key_path, box }, allocator, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdVerify(&.{ "--key", key_path, box ++ "/sub/f" }, allocator, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdList(&.{box}, allocator, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdList(&.{box ++ "/sub"}, allocator, io, &environ_map));
+}
+
+test "a container met during the walk or in the output tree stops the command" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_container_tree";
+    const source = root ++ "/source";
+    const key_path = root ++ "/key";
+
+    std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, source ++ "/nested");
+    try std.Io.Dir.createDirPath(.cwd(), io, source ++ "/ok");
+    defer std.Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/ok/a", .data = "a" });
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/nested/" ++ container.descriptor_name, .data = "marker" });
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/nested/b", .data = "b" });
+    try keygen.writeKeyFile(key_path, @splat(32), null, allocator, io);
+    var environ_map = try config_mod.testEnviron(allocator, root);
+    defer environ_map.deinit();
+
+    // The walk aborts at the nested container, in streaming and in scan-first mode.
+    try testing.expectError(error.ContainerInTree, cmdProcess(&.{ "--threads", "1", "--key", key_path, source, root ++ "/out" }, allocator, true, io, &environ_map));
+    try testing.expect(!utils.pathExists(root ++ "/out/nested", io));
+    try testing.expectError(error.ContainerInTree, cmdProcess(&.{ "--in-place", "--threads", "1", "--key", key_path, source }, allocator, true, io, &environ_map));
+    try testing.expectError(error.ContainerInTree, cmdVerify(&.{ "--key", key_path, source }, allocator, io, &environ_map));
+    try testing.expectError(error.ContainerInTree, cmdList(&.{source}, allocator, io, &environ_map));
+
+    // Check mapped destinations too, not just command-line operands.
+    try std.Io.Dir.deleteTree(.cwd(), io, source ++ "/nested");
+    std.Io.Dir.deleteTree(.cwd(), io, root ++ "/out") catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, root ++ "/out/ok");
+    try std.Io.Dir.writeFile(.cwd(), io, .{ .sub_path = root ++ "/out/ok/" ++ container.descriptor_name, .data = "marker" });
+    try testing.expectError(error.ContainerInTree, cmdProcess(&.{ "--threads", "1", "--key", key_path, source, root ++ "/out" }, allocator, true, io, &environ_map));
+    try testing.expect(!utils.pathExists(root ++ "/out/ok/a", io));
+}
+
 // Pull in the tests of the imported modules.
 test {
     _ = @import("keygen.zig");
     _ = @import("key_loader.zig");
     _ = @import("config.zig");
     _ = @import("crypto.zig");
+    _ = @import("container.zig");
     _ = @import("processor.zig");
     _ = @import("utils.zig");
     _ = @import("worker.zig");
@@ -1787,7 +1893,9 @@ test {
     if (build_options.fuse) {
         _ = @import("mount/fuse.zig");
         _ = @import("mount/names.zig");
+        _ = @import("mount/table.zig");
         _ = @import("mount/node.zig");
+        _ = @import("mount/raf.zig");
         _ = @import("mount/fs.zig");
         _ = @import("mount/cmd.zig");
     }

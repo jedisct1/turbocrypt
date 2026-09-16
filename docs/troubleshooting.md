@@ -120,6 +120,57 @@ The mount stopped, but the system still thinks the folder is mounted. Close any 
 umount ~/Volumes/documents
 ```
 
+### "is a TurboCrypt container" or "is inside the TurboCrypt container"
+
+You ran `encrypt`, `decrypt`, `verify` or `list` on a container, or on a folder inside one. Those commands only handle ordinary encrypted files. Mount the container and copy the files through the mounted view:
+
+```bash
+mkdir -p ~/Volumes/container
+turbocrypt mount --daemon encrypted-container/ ~/Volumes/container
+cp -R ~/Volumes/container/. restored-documents/
+turbocrypt unmount ~/Volumes/container
+```
+
+A recursive job stops at the first container it meets, so files before that point may already have been processed.
+
+### "is not a valid container descriptor"
+
+The folder holds a file named `.turbocrypt-raf` that isn't a container descriptor. If the folder is an ordinary encrypted folder, that name is reserved: move or delete the file, then mount again. If the folder is a container, its descriptor is damaged; restore that file from a backup of the container.
+
+`--force` doesn't help here. It skips the key check of an ordinary folder, and a container has no such check to skip.
+
+### "wrong key, wrong context, or damaged descriptor" on a container
+
+A container needs the key and the context that were given to `turbocrypt init`. Check both, as for [an ordinary file](#wrong-decryption-key-wrong-context-or-corrupted-file-header). If they're right, the descriptor at the root of the container is damaged; restore it from a backup.
+
+### "was initialized with plain names" or "without the suffix"
+
+You passed `--encrypted-filenames` or `--enc-suffix` to a mount of a container that was created without it. The container remembers its own settings, so drop the option. Your saved filename default is ignored for containers.
+
+### "does not apply to a container" or "not to a container"
+
+`--max-file-size`, `--memory-limit`, `--rescue-dir` and `--force` belong to mounts of ordinary encrypted folders. A container mount keeps no file in memory, has no rescue copies, and checks the key through its descriptor. Leave those options out.
+
+### "A container is mounted at its root"
+
+You asked to mount a folder that lies inside a container. Mount the container itself, at the path the message shows, and find your folder inside the mounted view.
+
+### "is not empty" from init
+
+`init` needs a folder that doesn't exist yet or that is empty. It never converts existing files. If the message names a `.tc-` file, an earlier `init` was interrupted: look at the folder, remove that file yourself, and run `init` again.
+
+### "cannot write" a file in a container
+
+A write to a container file failed, for example because the disk is full or a drive disconnected. Unlike an ordinary mount, a container has no copy in memory to retry from: the chunk being written may be damaged, the open file keeps reporting the error, and a fresh open reads what survived. Free space or reconnect the drive, then check the file and restore it from a backup if part of it is unreadable.
+
+### "is already open under another name"
+
+On a case-insensitive filesystem, such as the default on macOS, `Report.pdf` and `report.pdf` are one file. A container file is open under one spelling at a time, because two open views of one file would write over each other. Close the file in the app that has it open, or use the same spelling.
+
+### "does not authenticate" or "is not a container file" while listing
+
+A file in the container can't be read with the mount's key. Either it's damaged, or it's a file that was copied into the stored folder directly, such as an ordinary encrypted file. The listing shows a size taken from the stored file so that you can still see and remove it, but opening it gives an input/output error. Restore the file from a backup, or remove it.
+
 ### File details look out of date on macOS
 
 macOS may cache details such as sizes and modification times for up to a minute. Open the file to check its current contents.

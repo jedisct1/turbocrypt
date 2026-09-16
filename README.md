@@ -67,7 +67,14 @@ turbocrypt unmount ~/Volumes/documents
 
 This uses FUSE and needs a one-time installation of `fuse3` on Linux or [fuse-t](https://github.com/macos-fuse-t/fuse-t) on macOS. After setup, you can mount your files without running TurboCrypt as root. On macOS, no kernel extension is needed.
 
-See [Work with an encrypted folder](docs/mount.md) for setup, remote folders, and file-size limits.
+For large files that change often, `turbocrypt init` creates a container made for random access. Files in it are read and written in encrypted chunks, so the mount keeps nothing in memory and has no file-size limit:
+
+```bash
+turbocrypt init encrypted-container/
+turbocrypt mount --daemon encrypted-container/ ~/Volumes/documents
+```
+
+See [Work with an encrypted folder](docs/mount.md) for setup, remote folders, file-size limits, and containers.
 
 ## Keep maintainer files in Git
 

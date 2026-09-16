@@ -56,6 +56,18 @@ It's an optional way to separate collections. It isn't a replacement for a passw
 
 If you choose a context, keep a record of it. The [usage guide](usage.md#use-a-context-for-a-separate-collection) shows how to use it in commands.
 
+## Understand the limits of a container
+
+A [container](mount.md#use-a-container-for-random-access) encrypts each file in chunks of 16 KiB, so a mount can read and write a small part of a large file. Each chunk is encrypted and checked on its own, with the file and the chunk's position bound to it. Someone without the key can't read the contents, and a changed or swapped chunk is detected when it's read. The container's key comes from the same key file and context as ordinary files, through a separate derivation, and a wrong key or context is refused when the container is mounted, even if it's empty. The check is the marker file `.turbocrypt-raf` at the root. It holds the filename settings and a random value, authenticated with AEGIS-128X2-MAC under a second derived key. Only the right key and context pass that check. The random value keeps two containers of one key from looking alike.
+
+Some things an ordinary encrypted file gives you are different here:
+
+- Chunks are checked one by one, not the file as a whole. Someone who can write to the stored files can put back an older version of one chunk, or of one whole file, without the mount noticing. A container doesn't protect against being rolled back to an earlier state; keep backups for that.
+- A write updates the stored file in place. A write cut short by a full disk or a lost connection can leave that chunk unreadable, as [the mount guide explains](mount.md#know-what-happens-when-a-write-fails). An ordinary mount replaces the whole file at once and keeps the old copy until then.
+- Like ordinary encrypted folders, a container reveals the number of files, their approximate sizes, and the folder structure. Sizes are rounded up to the chunk, and every change to a chunk shows as a change of the stored file.
+
+Containers inside containers aren't supported. A mount of the outer one decrypts the files of the inner one too when both were created with the same key and context: the key is what protects the files, not the folder they're in. Files and folders inside a container keep their normal permissions.
+
 ## Move encrypted files or share them
 
 Files created with ordinary `encrypt` commands can be moved or renamed without encrypting them again. Encrypting the same contents twice normally produces different encrypted files, so different results don't by themselves mean anything went wrong.

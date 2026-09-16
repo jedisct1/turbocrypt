@@ -35,9 +35,31 @@ pub fn isTemporaryName(name: []const u8) bool {
     return true;
 }
 
-/// A file that appears at its destination only once it is complete.
-///
-/// The data goes to a temporary file that is renamed over the destination.
+pub const TemporaryFile = struct {
+    file: std.Io.File,
+    name: [temporary_name_length]u8,
+};
+
+/// Create without overwriting existing entries, retrying name collisions.
+/// The caller owns the handle and must publish or remove the temporary file.
+pub fn createTemporaryIn(dir: std.Io.Dir, options: std.Io.Dir.CreateFileOptions, io: std.Io) !TemporaryFile {
+    var opts = options;
+    opts.exclusive = true;
+    var attempt: u32 = 0;
+    while (attempt < max_tmp_attempts) : (attempt += 1) {
+        var rand: u64 = undefined;
+        io.random(std.mem.asBytes(&rand));
+        const name = temporaryName(rand);
+        const file = dir.createFile(io, &name, opts) catch |err| switch (err) {
+            error.PathAlreadyExists => continue,
+            else => return err,
+        };
+        return .{ .file = file, .name = name };
+    }
+    return error.TempFileCollision;
+}
+
+/// Publish a complete file by renaming it over the destination.
 /// The temporary file lives next to the destination unless a directory is given, which keeps plain temporary files out of a git working tree.
 pub const AtomicOutput = struct {
     file: std.Io.File,
@@ -76,37 +98,25 @@ pub const AtomicOutput = struct {
         allocator: std.mem.Allocator,
         io: std.Io,
     ) !AtomicOutput {
-        var opts = options;
-        opts.exclusive = true;
-
-        var attempt: u32 = 0;
-        while (attempt < max_tmp_attempts) : (attempt += 1) {
-            var rand: u64 = undefined;
-            io.random(std.mem.asBytes(&rand));
-            const name = temporaryName(rand);
-            const tmp_path = if (prefix_dir) |dir|
-                try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, name })
-            else
-                try allocator.dupe(u8, &name);
-            errdefer allocator.free(tmp_path);
-
-            const file = tmp_dir.createFile(io, tmp_path, opts) catch |err| switch (err) {
-                error.PathAlreadyExists => {
-                    allocator.free(tmp_path);
-                    continue;
-                },
-                else => return err,
-            };
-
-            return .{
-                .file = file,
-                .tmp_dir = tmp_dir,
-                .tmp_path = tmp_path,
-                .dest_path = dest_path,
-                .allocator = allocator,
-            };
+        var staging = tmp_dir;
+        if (prefix_dir) |dir| staging = try tmp_dir.openDir(io, dir, .{});
+        defer if (prefix_dir != null) staging.close(io);
+        const tmp = try createTemporaryIn(staging, options, io);
+        errdefer {
+            tmp.file.close(io);
+            staging.deleteFile(io, &tmp.name) catch {};
         }
-        return error.TempFileCollision;
+        const tmp_path = if (prefix_dir) |dir|
+            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, tmp.name })
+        else
+            try allocator.dupe(u8, &tmp.name);
+        return .{
+            .file = tmp.file,
+            .tmp_dir = tmp_dir,
+            .tmp_path = tmp_path,
+            .dest_path = dest_path,
+            .allocator = allocator,
+        };
     }
 
     pub fn setPermissions(self: *AtomicOutput, io: std.Io, permissions: std.Io.File.Permissions) !void {

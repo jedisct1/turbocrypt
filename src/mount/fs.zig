@@ -2,12 +2,14 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const container = @import("../container.zig");
 const crypto = @import("../crypto.zig");
 const processor = @import("../processor.zig");
 const utils = @import("../utils.zig");
 const fuse = @import("fuse.zig");
 const names = @import("names.zig");
 const node_mod = @import("node.zig");
+const raf_mod = @import("raf.zig");
 
 const Node = node_mod.Node;
 const S = std.c.S;
@@ -20,9 +22,13 @@ pub const Error = error{
     OutOfMemory,
 };
 
+/// Choose one backend for the entire mount.
+pub const Format = enum { v1, raf };
+
 pub const Options = struct {
     read_only: bool = false,
     allow_other: bool = false,
+    format: Format = .v1,
     max_file_size: usize,
     memory_limit: usize,
     /// Recovery location for ciphertext that cannot be written back at unmount.
@@ -43,6 +49,7 @@ pub const Mount = struct {
     /// Held open to anchor all backing paths for the lifetime of the mount.
     root: std.Io.Dir,
     keys: crypto.DerivedKeys,
+    raf_key: [16]u8,
     mapper: names.Mapper,
     options: Options,
     /// The mount process's identity, used to restrict callers and preserve file ownership.
@@ -50,6 +57,8 @@ pub const Mount = struct {
     gid: std.c.gid_t,
     groups: []std.c.gid_t,
     table: node_mod.Table,
+    raf_table: raf_mod.Table,
+    raf_inodes: raf_mod.Inodes,
     marks: node_mod.Marks,
     /// Persistence and internal failures that affect the exit status.
     failures: std.atomic.Value(usize) = .init(0),
@@ -73,12 +82,15 @@ pub const Mount = struct {
             .io = io,
             .root = root,
             .keys = keys,
+            .raf_key = if (options.format == .raf) container.deriveRafKey(keys) else @splat(0),
             .mapper = mapper,
             .options = options,
             .uid = std.c.geteuid(),
             .gid = std.c.getegid(),
             .groups = try ownGroups(allocator),
             .table = node_mod.Table.init(allocator, io, options.max_file_size, options.memory_limit),
+            .raf_table = raf_mod.Table.init(allocator, io, 0, 0),
+            .raf_inodes = .{ .allocator = allocator, .io = io },
             .marks = .{ .allocator = allocator, .io = io },
         };
         lib_ptr = lib;
@@ -86,9 +98,17 @@ pub const Mount = struct {
 
     pub fn deinit(m: *Mount) void {
         m.table.deinit();
+        // Nodes must release their claims before the inode registry is destroyed.
+        m.raf_table.deinit();
+        m.raf_inodes.deinit();
         m.marks.deinit();
         m.allocator.free(m.groups);
         std.crypto.secureZero(u8, std.mem.asBytes(&m.keys));
+        std.crypto.secureZero(u8, &m.raf_key);
+    }
+
+    fn isRaf(m: *const Mount) bool {
+        return m.options.format == .raf;
     }
 
     pub fn failureCount(m: *Mount) usize {
@@ -165,6 +185,9 @@ pub fn errnoFor(err: anyerror) c_int {
         error.DirNotEmpty => .NOTEMPTY,
         error.NameTooLong => .NAMETOOLONG,
         error.InvalidHeaderMac, error.AuthenticationFailed, error.InvalidFileSize, error.InputOutput => .IO,
+        error.InvalidHeader, error.AlgorithmMismatch, error.ShortRead, error.ContextFailed => .IO,
+        error.Overflow, error.InvalidArgument => .INVAL,
+        error.FileExists => .EXIST,
         error.OutOfMemory => .NOMEM,
         error.FileTooBig => .FBIG,
         error.ReadOnlyFileSystem => .ROFS,
@@ -205,9 +228,11 @@ fn failed(m: *Mount, err: anyerror) c_int {
     return code;
 }
 
+/// File damage must not count as an internal mount failure.
 fn isDataError(err: anyerror) bool {
     return switch (err) {
         error.InvalidHeaderMac, error.AuthenticationFailed, error.InvalidFileSize, error.InputOutput => true,
+        error.InvalidHeader, error.AlgorithmMismatch, error.ShortRead, error.ContextFailed => true,
         else => false,
     };
 }
@@ -224,6 +249,13 @@ const FileHandle = struct {
         if (handle.backing) |file| file.close(io);
         handle.backing = null;
     }
+};
+
+const RafHandle = struct {
+    node: *raf_mod.Node,
+    read: bool,
+    write: bool,
+    append: bool,
 };
 
 const DirHandle = struct {
@@ -721,8 +753,9 @@ fn open(m: *Mount, path: []const u8, fi: *fuse.FileInfo) !void {
     defer resolved.deinit(m);
     if (resolved.kind != .file) return error.IsDir;
     try requireAllowed(m, &resolved.st, want);
-    if (want.w) try requireReproducible(m, &resolved.st, &resolved.parent.st, path);
     const truncating = want.w and flags.TRUNC;
+    if (m.isRaf()) return rafOpen(m, &resolved, fi, want, truncating);
+    if (want.w) try requireReproducible(m, &resolved.st, &resolved.parent.st, path);
     // Reject truncated ciphertext here because a zero-length file may never receive a read request.
     if (resolved.st.size < node_mod.overhead and !truncating) {
         std.debug.print("turbocrypt mount: {s} is too short to be an encrypted file\n", .{path});
@@ -732,21 +765,43 @@ fn open(m: *Mount, path: []const u8, fi: *fuse.FileInfo) !void {
     try attachHandle(m, &resolved, fi, want, truncating);
 }
 
-fn create(m: *Mount, path: []const u8, mode: fuse.mode_t, fi: *fuse.FileInfo) !void {
-    try requireWritable(m);
+const NewEntry = struct {
+    parent: Parent,
+    backing_name: []u8,
+    owner: ?Ownership,
+
+    fn deinit(self: *NewEntry, m: *Mount) void {
+        self.parent.deinit(m);
+        m.allocator.free(self.backing_name);
+    }
+};
+
+/// Check caller permissions before creating an entry.
+fn prepareNewEntry(m: *Mount, path: []const u8, kind: names.Kind) !NewEntry {
     const split = splitPath(path) orelse return error.PathAlreadyExists;
     var parent = try walkParent(m, split.dir, true);
-    defer parent.deinit(m);
+    errdefer parent.deinit(m);
     try requireAllowed(m, &parent.st, .{ .w = true, .x = true });
     if (!utils.isPlainComponent(split.name)) return error.UnsafePath;
-    const backing_name = try m.mapper.toBacking(m.allocator, split.name, .file);
-    defer m.allocator.free(backing_name);
+    const backing_name = try m.mapper.toBacking(m.allocator, split.name, kind);
+    errdefer m.allocator.free(backing_name);
     if (names.Mapper.isReserved(backing_name)) return error.PermissionDenied;
     const owner = try requiredOwnership(m, &parent.st);
+    return .{ .parent = parent, .backing_name = backing_name, .owner = owner };
+}
+
+fn create(m: *Mount, path: []const u8, mode: fuse.mode_t, fi: *fuse.FileInfo) !void {
+    try requireWritable(m);
+    var entry = try prepareNewEntry(m, path, .file);
+    defer entry.deinit(m);
+    const parent = &entry.parent;
+    const backing_name = entry.backing_name;
+    const owner = entry.owner;
 
     // Allocate before publishing so allocation failure leaves no file behind.
     const backing_path = try parent.childPath(m, backing_name);
     defer m.allocator.free(backing_path);
+    if (m.isRaf()) return rafCreate(m, &entry, backing_path, mode, fi);
     const handle = try m.allocator.create(FileHandle);
     errdefer m.allocator.destroy(handle);
     const node = try m.table.attach(backing_path);
@@ -824,6 +879,7 @@ fn truncate(m: *Mount, path: []const u8, size: fuse.off_t, fi: ?*fuse.FileInfo) 
     if (size < 0) return error.UnsafePath;
     const new_len: u64 = @intCast(size);
     if (fi) |info| {
+        if (m.isRaf()) return rafTruncateHandle(m, info, new_len);
         const handle = try handleOf(FileHandle, info);
         if (!handle.write) return error.BadHandle;
         const node = handle.node;
@@ -836,6 +892,7 @@ fn truncate(m: *Mount, path: []const u8, size: fuse.off_t, fi: ?*fuse.FileInfo) 
     defer resolved.deinit(m);
     if (resolved.kind != .file) return error.IsDir;
     try requireAllowed(m, &resolved.st, .{ .w = true });
+    if (m.isRaf()) return rafTruncatePath(m, &resolved, new_len);
     try requireReproducible(m, &resolved.st, &resolved.parent.st, path);
     const node = try m.table.attach(resolved.backing_path);
     defer m.table.release(node);
@@ -913,33 +970,33 @@ fn fsyncdir(m: *Mount, fi: ?*fuse.FileInfo) !void {
             if (first_error == null) first_error = err;
         };
     }
+    syncDirectoryHandle(m, handle, &first_error);
+    if (first_error) |err| return err;
+}
+
+fn syncDirectoryHandle(m: *Mount, handle: *const DirHandle, first_error: *?anyerror) void {
     if (m.marks.pin(handle.key)) |pinned_mark| {
         const synced = node_mod.syncFd(pinned_mark.dir.handle, .dir_sync);
         m.marks.unpin(handle.key, pinned_mark.generation, if (synced) true else |_| false);
         synced catch |err| {
             m.countFailure();
-            if (first_error == null) first_error = err;
+            if (first_error.* == null) first_error.* = err;
         };
     } else {
         node_mod.syncFd(handle.dir.handle, .dir_sync) catch |err| {
             m.countFailure();
-            if (first_error == null) first_error = err;
+            if (first_error.* == null) first_error.* = err;
         };
     }
-    if (first_error) |err| return err;
 }
 
 fn mkdir(m: *Mount, path: []const u8, mode: fuse.mode_t) !void {
     try requireWritable(m);
-    const split = splitPath(path) orelse return error.PathAlreadyExists;
-    var parent = try walkParent(m, split.dir, true);
-    defer parent.deinit(m);
-    try requireAllowed(m, &parent.st, .{ .w = true, .x = true });
-    if (!utils.isPlainComponent(split.name)) return error.UnsafePath;
-    const backing_name = try m.mapper.toBacking(m.allocator, split.name, .directory);
-    defer m.allocator.free(backing_name);
-    if (names.Mapper.isReserved(backing_name)) return error.PermissionDenied;
-    const owner = try requiredOwnership(m, &parent.st);
+    var entry = try prepareNewEntry(m, path, .directory);
+    defer entry.deinit(m);
+    const parent = &entry.parent;
+    const backing_name = entry.backing_name;
+    const owner = entry.owner;
 
     var change = try m.marks.begin(parent.dir, parent.key());
     defer change.deinit();
@@ -968,13 +1025,17 @@ fn unlink(m: *Mount, path: []const u8) !void {
     if (!stickyAllows(&resolved.parent.st, &resolved.st)) return error.PermissionDenied;
 
     // Prevent a concurrent write-back from resurrecting the deleted file.
-    const node = lockNodeOf(m, &resolved);
-    defer unlockNode(m, node);
+    // New opens must not reuse the unlinked node.
+    const node = lockNodeIn(m, &m.table, &resolved);
+    defer unlockNodeIn(m, &m.table, node);
+    const raf_node = lockNodeIn(m, &m.raf_table, &resolved);
+    defer unlockNodeIn(m, &m.raf_table, raf_node);
     var change = try m.marks.begin(resolved.parent.dir, resolved.parent.key());
     defer change.deinit();
     try resolved.parent.dir.deleteFile(m.io, resolved.backing_name);
     change.commit();
     if (node) |n| n.unlinked.store(true, .release);
+    if (raf_node) |n| n.unlinked.store(true, .release);
 }
 
 fn rmdir(m: *Mount, path: []const u8) !void {
@@ -1027,18 +1088,26 @@ fn rename(m: *Mount, from: []const u8, to: []const u8, flags: c_uint) !void {
     var target_change = try m.marks.begin(target_parent.dir, target_parent.key());
     defer target_change.deinit();
 
-    var rekey = try m.table.beginRekey(source.backing_path, target_path, source.kind == .directory);
+    switch (m.options.format) {
+        .v1 => try renameRekeyed(&m.table, &source, &target_parent, target_name, target_path, noreplace, m.io),
+        .raf => try renameRekeyed(&m.raf_table, &source, &target_parent, target_name, target_path, noreplace, m.io),
+    }
+    source_change.commit();
+    target_change.commit();
+}
+
+/// Keep backing renames and node paths consistent under concurrent access.
+fn renameRekeyed(table: anytype, source: *const Resolved, target_parent: *const Parent, target_name: []const u8, target_path: []const u8, noreplace: bool, io: std.Io) !void {
+    var rekey = try table.beginRekey(source.backing_path, target_path, source.kind == .directory);
     const renamed = if (noreplace)
-        std.Io.Dir.renamePreserve(source.parent.dir, source.backing_name, target_parent.dir, target_name, m.io)
+        std.Io.Dir.renamePreserve(source.parent.dir, source.backing_name, target_parent.dir, target_name, io)
     else
-        std.Io.Dir.rename(source.parent.dir, source.backing_name, target_parent.dir, target_name, m.io);
+        std.Io.Dir.rename(source.parent.dir, source.backing_name, target_parent.dir, target_name, io);
     renamed catch |err| {
         rekey.abort();
         return err;
     };
     rekey.commit();
-    source_change.commit();
-    target_change.commit();
 }
 
 const Recorded = struct {
@@ -1049,19 +1118,21 @@ const Recorded = struct {
     mtime: ?std.c.timespec = null,
 };
 
-/// Pin and lock an existing node so write-back cannot undo a metadata change.
-/// Null means no node exists; release with unlockNode.
-fn lockNodeOf(m: *Mount, resolved: *const Resolved) ?*Node {
+/// Pin and lock the node of `table` for a resolved file, so write-back cannot undo a metadata change.
+/// Null means no node exists; release with unlockNodeIn.
+///
+/// RAF metadata updates need no staging: data writes preserve the backing inode.
+fn lockNodeIn(m: *Mount, table: anytype, resolved: *const Resolved) ?*@TypeOf(table.*).Node {
     if (resolved.kind != .file) return null;
-    const node = m.table.pin(resolved.backing_path) orelse return null;
+    const node = table.pin(resolved.backing_path) orelse return null;
     node.mutex.lockUncancelable(m.io);
     return node;
 }
 
-fn unlockNode(m: *Mount, node: ?*Node) void {
+fn unlockNodeIn(m: *Mount, table: anytype, node: anytype) void {
     const n = node orelse return;
     n.mutex.unlock(m.io);
-    m.table.release(n);
+    table.release(n);
 }
 
 fn checkMetadataCall(rc: c_int) !void {
@@ -1093,8 +1164,8 @@ fn chmod(m: *Mount, path: []const u8, mode: fuse.mode_t) !void {
     var buffer: [std.fs.max_name_bytes + 1]u8 = undefined;
     const name_z = try withSentinel(resolved.backing_name, &buffer);
     const bits: std.c.mode_t = mode & 0o7777;
-    const node = lockNodeOf(m, &resolved);
-    defer unlockNode(m, node);
+    const node = lockNodeIn(m, &m.table, &resolved);
+    defer unlockNodeIn(m, &m.table, node);
     try checkMetadataCall(std.c.fchmodat(resolved.parent.dir.handle, name_z, bits, at_nofollow));
     if (node) |n| recordOnNode(m, n, .{ .mode = bits });
 }
@@ -1126,8 +1197,8 @@ fn chown(
     }
     var buffer: [std.fs.max_name_bytes + 1]u8 = undefined;
     const name_z = try withSentinel(resolved.backing_name, &buffer);
-    const node = lockNodeOf(m, &resolved);
-    defer unlockNode(m, node);
+    const node = lockNodeIn(m, &m.table, &resolved);
+    defer unlockNodeIn(m, &m.table, node);
     try checkMetadataCall(std.c.fchownat(resolved.parent.dir.handle, name_z, new_uid orelse unchanged_uid, new_gid orelse unchanged_gid, at_nofollow));
     if (node) |n| recordOnNode(m, n, .{ .uid = new_uid, .gid = new_gid });
 }
@@ -1152,8 +1223,8 @@ fn utimens(m: *Mount, path: []const u8, tv: *const [2]std.c.timespec) !void {
     }
     var buffer: [std.fs.max_name_bytes + 1]u8 = undefined;
     const name_z = try withSentinel(resolved.backing_name, &buffer);
-    const node = lockNodeOf(m, &resolved);
-    defer unlockNode(m, node);
+    const node = lockNodeIn(m, &m.table, &resolved);
+    defer unlockNodeIn(m, &m.table, node);
     try checkMetadataCall(std.c.utimensat(resolved.parent.dir.handle, name_z, tv, at_nofollow));
     const n = node orelse return;
     const now = nowSpec(m.io);
@@ -1193,6 +1264,8 @@ fn init(m: *Mount, cfg: *fuse.Config) void {
 
 /// Make pending changes durable at unmount and rescue files that still cannot be written back.
 fn destroy(m: *Mount) void {
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&m.keys));
+    if (m.isRaf()) return rafDestroy(m);
     // Workers have stopped, so avoid allocating pins that could prevent recovery under memory pressure.
     for (m.table.nodes.items) |node| {
         node.mutex.lockUncancelable(m.io);
@@ -1205,10 +1278,14 @@ fn destroy(m: *Mount) void {
             rescue(m, node);
         }
     }
+    syncPendingMarks(m);
+}
+
+/// Sync every directory with a change that no fsync covered yet.
+fn syncPendingMarks(m: *Mount) void {
     const keys = m.marks.pendingKeys(m.allocator) catch {
         m.countFailure();
         std.debug.print("turbocrypt mount: out of memory at unmount, {d} marked directories not synced\n", .{m.marks.count()});
-        std.crypto.secureZero(u8, std.mem.asBytes(&m.keys));
         return;
     };
     defer m.allocator.free(keys);
@@ -1218,7 +1295,274 @@ fn destroy(m: *Mount) void {
             std.debug.print("turbocrypt mount: cannot sync a directory at unmount: {s}\n", .{@errorName(err)});
         };
     }
-    std.crypto.secureZero(u8, std.mem.asBytes(&m.keys));
+}
+
+/// Prefer read/write access even for readers so a later writer can share the context.
+/// RAF needs read access for partial-record updates; read-only mounts or denied writes keep the node read-only.
+fn rafOpenNode(m: *Mount, node: *raf_mod.Node, parent: std.Io.Dir, backing_path: []const u8) !void {
+    if (node.opened) return;
+    var writable = !m.options.read_only;
+    const file = if (writable)
+        openBackingIn(m, parent, backing_path, .read_write) catch |err| switch (err) {
+            error.AccessDenied, error.PermissionDenied, error.ReadOnlyFileSystem => blk: {
+                writable = false;
+                break :blk try openBackingIn(m, parent, backing_path, .read_only);
+            },
+            else => return err,
+        }
+    else
+        try openBackingIn(m, parent, backing_path, .read_only);
+    node.openWith(file, writable, &m.raf_inodes, &m.raf_key, m.allocator, m.io) catch |err| {
+        file.close(m.io);
+        if (err == error.FileBusy) {
+            std.debug.print("turbocrypt mount: {s} is already open under another name; a container file is open under one name at a time\n", .{backing_path});
+        } else if (isDataError(err)) {
+            std.debug.print("turbocrypt mount: cannot open {s}: wrong key or not a container file ({s})\n", .{ backing_path, @errorName(err) });
+        }
+        return err;
+    };
+}
+
+/// Hard links are refused: two paths would update one inode through separate contexts.
+fn requireSingleLink(st: *const fuse.Stat, backing_path: []const u8) !void {
+    if (st.nlink <= 1) return;
+    std.debug.print("turbocrypt mount: {s} has {d} links; a container file must have one\n", .{ backing_path, st.nlink });
+    return error.NotSupported;
+}
+
+/// Return an open, locked node; the caller must unlock and release it.
+fn rafOpenLocked(m: *Mount, resolved: *const Resolved, need_write: bool) !*raf_mod.Node {
+    try requireSingleLink(&resolved.st, resolved.backing_path);
+    const node = try m.raf_table.attach(resolved.backing_path);
+    errdefer m.raf_table.release(node);
+    node.mutex.lockUncancelable(m.io);
+    errdefer node.mutex.unlock(m.io);
+    try rafOpenNode(m, node, resolved.parent.dir, resolved.backing_path);
+    if (need_write and !node.writable) return error.AccessDenied;
+    return node;
+}
+
+fn rafOpen(m: *Mount, resolved: *const Resolved, fi: *fuse.FileInfo, want: Want, truncating: bool) !void {
+    const node = try rafOpenLocked(m, resolved, want.w);
+    errdefer m.raf_table.release(node);
+    {
+        defer node.mutex.unlock(m.io);
+        if (truncating) try node.setLength(0);
+    }
+    const flags = openFlags(fi);
+    const handle = try m.allocator.create(RafHandle);
+    handle.* = .{ .node = node, .read = want.r, .write = want.w, .append = flags.APPEND };
+    fi.fh = @intFromPtr(handle);
+}
+
+/// Publish only a fully initialized RAF file.
+fn rafCreate(m: *Mount, entry: *const NewEntry, backing_path: []const u8, mode: fuse.mode_t, fi: *fuse.FileInfo) !void {
+    const parent = &entry.parent;
+    const handle = try m.allocator.create(RafHandle);
+    errdefer m.allocator.destroy(handle);
+    const node = try m.raf_table.attach(backing_path);
+    errdefer m.raf_table.release(node);
+    node.mutex.lockUncancelable(m.io);
+    defer node.mutex.unlock(m.io);
+    if (node.opened) return error.PathAlreadyExists;
+    var change = try m.marks.begin(parent.dir, parent.key());
+    defer change.deinit();
+
+    const tmp = try processor.createTemporaryIn(parent.dir, .{ .read = true, .permissions = .fromMode(0o600) }, m.io);
+    var published = false;
+    errdefer if (!published) parent.dir.deleteFile(m.io, &tmp.name) catch {};
+    node.createWith(tmp.file, &m.raf_inodes, &m.raf_key, m.allocator, m.io) catch |err| {
+        tmp.file.close(m.io);
+        return err;
+    };
+    // Failed publication must leave the shared node reusable.
+    errdefer if (!published) node.discard(m.io);
+    if (std.c.fchmod(tmp.file.handle, mode) != 0) return error.AccessDenied;
+    if (entry.owner) |o| {
+        if (std.c.fchown(tmp.file.handle, o.uid, o.gid) != 0) return error.PermissionDenied;
+    }
+    try std.Io.Dir.hardLink(parent.dir, &tmp.name, parent.dir, entry.backing_name, m.io, .{});
+    published = true;
+    parent.dir.deleteFile(m.io, &tmp.name) catch {};
+    change.commit();
+
+    const flags = openFlags(fi);
+    handle.* = .{ .node = node, .read = flags.ACCMODE != .WRONLY, .write = true, .append = flags.APPEND };
+    fi.fh = @intFromPtr(handle);
+}
+
+fn lengthForStat(length: u64, fallback: i64) i64 {
+    return std.math.cast(i64, length) orelse fallback;
+}
+
+/// Prefer a live node's length; keep unauthenticated files listable and removable too.
+fn rafGetattr(m: *Mount, path: []const u8, st: *fuse.Stat, fi: ?*fuse.FileInfo) !void {
+    if (fi) |info| {
+        const node = (try handleOf(RafHandle, info)).node;
+        node.mutex.lockUncancelable(m.io);
+        defer node.mutex.unlock(m.io);
+        st.* = try fuse.statFd(node.file.handle);
+        st.size = lengthForStat(node.length(), st.size);
+        return;
+    }
+    var resolved = try resolve(m, path, true);
+    defer resolved.deinit(m);
+    st.* = resolved.st;
+    if (resolved.kind != .file) return;
+
+    if (m.raf_table.pin(resolved.backing_path)) |node| {
+        defer m.raf_table.release(node);
+        node.mutex.lockUncancelable(m.io);
+        defer node.mutex.unlock(m.io);
+        if (node.opened) {
+            st.size = lengthForStat(node.length(), st.size);
+            return;
+        }
+    }
+
+    const file = openBackingIn(m, resolved.parent.dir, resolved.backing_path, .read_only) catch |err| {
+        std.debug.print("turbocrypt mount: {s} cannot be opened ({s}); its size is the size of the stored file\n", .{ resolved.backing_path, @errorName(err) });
+        return;
+    };
+    defer file.close(m.io);
+    const cold = raf_mod.coldSize(file, st.size, &m.raf_key, m.io);
+    st.size = cold.size;
+    switch (cold.source) {
+        .authenticated => {},
+        .probed => std.debug.print("turbocrypt mount: {s} does not authenticate; its size comes from the unauthenticated header\n", .{resolved.backing_path}),
+        .backing => std.debug.print("turbocrypt mount: {s} is not a container file; its size is the size of the stored file\n", .{resolved.backing_path}),
+    }
+}
+
+fn rafRead(m: *Mount, buf: [*]u8, size: usize, offset: fuse.off_t, fi: ?*fuse.FileInfo) !usize {
+    const handle = try handleOf(RafHandle, fi);
+    if (!handle.read) return error.BadHandle;
+    if (offset < 0) return error.UnsafePath;
+    const node = handle.node;
+    node.mutex.lockUncancelable(m.io);
+    defer node.mutex.unlock(m.io);
+    return node.read(buf[0..size], @intCast(offset));
+}
+
+fn rafWrite(m: *Mount, buf: [*]const u8, size: usize, offset: fuse.off_t, fi: ?*fuse.FileInfo) !usize {
+    try requireWritable(m);
+    const handle = try handleOf(RafHandle, fi);
+    if (!handle.write) return error.BadHandle;
+    if (offset < 0) return error.UnsafePath;
+    const node = handle.node;
+    node.mutex.lockUncancelable(m.io);
+    defer node.mutex.unlock(m.io);
+    // Serialize append offsets so concurrent writers cannot overlap.
+    const at: u64 = if (handle.append) node.length() else @intCast(offset);
+    return node.write(buf[0..size], at);
+}
+
+fn rafTruncateHandle(m: *Mount, info: *fuse.FileInfo, new_length: u64) !void {
+    const handle = try handleOf(RafHandle, info);
+    if (!handle.write) return error.BadHandle;
+    const node = handle.node;
+    node.mutex.lockUncancelable(m.io);
+    defer node.mutex.unlock(m.io);
+    try node.setLength(new_length);
+}
+
+fn rafTruncatePath(m: *Mount, resolved: *const Resolved, new_length: u64) !void {
+    const node = try rafOpenLocked(m, resolved, true);
+    defer m.raf_table.release(node);
+    defer node.mutex.unlock(m.io);
+    try node.setLength(new_length);
+}
+
+/// Nothing is buffered, so a flush only reports a failure that a write could not deliver.
+fn rafFlush(m: *Mount, fi: ?*fuse.FileInfo) !void {
+    const handle = try handleOf(RafHandle, fi);
+    const node = handle.node;
+    node.mutex.lockUncancelable(m.io);
+    defer node.mutex.unlock(m.io);
+    if (node.failed) |err| return err;
+}
+
+/// Sync the backing handle, then the directory changes that no sync covered yet.
+/// An unlinked file still gets its data synced; it has no directory entry to sync.
+fn rafFsync(m: *Mount, fi: ?*fuse.FileInfo) !void {
+    const handle = try handleOf(RafHandle, fi);
+    const node = handle.node;
+    node.mutex.lockUncancelable(m.io);
+    defer node.mutex.unlock(m.io);
+    if (node.failed) |err| return err;
+    try syncRafNode(m, node);
+    if (node.unlinked.load(.acquire)) return;
+    // Avoid resolving parents when only file data changed.
+    if (m.marks.count() == 0) return;
+    const key = parentKeyOf(m, node.path) orelse return;
+    node_mod.syncMark(&m.marks, key) catch |err| {
+        m.countFailure();
+        std.debug.print("turbocrypt mount: cannot sync the directory of {s}: {s}\n", .{ node.path, @errorName(err) });
+        return err;
+    };
+}
+
+/// Preserve write failures through close; durability requires fsync.
+fn rafRelease(m: *Mount, fi: ?*fuse.FileInfo) !void {
+    const handle = try handleOf(RafHandle, fi);
+    const node = handle.node;
+    const recorded = blk: {
+        node.mutex.lockUncancelable(m.io);
+        defer node.mutex.unlock(m.io);
+        break :blk node.failed;
+    };
+    m.raf_table.release(node);
+    m.allocator.destroy(handle);
+    if (recorded) |err| return err;
+}
+
+fn rafFsyncdir(m: *Mount, fi: ?*fuse.FileInfo) !void {
+    const handle = try handleOf(DirHandle, fi);
+    var first_error: ?anyerror = null;
+    const pinned = try m.raf_table.pinAll(m.allocator);
+    defer m.allocator.free(pinned);
+    for (pinned) |node| {
+        defer m.raf_table.release(node);
+        node.mutex.lockUncancelable(m.io);
+        defer node.mutex.unlock(m.io);
+        if (!node.opened or !node.writable or node.unlinked.load(.acquire)) continue;
+        const parent_key = parentKeyOf(m, node.path) orelse continue;
+        if (parent_key.dev != handle.key.dev or parent_key.ino != handle.key.ino) continue;
+        if (node.failed) |err| {
+            if (first_error == null) first_error = err;
+            continue;
+        }
+        syncRafNode(m, node) catch |err| {
+            if (first_error == null) first_error = err;
+        };
+    }
+    syncDirectoryHandle(m, handle, &first_error);
+    if (first_error) |err| return err;
+}
+
+/// Caller must hold the node lock.
+fn syncRafNode(m: *Mount, node: *raf_mod.Node) !void {
+    node_mod.syncFd(node.file.handle, .file_sync) catch |err| {
+        m.countFailure();
+        std.debug.print("turbocrypt mount: cannot sync {s}: {s}\n", .{ node.path, @errorName(err) });
+        return err;
+    };
+}
+
+/// At unmount, every handle has been released. A node still open is synced and reported, not trusted.
+fn rafDestroy(m: *Mount) void {
+    for (m.raf_table.nodes.items) |node| {
+        node.mutex.lockUncancelable(m.io);
+        defer node.mutex.unlock(m.io);
+        if (!node.opened) continue;
+        if (node.failed) |err| {
+            m.countFailure();
+            std.debug.print("turbocrypt mount: {s} had a failed write ({s}) and was still open at unmount\n", .{ node.path, @errorName(err) });
+            continue;
+        }
+        if (node.writable) syncRafNode(m, node) catch {};
+    }
+    syncPendingMarks(m);
 }
 
 fn rescue(m: *Mount, node: *Node) void {
@@ -1249,6 +1593,7 @@ fn rescueNode(m: *Mount, node: *Node) !void {
 
 fn cGetattr(path: [*:0]const u8, st: *fuse.Stat, fi: ?*fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (m.isRaf()) return result(m, rafGetattr(m, std.mem.span(path), st, fi));
     return result(m, getattr(m, std.mem.span(path), st, fi));
 }
 
@@ -1311,12 +1656,14 @@ fn cOpen(path: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
 
 fn cRead(_: [*:0]const u8, buf: [*]u8, size: usize, offset: fuse.off_t, fi: *fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (m.isRaf()) return resultSize(m, rafRead(m, buf, size, offset, fi));
     return resultSize(m, read(m, buf, size, offset, fi));
 }
 
 fn cWrite(path: [*:0]const u8, buf: [*]const u8, size: usize, offset: fuse.off_t, fi: *fuse.FileInfo) callconv(.c) c_int {
     noteSidecar(path);
     const m = mount();
+    if (m.isRaf()) return resultSize(m, rafWrite(m, buf, size, offset, fi));
     return resultSize(m, write(m, buf, size, offset, fi));
 }
 
@@ -1328,18 +1675,21 @@ fn cStatfs(_: [*:0]const u8, buf: *fuse.Statvfs) callconv(.c) c_int {
 fn cFlush(path: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
     noteSidecar(path);
     const m = mount();
+    if (m.isRaf()) return result(m, rafFlush(m, fi));
     return result(m, flush(m, fi));
 }
 
 fn cRelease(path: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
     noteSidecar(path);
     const m = mount();
+    if (m.isRaf()) return result(m, rafRelease(m, fi));
     return result(m, release(m, fi));
 }
 
 fn cFsync(path: [*:0]const u8, _: c_int, fi: *fuse.FileInfo) callconv(.c) c_int {
     noteSidecar(path);
     const m = mount();
+    if (m.isRaf()) return result(m, rafFsync(m, fi));
     return result(m, fsync(m, fi));
 }
 
@@ -1377,6 +1727,7 @@ fn cReleasedir(_: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
 fn cFsyncdir(path: [*:0]const u8, _: c_int, fi: *fuse.FileInfo) callconv(.c) c_int {
     noteSidecar(path);
     const m = mount();
+    if (m.isRaf()) return result(m, rafFsyncdir(m, fi));
     return result(m, fsyncdir(m, fi));
 }
 
@@ -1433,6 +1784,15 @@ test "filesystem errors map to client errno values" {
     try testing.expectEqual(fuse.negErrno(.ROFS), errnoFor(error.ReadOnlyFileSystem));
     try testing.expectEqual(fuse.negErrno(.OPNOTSUPP), errnoFor(error.NotSupported));
     try testing.expectEqual(fuse.negErrno(.IO), errnoFor(error.Unexpected));
+
+    for ([_]anyerror{ error.InvalidHeader, error.AlgorithmMismatch, error.ShortRead, error.ContextFailed }) |err| {
+        try testing.expectEqual(fuse.negErrno(.IO), errnoFor(err));
+        try testing.expect(isDataError(err));
+    }
+    try testing.expect(!isDataError(error.Unexpected));
+    try testing.expectEqual(fuse.negErrno(.INVAL), errnoFor(error.Overflow));
+    try testing.expectEqual(fuse.negErrno(.INVAL), errnoFor(error.InvalidArgument));
+    try testing.expectEqual(fuse.negErrno(.EXIST), errnoFor(error.FileExists));
 }
 
 test "permissions honor owner, group membership and root" {
