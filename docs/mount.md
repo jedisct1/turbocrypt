@@ -61,6 +61,8 @@ Work through this mounted folder while it's open. TurboCrypt keeps open files in
 
 Closing a large file can therefore take a little time.
 
+Extended attributes, such as Finder tags or the quarantine flag, are not part of the encrypted files. The mount keeps them in memory, up to 64 MiB, so that copies complete without errors, and they are gone after an unmount. On macOS, no `._` sidecar file appears in the mounted folder or in the encrypted folder.
+
 The stored files use the same format as `turbocrypt encrypt`. After unmounting, you can also use `decrypt`, `verify`, or `list` on `encrypted-documents/`.
 
 For a container, copy files through the mounted view.

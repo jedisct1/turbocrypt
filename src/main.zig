@@ -1937,6 +1937,7 @@ test {
         _ = @import("mount/fuse.zig");
         _ = @import("mount/names.zig");
         _ = @import("mount/table.zig");
+        _ = @import("mount/sidecar.zig");
         _ = @import("mount/node.zig");
         _ = @import("mount/raf.zig");
         _ = @import("mount/fs.zig");

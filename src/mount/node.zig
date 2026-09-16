@@ -65,11 +65,8 @@ pub fn armFaults(list: []const Fault) void {
     faults_next.store(0, .seq_cst);
 }
 
-/// Keep macOS sidecars from consuming faults intended for the file under test.
-pub threadlocal var faults_suppressed: bool = false;
-
 pub fn takeFault(kind: Fault) bool {
-    if (builtin.mode != .debug or faults_suppressed) return false;
+    if (builtin.mode != .debug) return false;
     const index = faults_next.load(.seq_cst);
     if (index >= faults.len or faults[index] != kind) return false;
     return faults_next.cmpxchgStrong(index, index + 1, .seq_cst, .seq_cst) == null;

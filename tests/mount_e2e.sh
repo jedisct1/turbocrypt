@@ -268,6 +268,37 @@ expect_eq "$(mtime "$mnt/copied.txt")" "$(mtime "$plain/hello.txt")"
 expect_unmount 0
 expect_eq "$(mtime "$enc/copied.txt")" "$(mtime "$plain/hello.txt")"
 
+# macOS keeps extended attributes in "._" sidecar files, which the mount holds in memory only.
+check_xattrs() {
+    mount_fs $fresh_attrs || fail "mount"
+    xattr -w user.note hi "$plain/hello.txt"
+    cp "$plain/hello.txt" "$mnt/attr.txt" 2> "$work/cp.err" || fail "cp: $(cat "$work/cp.err")"
+    expect_eq "$(cat "$work/cp.err")" ""
+    cp -R "$plain/sub" "$mnt/subcopy" 2> "$work/cp.err" || fail "cp -R: $(cat "$work/cp.err")"
+    expect_eq "$(cat "$work/cp.err")" ""
+    expect_eq "$(xattr -p user.note "$mnt/attr.txt")" "hi"
+    xattr -w user.more yes "$mnt/attr.txt" || fail "an attribute set through the mount was refused"
+    mv "$mnt/attr.txt" "$mnt/moved.txt"
+    expect_eq "$(xattr -p user.more "$mnt/moved.txt")" "yes"
+    xattr -d user.note "$mnt/moved.txt" || fail "an attribute could not be removed"
+    expect_eq "$(xattr -p user.note "$mnt/moved.txt" 2>/dev/null)" ""
+    expect_content "$mnt/moved.txt" "hello world"
+    expect_eq "$(sha "$mnt/subcopy/random.bin")" "$(sha "$plain/sub/random.bin")"
+    expect_eq "$(ls -A "$mnt" "$mnt/subcopy" | grep -c '^\._')" "0"
+    expect_unmount 0
+    [ -z "$(find "$1" -name '._*')" ] || fail "a sidecar reached the encrypted folder"
+    expect_eq "$(grep -c "internal error" "$mount_log")" "0"
+    mount_fs $fresh_attrs || fail "remount"
+    expect_eq "$(xattr -l "$mnt/moved.txt")" ""
+    expect_content "$mnt/moved.txt" "hello world"
+    expect_unmount 0
+}
+
+if [ "$macos" = 1 ]; then
+    step "scenario 38: extended attributes leave no sidecar behind"
+    check_xattrs "$enc"
+fi
+
 step "scenario 7: a second process reads a file right after the first one closed it"
 mount_fs || fail "mount"
 sh -c "echo first > '$mnt/handoff.txt'"
@@ -833,8 +864,7 @@ fresh_box() {
     "$bin" init --key "$key" "$@" "$box" > "$work/init.log" 2>&1 || fail "init with '$*': $(cat "$work/init.log")"
 }
 
-# The AppleDouble sidecars that macOS writes next to copied files are not part of the test.
-visible() { ls "$1" | grep -v '^\._' | tr '\n' ' '; }
+visible() { ls "$1" | tr '\n' ' '; }
 descriptor_size=65
 
 step "container 1: init, mount, and the hidden descriptor in the three name modes"
@@ -905,8 +935,8 @@ echo "mine" > "$mnt/$descriptor" || fail "a user file with the reserved plain na
 expect_content "$mnt/$descriptor" "mine"
 expect_unmount 0
 expect_eq "$(size_of "$box/$descriptor")" "$descriptor_size"
-# The user file has an encrypted name; macOS adds a sidecar next to it.
-[ "$(ls -A "$box" | wc -l | tr -d ' ')" -ge 2 ] || fail "the user file did not land in the container"
+# The user file has an encrypted name.
+expect_eq "$(ls -A "$box" | wc -l | tr -d ' ')" "2"
 mount_fs || fail "remount"
 expect_content "$mnt/$descriptor" "mine"
 expect_unmount 0
@@ -927,6 +957,12 @@ mount_fs --enc-suffix || fail "an agreeing --enc-suffix was refused"
 echo "s" > "$mnt/s.txt"
 expect_unmount 0
 expect_file "$box/s.txt.enc"
+
+if [ "$macos" = 1 ]; then
+    step "container 18: extended attributes leave no sidecar behind"
+    fresh_box
+    check_xattrs "$box"
+fi
 
 step "container 4: create, append, write at offsets, truncate, sizes, and a remount"
 fresh_box

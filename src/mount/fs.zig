@@ -10,6 +10,7 @@ const fuse = @import("fuse.zig");
 const names = @import("names.zig");
 const node_mod = @import("node.zig");
 const raf_mod = @import("raf.zig");
+const sidecar = @import("sidecar.zig");
 
 const Node = node_mod.Node;
 const S = std.c.S;
@@ -60,6 +61,7 @@ pub const Mount = struct {
     raf_table: raf_mod.Table,
     raf_inodes: raf_mod.Inodes,
     marks: node_mod.Marks,
+    sidecars: sidecar.Store,
     /// Persistence and internal failures that affect the exit status.
     failures: std.atomic.Value(usize) = .init(0),
     /// At least one file could not be written back at unmount.
@@ -92,6 +94,7 @@ pub const Mount = struct {
             .raf_table = raf_mod.Table.init(allocator, io, 0, 0),
             .raf_inodes = .{ .allocator = allocator, .io = io },
             .marks = .{ .allocator = allocator, .io = io },
+            .sidecars = .{ .allocator = allocator, .io = io },
         };
         lib_ptr = lib;
     }
@@ -102,6 +105,7 @@ pub const Mount = struct {
         m.raf_table.deinit();
         m.raf_inodes.deinit();
         m.marks.deinit();
+        m.sidecars.deinit();
         m.allocator.free(m.groups);
         std.crypto.secureZero(u8, std.mem.asBytes(&m.keys));
         std.crypto.secureZero(u8, &m.raf_key);
@@ -200,12 +204,6 @@ pub fn errnoFor(err: anyerror) c_int {
         else => .IO,
     };
     return fuse.negErrno(e);
-}
-
-fn noteSidecar(path: [*:0]const u8) void {
-    if (builtin.mode != .debug) return;
-    const name = std.fs.path.basename(std.mem.span(path));
-    node_mod.faults_suppressed = std.mem.startsWith(u8, name, "._");
 }
 
 fn result(m: *Mount, r: anyerror!void) c_int {
@@ -708,6 +706,7 @@ fn readdir(m: *Mount, buf: ?*anyopaque, filler: fuse.FillDir, fi: ?*fuse.FileInf
         };
         const plain = (try m.mapper.toPlain(m.allocator, entry.name, kind)) orelse continue;
         defer m.allocator.free(plain);
+        if (kind == .file and sidecar.isSidecar(plain)) continue;
         var buffer: [std.fs.max_name_bytes + 1]u8 = undefined;
         const name_z = withSentinel(plain, &buffer) catch continue;
         var st: fuse.Stat = std.mem.zeroes(fuse.Stat);
@@ -1052,6 +1051,7 @@ fn rmdir(m: *Mount, path: []const u8) !void {
     try resolved.parent.dir.deleteDir(m.io, resolved.backing_name);
     m.marks.drop(node_mod.markKey(resolved.st));
     change.commit();
+    m.sidecars.forget(path);
 }
 
 fn rename(m: *Mount, from: []const u8, to: []const u8, flags: c_uint) !void {
@@ -1094,6 +1094,7 @@ fn rename(m: *Mount, from: []const u8, to: []const u8, flags: c_uint) !void {
     }
     source_change.commit();
     target_change.commit();
+    m.sidecars.move(from, to) catch {};
 }
 
 /// Keep backing renames and node paths consistent under concurrent access.
@@ -1602,10 +1603,85 @@ fn rescueNode(m: *Mount, node: *Node) !void {
     std.debug.print("turbocrypt mount: the ciphertext of {s} is saved as {s}/{s}; decrypt it with the same key\n", .{ node.path, m.options.rescue_dir, data_name });
 }
 
+/// A sidecar handle carries a tag bit, which no allocated handle has.
+fn sidecarOf(fi: ?*fuse.FileInfo) ?*sidecar.Entry {
+    const info = fi orelse return null;
+    if (info.fh & 1 == 0) return null;
+    return @ptrFromInt(info.fh & ~@as(u64, 1));
+}
+
+fn heldSidecar(m: *Mount, path: [*:0]const u8) bool {
+    return sidecar.isSidecar(std.mem.span(path)) and m.sidecars.contains(std.mem.span(path));
+}
+
+/// The caller needs the same rights on the parent as for the file the sidecar belongs to.
+fn sidecarParentAllowed(m: *Mount, path: []const u8, want: Want) !void {
+    const split = splitPath(path) orelse return error.PathAlreadyExists;
+    var parent = try walkParent(m, split.dir, true);
+    defer parent.deinit(m);
+    try requireAllowed(m, &parent.st, want);
+}
+
+/// Only files hold attributes this way, so a real directory with such a name stays visible.
+fn sidecarGetattr(m: *Mount, path: []const u8, st: *fuse.Stat) !void {
+    const found = m.sidecars.stat(path) orelse {
+        var resolved = try resolve(m, path, true);
+        defer resolved.deinit(m);
+        if (resolved.kind != .directory) return error.FileNotFound;
+        st.* = resolved.st;
+        return;
+    };
+    try sidecarParentAllowed(m, path, .{ .x = true });
+    st.* = std.mem.zeroes(fuse.Stat);
+    st.mode = S.IFREG | 0o600;
+    st.nlink = 1;
+    st.uid = found.uid;
+    st.gid = found.gid;
+    st.size = @intCast(found.size);
+    setTimes(st, .{ .atime = found.mtime, .mtime = found.mtime, .ctime = found.mtime });
+}
+
+fn sidecarOpen(m: *Mount, path: []const u8, fi: *fuse.FileInfo, creating: bool) !void {
+    const flags = openFlags(fi);
+    const writable = creating or flags.ACCMODE != .RDONLY;
+    if (writable) try requireWritable(m);
+    try sidecarParentAllowed(m, path, .{ .w = writable, .x = true });
+    const ctx = context();
+    const entry = try m.sidecars.open(path, ctx.uid, ctx.gid, writable, writable and flags.TRUNC, nowSpec(m.io));
+    fi.fh = @intFromPtr(entry) | 1;
+}
+
+fn sidecarRead(m: *Mount, entry: *sidecar.Entry, buf: []u8, offset: fuse.off_t) !usize {
+    if (offset < 0) return error.UnsafePath;
+    return m.sidecars.read(entry, buf, @intCast(offset));
+}
+
+fn sidecarWrite(m: *Mount, entry: *sidecar.Entry, bytes: []const u8, offset: fuse.off_t) !usize {
+    try requireWritable(m);
+    if (offset < 0) return error.UnsafePath;
+    try m.sidecars.write(entry, bytes, @intCast(offset), nowSpec(m.io));
+    return bytes.len;
+}
+
+fn sidecarTruncate(m: *Mount, path: []const u8, size: fuse.off_t, fi: ?*fuse.FileInfo) !void {
+    try requireWritable(m);
+    if (size < 0) return error.UnsafePath;
+    if (sidecarOf(fi)) |entry| return m.sidecars.resize(entry, @intCast(size), nowSpec(m.io));
+    try m.sidecars.resizeAt(path, @intCast(size), nowSpec(m.io));
+}
+
+/// A sidecar left behind by an earlier copy is real, and this is the way to get rid of it.
+fn sidecarUnlink(m: *Mount, path: []const u8) !void {
+    m.sidecars.remove(path);
+    unlink(m, path) catch |err| if (err != error.FileNotFound) return err;
+}
+
 fn cGetattr(path: [*:0]const u8, st: *fuse.Stat, fi: ?*fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
-    if (m.isRaf()) return result(m, rafGetattr(m, std.mem.span(path), st, fi));
-    return result(m, getattr(m, std.mem.span(path), st, fi));
+    const p = std.mem.span(path);
+    if (sidecar.isSidecar(p)) return result(m, sidecarGetattr(m, p, st));
+    if (m.isRaf()) return result(m, rafGetattr(m, p, st, fi));
+    return result(m, getattr(m, p, st, fi));
 }
 
 fn cReadlink(_: [*:0]const u8, _: [*]u8, _: usize) callconv(.c) c_int {
@@ -1623,6 +1699,7 @@ fn cMkdir(path: [*:0]const u8, mode: fuse.mode_t) callconv(.c) c_int {
 
 fn cUnlink(path: [*:0]const u8) callconv(.c) c_int {
     const m = mount();
+    if (sidecar.isSidecar(std.mem.span(path))) return result(m, sidecarUnlink(m, std.mem.span(path)));
     return result(m, unlink(m, std.mem.span(path)));
 }
 
@@ -1637,7 +1714,11 @@ fn cSymlink(_: [*:0]const u8, _: [*:0]const u8) callconv(.c) c_int {
 
 fn cRename(from: [*:0]const u8, to: [*:0]const u8, flags: c_uint) callconv(.c) c_int {
     const m = mount();
-    return result(m, rename(m, std.mem.span(from), std.mem.span(to), flags));
+    const source = std.mem.span(from);
+    const target = std.mem.span(to);
+    if (sidecar.isSidecar(source) != sidecar.isSidecar(target)) return fuse.negErrno(.PERM);
+    if (sidecar.isSidecar(source)) return result(m, m.sidecars.move(source, target));
+    return result(m, rename(m, source, target, flags));
 }
 
 fn cLink(_: [*:0]const u8, _: [*:0]const u8) callconv(.c) c_int {
@@ -1646,34 +1727,38 @@ fn cLink(_: [*:0]const u8, _: [*:0]const u8) callconv(.c) c_int {
 
 fn cChmod(path: [*:0]const u8, mode: fuse.mode_t, _: ?*fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (heldSidecar(m, path)) return 0;
     return result(m, chmod(m, std.mem.span(path), mode));
 }
 
 fn cChown(path: [*:0]const u8, uid: std.c.uid_t, gid: std.c.gid_t, _: ?*fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (heldSidecar(m, path)) return result(m, m.sidecars.chown(std.mem.span(path), uid, gid));
     return result(m, chown(m, std.mem.span(path), uid, gid));
 }
 
 fn cTruncate(path: [*:0]const u8, size: fuse.off_t, fi: ?*fuse.FileInfo) callconv(.c) c_int {
-    noteSidecar(path);
     const m = mount();
+    if (sidecarOf(fi) != null or sidecar.isSidecar(std.mem.span(path))) return result(m, sidecarTruncate(m, std.mem.span(path), size, fi));
     return result(m, truncate(m, std.mem.span(path), size, fi));
 }
 
 fn cOpen(path: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (sidecar.isSidecar(std.mem.span(path))) return result(m, sidecarOpen(m, std.mem.span(path), fi, false));
     return result(m, open(m, std.mem.span(path), fi));
 }
 
 fn cRead(_: [*:0]const u8, buf: [*]u8, size: usize, offset: fuse.off_t, fi: *fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (sidecarOf(fi)) |entry| return resultSize(m, sidecarRead(m, entry, buf[0..size], offset));
     if (m.isRaf()) return resultSize(m, rafRead(m, buf, size, offset, fi));
     return resultSize(m, read(m, buf, size, offset, fi));
 }
 
-fn cWrite(path: [*:0]const u8, buf: [*]const u8, size: usize, offset: fuse.off_t, fi: *fuse.FileInfo) callconv(.c) c_int {
-    noteSidecar(path);
+fn cWrite(_: [*:0]const u8, buf: [*]const u8, size: usize, offset: fuse.off_t, fi: *fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (sidecarOf(fi)) |entry| return resultSize(m, sidecarWrite(m, entry, buf[0..size], offset));
     if (m.isRaf()) return resultSize(m, rafWrite(m, buf, size, offset, fi));
     return resultSize(m, write(m, buf, size, offset, fi));
 }
@@ -1683,23 +1768,26 @@ fn cStatfs(_: [*:0]const u8, buf: *fuse.Statvfs) callconv(.c) c_int {
     return result(m, statfs(m, buf));
 }
 
-fn cFlush(path: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
-    noteSidecar(path);
+fn cFlush(_: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (sidecarOf(fi) != null) return 0;
     if (m.isRaf()) return result(m, rafFlush(m, fi));
     return result(m, flush(m, fi));
 }
 
-fn cRelease(path: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
-    noteSidecar(path);
+fn cRelease(_: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (sidecarOf(fi)) |entry| {
+        m.sidecars.close(entry);
+        return 0;
+    }
     if (m.isRaf()) return result(m, rafRelease(m, fi));
     return result(m, release(m, fi));
 }
 
-fn cFsync(path: [*:0]const u8, _: c_int, fi: *fuse.FileInfo) callconv(.c) c_int {
-    noteSidecar(path);
+fn cFsync(_: [*:0]const u8, _: c_int, fi: *fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (sidecarOf(fi) != null) return 0;
     if (m.isRaf()) return result(m, rafFsync(m, fi));
     return result(m, fsync(m, fi));
 }
@@ -1735,8 +1823,7 @@ fn cReleasedir(_: [*:0]const u8, fi: *fuse.FileInfo) callconv(.c) c_int {
     return result(m, releasedir(m, fi));
 }
 
-fn cFsyncdir(path: [*:0]const u8, _: c_int, fi: *fuse.FileInfo) callconv(.c) c_int {
-    noteSidecar(path);
+fn cFsyncdir(_: [*:0]const u8, _: c_int, fi: *fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
     if (m.isRaf()) return result(m, rafFsyncdir(m, fi));
     return result(m, fsyncdir(m, fi));
@@ -1755,17 +1842,19 @@ fn cDestroy(private: ?*anyopaque) callconv(.c) void {
 
 fn cAccess(path: [*:0]const u8, mask: c_int) callconv(.c) c_int {
     const m = mount();
+    if (heldSidecar(m, path)) return 0;
     return result(m, access(m, std.mem.span(path), mask));
 }
 
 fn cCreate(path: [*:0]const u8, mode: fuse.mode_t, fi: *fuse.FileInfo) callconv(.c) c_int {
-    noteSidecar(path);
     const m = mount();
+    if (sidecar.isSidecar(std.mem.span(path))) return result(m, sidecarOpen(m, std.mem.span(path), fi, true));
     return result(m, create(m, std.mem.span(path), mode, fi));
 }
 
 fn cUtimens(path: [*:0]const u8, tv: *const [2]std.c.timespec, _: ?*fuse.FileInfo) callconv(.c) c_int {
     const m = mount();
+    if (heldSidecar(m, path)) return result(m, m.sidecars.touch(std.mem.span(path), tv[1]));
     return result(m, utimens(m, std.mem.span(path), tv));
 }
 

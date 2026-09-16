@@ -209,7 +209,7 @@ pub fn Table(comptime NodeType: type) type {
 }
 
 /// Match whole components so a directory rename cannot affect similarly prefixed siblings.
-fn pathSuffix(path: []const u8, prefix: []const u8, is_directory: bool) ?[]const u8 {
+pub fn pathSuffix(path: []const u8, prefix: []const u8, is_directory: bool) ?[]const u8 {
     if (std.mem.eql(u8, path, prefix)) return "";
     if (!is_directory) return null;
     if (path.len > prefix.len and std.mem.startsWith(u8, path, prefix) and path[prefix.len] == '/') return path[prefix.len..];
