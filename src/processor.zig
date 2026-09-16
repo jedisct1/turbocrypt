@@ -651,7 +651,7 @@ test "symlink at output path does not hijack writes" {
     const sentinel_path = "tmp/symhijack_sentinel.txt";
     const dest_path = "tmp/symhijack_output.bin";
     const sentinel_content = "DO NOT OVERWRITE ME";
-    const plaintext = "secret payload that must land in dest_path only";
+    const plaintext = "secret payload that must land in output_path only";
 
     std.Io.Dir.deleteFile(.cwd(), io, dest_path) catch {};
     std.Io.Dir.deleteFile(.cwd(), io, sentinel_path) catch {};
@@ -755,7 +755,7 @@ test "the temporary file fits next to a 255-byte destination" {
     try testing.expectEqualStrings("data", content);
 }
 
-test "createIn stages and publishes through directory handles" {
+test "initIn stages and publishes through directory handles" {
     const testing = std.testing;
     const allocator = testing.allocator;
     const io = testing.io;

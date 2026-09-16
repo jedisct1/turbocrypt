@@ -332,7 +332,7 @@ test "ensureDir creates nested directories" {
     try testing.expect(try isDir("tmp/nested/deeply/nested/path", io));
 }
 
-test "dirname extracts directory" {
+test "dirnameAlloc extracts directory" {
     const testing = std.testing;
     const allocator = testing.allocator;
 

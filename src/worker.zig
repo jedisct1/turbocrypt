@@ -381,7 +381,7 @@ test "worker pool releases jobs that were never started" {
 
     const source = try allocator.dupe(u8, "source");
     errdefer allocator.free(source);
-    const dest = try allocator.dupe(u8, "dest");
+    const dest = try allocator.dupe(u8, "destination");
     errdefer allocator.free(dest);
     try pool.submitJob(.{
         .source_path = source,
