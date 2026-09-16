@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const keygen = @import("../keygen.zig");
 const processor = @import("../processor.zig");
 const utils = @import("../utils.zig");
+const unicode = @import("../unicode.zig");
 
 pub const Error = error{
     GitNotFound,
@@ -138,7 +139,7 @@ pub const Repo = struct {
         if (builtin.os.tag == .macos and self.precompose == null) {
             self.precompose = (try self.configGetBool("core.precomposeunicode")) orelse false;
         }
-        if (self.precompose orelse false) return precompose(self.allocator, arg);
+        if (self.precompose orelse false) if (try unicode.precompose(self.allocator, arg)) |composed| return composed;
         return self.allocator.dupe(u8, arg);
     }
 
@@ -324,63 +325,6 @@ pub const Repo = struct {
     }
 };
 
-const iconv_failed = std.math.maxInt(usize);
-
-/// The libiconv functions, loaded at run time.
-/// Every macOS install ships the library.
-/// Zig cannot link it when it cross-compiles to macOS, because it only has a stub for libSystem.
-const Libiconv = struct {
-    lib: std.DynLib,
-    iconv_open: *const fn (tocode: [*:0]const u8, fromcode: [*:0]const u8) callconv(.c) ?*anyopaque,
-    iconv: *const fn (cd: ?*anyopaque, inbuf: ?*?[*]u8, inbytesleft: ?*usize, outbuf: ?*?[*]u8, outbytesleft: ?*usize) callconv(.c) usize,
-    iconv_close: *const fn (cd: ?*anyopaque) callconv(.c) c_int,
-
-    fn load() error{Unavailable}!Libiconv {
-        var lib = std.DynLib.openZ("/usr/lib/libiconv.2.dylib") catch return error.Unavailable;
-        errdefer lib.close();
-        return .{
-            .lib = lib,
-            .iconv_open = lib.lookup(@FieldType(Libiconv, "iconv_open"), "iconv_open") orelse return error.Unavailable,
-            .iconv = lib.lookup(@FieldType(Libiconv, "iconv"), "iconv") orelse return error.Unavailable,
-            .iconv_close = lib.lookup(@FieldType(Libiconv, "iconv_close"), "iconv_close") orelse return error.Unavailable,
-        };
-    }
-
-    fn unload(self: *Libiconv) void {
-        self.lib.close();
-    }
-};
-
-/// Compose a decomposed UTF-8 name the way git does on macOS, through the UTF-8-MAC converter of libiconv.
-/// Anything the converter refuses is returned unchanged, which is also what git does.
-pub fn precompose(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    if (builtin.os.tag != .macos) return allocator.dupe(u8, input);
-    var ascii = true;
-    for (input) |c| {
-        if (c >= 0x80) ascii = false;
-    }
-    if (ascii) return allocator.dupe(u8, input);
-
-    var libiconv = Libiconv.load() catch return allocator.dupe(u8, input);
-    defer libiconv.unload();
-    const cd = libiconv.iconv_open("UTF-8", "UTF-8-MAC");
-    if (cd == null or @intFromPtr(cd) == iconv_failed) return allocator.dupe(u8, input);
-    defer _ = libiconv.iconv_close(cd);
-
-    const out = try allocator.alloc(u8, input.len * 2 + 16);
-    errdefer allocator.free(out);
-    var in_ptr: ?[*]u8 = @constCast(input.ptr);
-    var in_left: usize = input.len;
-    var out_ptr: ?[*]u8 = out.ptr;
-    var out_left: usize = out.len;
-    const rc = libiconv.iconv(cd, &in_ptr, &in_left, &out_ptr, &out_left);
-    if (rc == iconv_failed or in_left != 0) {
-        allocator.free(out);
-        return allocator.dupe(u8, input);
-    }
-    return allocator.realloc(out, out.len - out_left);
-}
-
 /// Run git with literal pathspecs in the given directory, or in the current one.
 pub fn runGit(
     allocator: std.mem.Allocator,
@@ -433,20 +377,6 @@ pub fn splitNul(allocator: std.mem.Allocator, data: []const u8) ![][]u8 {
         try list.append(allocator, try allocator.dupe(u8, item));
     }
     return list.toOwnedSlice(allocator);
-}
-
-test "precompose composes decomposed names on macOS" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
-
-    const composed = try precompose(allocator, "re\u{301}sume\u{301}.md");
-    defer allocator.free(composed);
-    try testing.expectEqualStrings("r\u{e9}sum\u{e9}.md", composed);
-
-    const plain = try precompose(allocator, "docs/internal.md");
-    defer allocator.free(plain);
-    try testing.expectEqualStrings("docs/internal.md", plain);
 }
 
 test "splitNul drops the trailing terminator" {

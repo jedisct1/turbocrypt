@@ -1,6 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const hctr2 = @import("hctr2");
 const base84 = @import("base84");
+const unicode = @import("unicode.zig");
 
 /// HCTR2 needs at least one AES block.
 /// The padding also keeps every encrypted name longer than a reserved Windows device name, such as CON.
@@ -38,16 +40,19 @@ pub fn encryptFilename(
         return allocator.dupe(u8, plaintext_name);
     }
 
-    const padded_len = @max(plaintext_name.len, min_padded_length);
+    // macOS spells an accented name in two ways. The composed spelling gives one encrypted name per file.
+    const composed = try unicode.precompose(allocator, plaintext_name);
+    defer if (composed) |c| allocator.free(c);
+    const name = composed orelse plaintext_name;
+
+    const padded_len = @max(name.len, min_padded_length);
 
     if (padded_len <= max_stack_filename_length) {
         var padded_buf: [max_stack_filename_length]u8 = undefined;
         const padded = padded_buf[0..padded_len];
 
-        @memcpy(padded[0..plaintext_name.len], plaintext_name);
-        if (padded_len > plaintext_name.len) {
-            @memset(padded[plaintext_name.len..], 0);
-        }
+        @memcpy(padded[0..name.len], name);
+        @memset(padded[name.len..], 0);
 
         var cipher = hctr2.Hctr2_128.init(filename_key);
         var ciphertext_buf: [max_stack_filename_length]u8 = undefined;
@@ -67,10 +72,8 @@ pub fn encryptFilename(
         var padded = try allocator.alloc(u8, padded_len);
         defer allocator.free(padded);
 
-        @memcpy(padded[0..plaintext_name.len], plaintext_name);
-        if (padded_len > plaintext_name.len) {
-            @memset(padded[plaintext_name.len..], 0);
-        }
+        @memcpy(padded[0..name.len], name);
+        @memset(padded[name.len..], 0);
 
         var cipher = hctr2.Hctr2_128.init(filename_key);
         const ciphertext = try allocator.alloc(u8, padded_len);
@@ -477,4 +480,21 @@ test "filesystem path decrypt preserves names without allowing new separators" {
     const planted = try encryptFilename(allocator, "../outside", key);
     defer allocator.free(planted);
     try testing.expectError(StrictError.UnsafeDecryptedFilename, decryptPathForFilesystem(allocator, planted, key, '/'));
+}
+
+test "both spellings of an accented name encrypt to one composed name on macOS" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const key: [16]u8 = @splat(0x42);
+
+    const from_decomposed = try encryptFilename(allocator, "re\u{301}sume\u{301}.md", key);
+    defer allocator.free(from_decomposed);
+    const from_composed = try encryptFilename(allocator, "r\u{e9}sum\u{e9}.md", key);
+    defer allocator.free(from_composed);
+    try testing.expectEqualStrings(from_composed, from_decomposed);
+
+    const decrypted = try decryptFilenameStrict(allocator, from_decomposed, key);
+    defer allocator.free(decrypted);
+    try testing.expectEqualStrings("r\u{e9}sum\u{e9}.md", decrypted);
 }

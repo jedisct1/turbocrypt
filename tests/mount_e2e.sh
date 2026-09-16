@@ -822,24 +822,35 @@ else
 fi
 
 step "scenario 21: names that differ by Unicode normalization"
-fresh_tree
 nfc=$(printf 'caf\303\251')
 nfd=$(printf 'cafe\314\201')
-echo "composed" > "$plain/$nfc.txt"
-echo "decomposed" > "$plain/$nfd.txt"
 for names in "" "--encrypted-filenames"; do
-    rm -rf "$enc"
+    rm -rf "$enc" "$plain" "$mnt"
+    mkdir -p "$plain" "$mnt"
+    # macOS treats the two spellings as one file, so the plain tree gets the decomposed one only there.
+    echo "decomposed" > "$plain/$nfd.txt"
+    if [ "$macos" = 0 ]; then echo "composed" > "$plain/$nfc.txt"; fi
     quiet "$bin" encrypt --key "$key" $names "$plain" "$enc" || fail "encrypt"
-    if [ "$macos" = 1 ]; then nfc_variants='"" "-o nfc"'; else nfc_variants='""'; fi
-    eval "set -- $nfc_variants"
-    for nfcopt in "$@"; do
-        mount_fs $names $nfcopt || fail "mount"
-        listed=$(ls "$mnt" | grep -c "caf")
-        seen_nfc=$(cat "$mnt/$nfc.txt" 2>/dev/null || echo "ENOENT")
-        seen_nfd=$(cat "$mnt/$nfd.txt" 2>/dev/null || echo "ENOENT")
-        echo "   names='$names' opt='$nfcopt': listed $listed, NFC reads '$seen_nfc', NFD reads '$seen_nfd'"
-        expect_unmount 0
-    done
+    backing_count=$(ls "$enc" | wc -l | tr -d ' ')
+    mount_fs $names || fail "mount"
+    if [ "$macos" = 1 ]; then
+        # Finder looks a new file up under both spellings. Either one must find the same file.
+        expect_eq "$(ls "$mnt" | grep -c caf)" 1
+        expect_content "$mnt/$nfc.txt" "decomposed"
+        expect_content "$mnt/$nfd.txt" "decomposed"
+        echo "through the mount" > "$mnt/$nfd-new.txt"
+        expect_content "$mnt/$nfc-new.txt" "through the mount"
+        expect_content "$mnt/$nfd-new.txt" "through the mount"
+        mv "$mnt/$nfc-new.txt" "$mnt/$nfd.txt" || fail "rename over the other spelling"
+        expect_content "$mnt/$nfc.txt" "through the mount"
+        expect_eq "$(ls "$mnt" | grep -c caf)" 1
+        expect_eq "$(ls "$enc" | wc -l | tr -d ' ')" "$backing_count"
+    else
+        expect_eq "$(ls "$mnt" | grep -c caf)" 2
+        expect_content "$mnt/$nfc.txt" "composed"
+        expect_content "$mnt/$nfd.txt" "decomposed"
+    fi
+    expect_unmount 0
 done
 
 ##### Containers made by "turbocrypt init" #####

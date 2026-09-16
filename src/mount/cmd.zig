@@ -356,6 +356,13 @@ fn optionMatches(option: []const u8, pattern: []const u8) bool {
     return std.mem.eql(u8, option, pattern);
 }
 
+fn givesOption(options: []const []const u8, pattern: []const u8) bool {
+    for (options) |option| {
+        if (optionMatches(option, pattern)) return true;
+    }
+    return false;
+}
+
 /// Null means the option is allowed.
 pub fn refusedOption(option: []const u8) ?[]const u8 {
     for (refused_options) |refusal| {
@@ -516,10 +523,10 @@ pub fn runMount(args: []const []const u8, allocator: std.mem.Allocator, io: std.
     if (builtin.os.tag == .macos) {
         try fuse_args.appendSlice(allocator, &.{ "-o", volname });
         // Larger requests reduce overhead when transferring whole files.
-        const has_rwsize = for (opts.fuse_options.items) |option| {
-            if (std.mem.startsWith(u8, option, "rwsize=")) break true;
-        } else false;
-        if (!has_rwsize) try fuse_args.appendSlice(allocator, &.{ "-o", "rwsize=1048576" });
+        if (!givesOption(opts.fuse_options.items, "rwsize=")) try fuse_args.appendSlice(allocator, &.{ "-o", "rwsize=1048576" });
+        // With nfc, the NFS client composes every accented name before the mount sees it.
+        // The composition inside encryptFilename does not reach the sidecar store or a mount with plain names, which use the name the kernel sends.
+        if (!givesOption(opts.fuse_options.items, "nfc")) try fuse_args.appendSlice(allocator, &.{ "-o", "nfc" });
     } else {
         try fuse_args.appendSlice(allocator, &.{ "-o", "default_permissions", "-o", "fsname=turbocrypt" });
         if (opts.allow_other) try fuse_args.appendSlice(allocator, &.{ "-o", "allow_other" });

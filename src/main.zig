@@ -1927,6 +1927,7 @@ test {
     _ = @import("worker.zig");
     _ = @import("progress.zig");
     _ = @import("filename_crypto.zig");
+    _ = @import("unicode.zig");
     _ = @import("git/manifest.zig");
     _ = @import("git/repo.zig");
     _ = @import("git/sync.zig");
