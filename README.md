@@ -31,7 +31,7 @@ If you'd rather build it yourself, install the master version of [Zig](https://z
 ```bash
 git clone https://github.com/jedisct1/turbocrypt.git
 cd turbocrypt
-zig build -Doptimize=ReleaseFast
+zig build --release=fast
 ```
 
 You'll find the program in `zig-out/bin/`. The [getting started guide](docs/getting-started.md) walks you through installation and your first encrypted files.
