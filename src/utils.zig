@@ -564,10 +564,11 @@ test "a missing name without a directory part is canonicalized under the current
     defer allocator.free(canonical);
     try testing.expectEqualStrings(expected, canonical);
 
+    const expected_nested = try std.fs.path.join(allocator, &.{ cwd, "no-such-dir-here", "deeper", "file" });
+    defer allocator.free(expected_nested);
     const nested = try canonicalizePotentialPath("no-such-dir-here/deeper/file", allocator, io);
     defer allocator.free(nested);
-    try testing.expect(std.mem.startsWith(u8, nested, cwd));
-    try testing.expect(std.mem.endsWith(u8, nested, "no-such-dir-here/deeper/file"));
+    try testing.expectEqualStrings(expected_nested, nested);
 }
 
 test "openParentIn walks through handles and refuses unsafe components" {
