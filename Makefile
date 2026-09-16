@@ -2,12 +2,15 @@ ZIG ?= zig
 PYTHON ?= python3
 TAP_DIR ?= ../homebrew-turbocrypt
 
-.PHONY: all build test check dist formula publish release
+.PHONY: all build clean test check dist formula publish release
 
 all: build
 
 build:
 	$(ZIG) build -Doptimize=ReleaseFast
+
+clean:
+	rm -rf .zig-cache zig-out dist
 
 test:
 	$(ZIG) build test
