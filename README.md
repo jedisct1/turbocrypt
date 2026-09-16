@@ -8,12 +8,12 @@ A universal file encryption tool.
 
 TurboCrypt encrypts anything from a single document to a whole directory of backups. You can also use it to open encrypted folders as local volumes or keep private files in a public Git repository.
 
-- Easy to use: create a key, then encrypt and decrypt files with a single command.
-- Small and portable: written in Zig; Runs on Linux, macOS, Windows, and BSD.
-- Fast: processes files in parallel, whether you're working with a few documents or a large directory tree.
-- Modern cryptography: built on Argon2, AEGIS, HCTR2, and TurboSHAKE, with no insecure options.
-- Encrypted folders you can work in: mount a folder and use your usual apps to read and edit its files. The encrypted folder can be on your own disk or on remote storage you've connected to your computer.
-- Private files in Git alongside public code: commit encrypted notes, scripts, or unfinished work to Git, and optionally share the key with other maintainers who need access.
+- **Easy to use:** create a key, then encrypt and decrypt files with a single command.
+- **Small and portable:** written in Zig; Runs on Linux, macOS, Windows, and BSD.
+- **Fast:** processes files in parallel, whether you're working with a few documents or a large directory tree.
+- **Modern cryptography:** built on Argon2, AEGIS, HCTR2, and TurboSHAKE, with no insecure options.
+- **Encrypted folders you can work in:** mount a folder and use your usual apps to read and edit its files. The encrypted folder can be on your own disk or on remote storage you've connected to your computer.
+- **Private files in Git alongside public code:** commit encrypted notes, scripts, or unfinished work to Git, and optionally share the key with other maintainers who need access.
 
 ## Install TurboCrypt
 
