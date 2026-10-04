@@ -1151,12 +1151,12 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
         break :blk (try file.stat(io)).size;
     };
 
-    if (file_size != keygen.plain_key_file_size and file_size != keygen.protected_key_file_size) {
-        std.debug.print("Error: Invalid key file size (expected {d} or {d} bytes, got {d})\n", .{ keygen.plain_key_file_size, keygen.protected_key_file_size, file_size });
+    if (file_size != keygen.plain_key_file_size and !keygen.isProtectedFileSize(file_size)) {
+        std.debug.print("Error: Invalid key file size (expected {d}, {d}, or {d} bytes, got {d})\n", .{ keygen.plain_key_file_size, keygen.legacy_protected_key_file_size, keygen.protected_key_file_size, file_size });
         return error.InvalidKeyFile;
     }
 
-    const is_protected = file_size == keygen.protected_key_file_size;
+    const is_protected = keygen.isProtectedFileSize(file_size);
 
     var actual_key: [16]u8 = undefined;
 
@@ -1324,12 +1324,12 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         };
         defer allocator.free(key_data);
 
-        if (key_data.len != keygen.plain_key_file_size and key_data.len != keygen.protected_key_file_size) {
-            std.debug.print("Error: Invalid key file size (expected {d} or {d} bytes, got {d})\n", .{ keygen.plain_key_file_size, keygen.protected_key_file_size, key_data.len });
+        if (key_data.len != keygen.plain_key_file_size and !keygen.isProtectedFileSize(key_data.len)) {
+            std.debug.print("Error: Invalid key file size (expected {d}, {d}, or {d} bytes, got {d})\n", .{ keygen.plain_key_file_size, keygen.legacy_protected_key_file_size, keygen.protected_key_file_size, key_data.len });
             return error.InvalidKeyFile;
         }
 
-        const is_protected = key_data.len == keygen.protected_key_file_size;
+        const is_protected = keygen.isProtectedFileSize(key_data.len);
 
         // Make sure the password opens the key before storing it.
         if (is_protected) {
@@ -1344,9 +1344,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
                 allocator.free(password_buf);
             }
 
-            var protected_data: [20]u8 = undefined;
-            @memcpy(&protected_data, key_data[1..keygen.protected_key_file_size]);
-            _ = password.unprotectKey(protected_data, password_buf) catch |err| {
+            _ = password.unprotectKey(key_data[1..], password_buf) catch |err| {
                 std.debug.print("Error: Cannot decrypt key (wrong password?): {}\n", .{err});
                 return err;
             };
@@ -1519,7 +1517,7 @@ fn cmdConfig(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         std.debug.print("Config file: {s}\n\n", .{config_path});
 
         if (cfg.key) |key| {
-            const kind = if (key.len == keygen.protected_key_file_size) "password-protected" else "plain";
+            const kind = if (keygen.isProtectedFileSize(key.len)) "password-protected" else "plain";
             std.debug.print("Key: stored in config ({s})\n", .{kind});
         } else {
             std.debug.print("Key: (not set)\n", .{});

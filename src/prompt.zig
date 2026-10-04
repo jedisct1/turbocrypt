@@ -184,5 +184,5 @@ pub fn isKeyPasswordProtected(path: []const u8, io: std.Io) !bool {
     defer file.close(io);
 
     const stat = try file.stat(io);
-    return stat.size == keygen.protected_key_file_size;
+    return keygen.isProtectedFileSize(stat.size);
 }

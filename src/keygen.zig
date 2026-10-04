@@ -16,8 +16,14 @@ pub const key_length = 16;
 
 pub const plain_key_file_size = key_length;
 
-/// Format flag, masked key, checksum.
-pub const protected_key_file_size = 1 + key_length + 4;
+/// Format flag and password-protected key payload.
+pub const protected_key_file_size = 1 + password.protected_key_size;
+pub const legacy_protected_key_file_size = 1 + password.legacy_protected_key_size;
+
+/// Whether a byte length is one of the supported protected key formats.
+pub fn isProtectedFileSize(size: u64) bool {
+    return size == protected_key_file_size or size == legacy_protected_key_file_size;
+}
 
 pub const KeyFormat = enum(u8) {
     plain = 0x00,
@@ -41,7 +47,7 @@ pub fn writeKeyFile(
     var protected_file: [protected_key_file_size]u8 = undefined;
     const data: []const u8 = if (maybe_password) |pass| blk: {
         protected_file[0] = @backingInt(KeyFormat.password_protected);
-        protected_file[1..].* = try password.protectKey(key, pass);
+        protected_file[1..].* = try password.protectKey(key, pass, io);
         break :blk &protected_file;
     } else &key;
 
@@ -79,10 +85,11 @@ pub fn readKeyFile(path: []const u8, maybe_password: ?[]const u8, io: std.Io) ![
             return error.InvalidKeyFile;
         }
         return key;
-    } else if (file_size == protected_key_file_size) {
-        var full_data: [21]u8 = undefined;
-        const bytes_read = try readAll(file, io, &full_data);
-        if (bytes_read != 21) {
+    } else if (isProtectedFileSize(file_size)) {
+        const serialized_size: usize = @intCast(file_size);
+        var full_data: [protected_key_file_size]u8 = undefined;
+        const bytes_read = try readAll(file, io, full_data[0..serialized_size]);
+        if (bytes_read != serialized_size) {
             return error.InvalidKeyFile;
         }
 
@@ -90,12 +97,9 @@ pub fn readKeyFile(path: []const u8, maybe_password: ?[]const u8, io: std.Io) ![
             return error.InvalidKeyFile;
         }
 
-        var protected_data: [20]u8 = undefined;
-        @memcpy(&protected_data, full_data[1..21]);
-
         const pass = maybe_password orelse return error.PasswordRequired;
 
-        return try password.unprotectKey(protected_data, pass);
+        return try password.unprotectKey(full_data[1..serialized_size], pass);
     } else {
         return error.InvalidKeyFile;
     }
@@ -245,6 +249,27 @@ test "change password on protected key" {
 
     const read_key_new = try readKeyFile(test_path, new_password, io);
     try testing.expectEqualSlices(u8, &original_key, &read_key_new);
+}
+
+test "changing a legacy key password upgrades its format" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const test_path = "tmp/test_key_upgrade_legacy.bin";
+    const legacy = password.legacy_test_vector;
+    const serialized: [legacy_protected_key_file_size]u8 = [_]u8{@backingInt(KeyFormat.password_protected)} ++ legacy.protected;
+
+    try utils.ensureDir("tmp", io);
+    try processor.writeFileAtomic(test_path, &serialized, utils.private_file_permissions, null, allocator, io);
+    defer std.Io.Dir.deleteFile(.cwd(), io, test_path) catch {};
+
+    const key = try readKeyFile(test_path, legacy.passphrase, io);
+    try writeKeyFile(test_path, key, "new password", allocator, io);
+
+    const file = try std.Io.Dir.openFile(.cwd(), io, test_path, .{});
+    defer file.close(io);
+    try testing.expectEqual(protected_key_file_size, (try file.stat(io)).size);
+    try testing.expectEqualSlices(u8, &legacy.key, &try readKeyFile(test_path, "new password", io));
 }
 
 test "add password protection to plain key" {

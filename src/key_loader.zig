@@ -42,7 +42,7 @@ pub fn resolveKey(allocator: std.mem.Allocator, cli_path: ?[]const u8, maybe_pas
                 var key: [16]u8 = undefined;
                 @memcpy(&key, key_data);
                 return key;
-            } else if (key_data.len == keygen.protected_key_file_size) {
+            } else if (keygen.isProtectedFileSize(key_data.len)) {
                 const format_flag = key_data[0];
                 if (format_flag != @backingInt(keygen.KeyFormat.password_protected)) {
                     return error.InvalidKeyFile;
@@ -50,10 +50,7 @@ pub fn resolveKey(allocator: std.mem.Allocator, cli_path: ?[]const u8, maybe_pas
 
                 const pass = maybe_password orelse return error.PasswordRequired;
 
-                var protected_data: [20]u8 = undefined;
-                @memcpy(&protected_data, key_data[1..keygen.protected_key_file_size]);
-
-                return try password.unprotectKey(protected_data, pass);
+                return try password.unprotectKey(key_data[1..], pass);
             } else {
                 return error.InvalidKeyFile;
             }
@@ -72,7 +69,7 @@ pub fn isProtected(allocator: std.mem.Allocator, cli_path: ?[]const u8, io: std.
     var cfg = config.load(allocator, io, environ_map) catch return false;
     defer cfg.deinit(allocator);
     const key_data = cfg.key orelse return false;
-    return key_data.len == keygen.protected_key_file_size;
+    return keygen.isProtectedFileSize(key_data.len);
 }
 
 /// Resolve the key with the usual precedence and ask for its password when it has one.
@@ -218,11 +215,19 @@ test "resolveKey - password-protected config key" {
     const key: [16]u8 = @splat(9);
     var stored: [keygen.protected_key_file_size]u8 = undefined;
     stored[0] = @backingInt(keygen.KeyFormat.password_protected);
-    stored[1..].* = try password.protectKey(key, "hunter2");
+    stored[1..].* = try password.protectKey(key, "hunter2", io);
     try saveConfigKey(allocator, io, &environ_map, &stored);
 
     try testing.expect(try isProtected(allocator, null, io, &environ_map));
     try testing.expectError(error.PasswordRequired, resolveKey(allocator, null, null, io, &environ_map));
     try testing.expectError(error.InvalidPassword, resolveKey(allocator, null, "wrong", io, &environ_map));
     try testing.expectEqualSlices(u8, &key, &try resolveKey(allocator, null, "hunter2", io, &environ_map));
+
+    const legacy = password.legacy_test_vector;
+    const legacy_stored: [keygen.legacy_protected_key_file_size]u8 = [_]u8{@backingInt(keygen.KeyFormat.password_protected)} ++ legacy.protected;
+    try saveConfigKey(allocator, io, &environ_map, &legacy_stored);
+
+    try testing.expect(try isProtected(allocator, null, io, &environ_map));
+    try testing.expectError(error.PasswordRequired, resolveKey(allocator, null, null, io, &environ_map));
+    try testing.expectEqualSlices(u8, &legacy.key, &try resolveKey(allocator, null, legacy.passphrase, io, &environ_map));
 }

@@ -50,7 +50,7 @@ pub const Config = struct {
 
         if (json.key) |hex_key| {
             const size = hex_key.len / 2;
-            const valid_size = size == keygen.plain_key_file_size or size == keygen.protected_key_file_size;
+            const valid_size = size == keygen.plain_key_file_size or keygen.isProtectedFileSize(size);
             if (hex_key.len % 2 != 0 or !valid_size) {
                 return error.InvalidKeyFormat;
             }
