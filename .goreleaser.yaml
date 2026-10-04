@@ -78,6 +78,7 @@ archives:
     ids:
       - turbocrypt-x86_64
       - turbocrypt-aarch64
+      - turbocrypt-universal
     formats:
       - tar.gz
     name_template: >-

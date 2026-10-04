@@ -76,6 +76,13 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(release.subprocess, "check_output", return_value=" M Formula/turbocrypt.rb\n"):
             self.assertEqual(release.output("git", "status"), " M Formula/turbocrypt.rb")
 
+    def test_baseline_archive_includes_advertised_universal_macos_build(self):
+        config = (release.ROOT / ".goreleaser.yaml").read_text()
+        baseline = config.split("  - id: baseline\n", 1)[1].split("  - id: avx2-vaes\n", 1)[0]
+
+        self.assertIn("      - turbocrypt-universal\n", baseline)
+        self.assertIn("turbocrypt_{{ .Version }}_darwin_all.tar.gz", config)
+
 
 if __name__ == "__main__":
     unittest.main()
