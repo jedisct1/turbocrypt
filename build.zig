@@ -20,7 +20,7 @@ const libfuse_sources = [_][]const u8{
     "mount.c",
 };
 
-// Match libfuse's Meson build without shared-library symbol versioning.
+// Keep the bundled libfuse build aligned with Meson while avoiding shared-library symbol versioning.
 const libfuse_flags = [_][]const u8{
     "-D_REENTRANT",
     "-DHAVE_LIBFUSE_PRIVATE_CONFIG_H",
@@ -52,9 +52,21 @@ pub fn build(b: *std.Build) void {
     });
 
     const fuse_default = target.result.os.tag == .macos or target.result.os.tag == .linux;
-    const fuse = b.option(bool, "fuse", "Build the mount command (default: on for macOS and Linux)") orelse fuse_default;
-    const fuse_t_static = b.option([]const u8, "fuse-t-static", "Path to fuse-t's static libfuse3.a (macOS only)");
-    const macos_sdk = b.option([]const u8, "macos-sdk", "macOS SDK path for static fuse-t framework dependencies");
+    const fuse = b.option(
+        bool,
+        "fuse",
+        "Build the mount command (default: on for macOS and Linux)",
+    ) orelse fuse_default;
+    const fuse_t_static = b.option(
+        []const u8,
+        "fuse-t-static",
+        "Path to fuse-t's static libfuse3.a (macOS only)",
+    );
+    const macos_sdk = b.option(
+        []const u8,
+        "macos-sdk",
+        "macOS SDK path for static fuse-t framework dependencies",
+    );
     if (fuse_t_static != null and (!fuse or target.result.os.tag != .macos)) {
         @panic("-Dfuse-t-static requires a macOS target with -Dfuse=true");
     }
@@ -79,20 +91,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // The console API needs libc on Windows.
+    // Link libc on Windows because the console API depends on it.
     if (target.result.os.tag == .windows) {
         exe.root_module.link_libc = true;
     }
 
-    // macOS git turns decomposed file names into their composed form.
-    // The git integration does the same through libiconv, which it loads with dlopen.
+    // Link libc on macOS so the Git integration can normalize file names through libiconv.
     if (target.result.os.tag == .macos) {
         exe.root_module.link_libc = true;
     }
 
     if (fuse_t_static) |path| {
-        const sdk = macos_sdk orelse @panic("-Dfuse-t-static requires -Dmacos-sdk (xcrun --show-sdk-path)");
-        exe.root_module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+        const sdk = macos_sdk orelse
+            @panic("-Dfuse-t-static requires -Dmacos-sdk (xcrun --show-sdk-path)");
+        exe.root_module.addSystemFrameworkPath(.{
+            .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }),
+        });
         exe.root_module.addObjectFile(.{ .cwd_relative = path });
         exe.root_module.linkFramework("CoreFoundation", .{});
         exe.root_module.linkFramework("DiskArbitration", .{});
@@ -100,8 +114,8 @@ pub fn build(b: *std.Build) void {
 
     if (fuse and target.result.os.tag == .linux) {
         exe.root_module.link_libc = true;
-        // Bundle LGPL-2.1 libfuse so Linux releases need no shared library.
-        // The checked-in configuration headers replace Meson's generated headers.
+        // Bundle libfuse so Linux releases work without a system shared library.
+        // Use checked-in configuration headers to keep this build independent of Meson.
         if (b.lazyDependency("libfuse", .{})) |libfuse| {
             exe.root_module.addIncludePath(libfuse.path("include"));
             exe.root_module.addIncludePath(libfuse.path("lib"));
@@ -129,14 +143,14 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
 
-    // The git scenario drives the installed binary through real hooks, which unit tests cannot do.
+    // Exercise installed Git hooks because unit tests cannot cover their integration.
     const git_e2e = b.addSystemCommand(&.{ "sh", "tests/git_e2e.sh" });
     git_e2e.addArtifactArg(exe);
     git_e2e.has_side_effects = true;
     const git_e2e_step = b.step("test-git", "Run the git integration scenario with real hooks");
     git_e2e_step.dependOn(&git_e2e.step);
 
-    // Skip when the host lacks the FUSE runtime needed for a real mount.
+    // Let the mount scenario skip hosts that do not provide a FUSE runtime.
     const mount_e2e = b.addSystemCommand(&.{ "sh", "tests/mount_e2e.sh" });
     mount_e2e.addArtifactArg(exe);
     mount_e2e.has_side_effects = true;

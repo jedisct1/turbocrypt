@@ -1,5 +1,10 @@
+//! Provides best-effort access hints and flushes for files and mappings.
+//!
+//! These operations only affect performance, so failures do not change correctness.
+
 const std = @import("std");
 const builtin = @import("builtin");
+const Io = std.Io;
 
 pub const FileAdvice = enum {
     sequential,
@@ -9,7 +14,7 @@ pub const FileAdvice = enum {
     no_reuse,
 };
 
-pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) void {
+pub fn adviseFile(file: Io.File, offset: i64, len: i64, advice: FileAdvice) void {
     switch (builtin.os.tag) {
         .linux => {
             const linux_advice: usize = switch (advice) {
@@ -22,8 +27,8 @@ pub fn adviseFile(file: std.Io.File, offset: i64, len: i64, advice: FileAdvice) 
             _ = std.os.linux.fadvise(file.handle, offset, len, linux_advice);
         },
         .macos, .ios, .tvos, .watchos => {
-            // macOS has no fadvise. Read-ahead covers the sequential hints.
-            // F_NOCACHE is the closest thing to DONTNEED, but it also hurts later reads.
+            // Use read-ahead because macOS has no fadvise equivalent.
+            // Avoid F_NOCACHE because it can penalize reads that follow.
             switch (advice) {
                 .sequential, .will_need => {
                     _ = std.c.fcntl(file.handle, std.c.F.RDAHEAD, @as(c_int, 1));
@@ -42,7 +47,11 @@ pub const MemoryAdvice = enum {
     dont_need,
 };
 
-pub fn adviseMemory(ptr: [*]align(std.heap.page_size_min) u8, len: usize, advice: MemoryAdvice) void {
+pub fn adviseMemory(
+    ptr: [*]align(std.heap.page_size_min) u8,
+    len: usize,
+    advice: MemoryAdvice,
+) void {
     if (builtin.os.tag == .windows) return;
 
     const posix_advice: u32 = switch (advice) {
@@ -65,11 +74,11 @@ pub fn flushSync(mapped: []align(std.heap.page_size_min) u8) void {
     std.posix.msync(mapped, std.posix.MSF.SYNC) catch {};
 }
 
-/// Push the file data to the disk. The metadata can stay behind.
-pub fn syncFileData(file: std.Io.File) void {
+/// Request that file data reach stable storage without forcing metadata updates.
+pub fn syncFileData(file: Io.File) void {
     switch (builtin.os.tag) {
         .macos, .ios, .tvos, .watchos => {
-            // On macOS, only F_FULLFSYNC makes the drive flush its cache.
+            // Use F_FULLFSYNC so macOS also asks the drive to flush its cache.
             _ = std.c.fcntl(file.handle, std.c.F.FULLFSYNC, @as(c_int, 0));
         },
         else => {

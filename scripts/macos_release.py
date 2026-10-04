@@ -62,7 +62,7 @@ def verify_binary(binary, ver):
 
 
 def inspect_archive(archive, ver):
-    # Read only these regular files; don't extract archive paths or symlinks.
+    # Extract only known regular files so archive paths and links stay untrusted.
     with tempfile.TemporaryDirectory(prefix="turbocrypt-verify-") as tmp:
         with tarfile.open(archive) as bundle:
             for name in ("turbocrypt", "BUILD-INFO.json"):
@@ -108,7 +108,7 @@ def render_formula(ver, digest):
     depends_on macos: :ventura
   end
 
-  # Preserve the upstream Developer ID signature.
+   # Keep the Developer ID signature intact for Homebrew users.
   skip_clean "bin/turbocrypt"
 
   def install
@@ -176,8 +176,8 @@ def build_fuse(dist):
 
 def bundle_sources(stage, fuse_source):
     destination = stage / "source"
-    # Ship the actual build inputs, including local edits, so the LGPL library
-    # can be modified and the executable rebuilt without the signing key.
+    # Include the actual build inputs so recipients can rebuild the LGPL component
+    # without access to the signing key.
     paths = output("git", "ls-files", "-z", "--", "src", "build.zig", "build.zig.zon", "LICENSE")
     for name in paths.split("\0"):
         if not name:
@@ -286,7 +286,7 @@ def publish(tap, ver):
         if tuple(map(int, ver.split('.'))) < tuple(map(int, old_version[1].split('.'))):
             raise ValueError("Refusing to downgrade the published formula")
 
-    # Listing releases distinguishes an absent tag from network/authentication failures.
+    # List releases first so a missing tag is not confused with an API failure.
     releases = json.loads(output("gh", "api", "--paginate", "--slurp",
                                 f"repos/{TAP_REPO}/releases?per_page=100"))
     release = next((r for page in releases for r in page if r["tag_name"] == ver), None)
@@ -303,7 +303,7 @@ def publish(tap, ver):
                 "--target", "main", "--title", f"TurboCrypt {ver}", "--notes-file", notes_path)
     details = json.loads(output("gh", "release", "view", ver, "--repo", TAP_REPO,
                                 "--json", "assets,isDraft"))
-    # A retry can finish an interrupted upload, but can never replace released bytes.
+    # Allow interrupted uploads to resume without ever replacing released artifacts.
     asset_names = {asset["name"] for asset in details["assets"]}
     checksum = archive.with_suffix(archive.suffix + ".sha256")
     checksum.write_text(f"{sha256(archive)}  {archive.name}\n")

@@ -1,4 +1,11 @@
+//! Encrypts files with AEGIS-128X2 and derives keys with TurboSHAKE128.
+
 const std = @import("std");
+const assert = std.debug.assert;
+const mem = std.mem;
+const testing = std.testing;
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const Aegis128X2 = std.crypto.aead.aegis.Aegis128X2;
 const Aegis128X2Mac_128 = std.crypto.auth.aegis.Aegis128X2Mac_128;
 const TurboShake128 = std.crypto.hash.sha3.TurboShake128(null);
@@ -12,7 +19,7 @@ pub const cipher_id_length = mac_length;
 pub const header_size = nonce_length + mac_length;
 pub const overhead_size = header_size + tag_length;
 
-/// Names version 1 of the file format.
+/// Bind header authentication to version 1 of the file format.
 const domain_separator = "TC01";
 
 pub const DerivedKeys = struct {
@@ -24,14 +31,10 @@ pub const DerivedKeys = struct {
     key_id_key: [16]u8,
 };
 
-/// Six keys from one master key, with TurboSHAKE128.
-/// Input: master_key || "turbocrypt", then "-" || context when a context is given.
-/// Output: 96 bytes, split into six keys in field order.
+/// Derive independent keys from one master key.
 ///
-/// The last three keys came later than the first three.
-/// TurboSHAKE is an XOF, so squeezing more bytes leaves the first 48 unchanged and every older file still decrypts.
-///
-/// A context gives independent keys from the same master key, for example one per directory.
+/// The original three keys remain at the start of the output so existing files keep working.
+/// A nonempty context isolates keys for uses such as separate directories.
 /// Encryption and decryption must use the same context.
 pub fn deriveKeys(master_key: [key_length]u8, context: ?[]const u8) DerivedKeys {
     var shake = TurboShake128.init(.{});
@@ -49,7 +52,7 @@ pub fn deriveKeys(master_key: [key_length]u8, context: ?[]const u8) DerivedKeys 
     var output: [96]u8 = undefined;
     shake.squeeze(&output);
 
-    return DerivedKeys{
+    return .{
         .header_mac_key = output[0..16].*,
         .encryption_key = output[16..32].*,
         .filename_key = output[32..48].*,
@@ -59,36 +62,35 @@ pub fn deriveKeys(master_key: [key_length]u8, context: ?[]const u8) DerivedKeys 
     };
 }
 
-/// Public name of a key. It appears in commits, so it is a MAC under a key of its own and reveals nothing.
+/// Return a public identifier for a key.
+/// It can appear in commits without exposing the key it identifies.
 pub fn keyId(key_id_key: [key_length]u8) [mac_length]u8 {
     return keyedMac("key id", key_id_key);
 }
 
-/// Keyed fingerprint of a plaintext.
+/// Return a keyed fingerprint of plaintext for local change tracking.
 ///
-/// The git integration stores it locally to tell whether a plain file changed since the last sync.
-/// A keyed value keeps a leaked state file from confirming guesses about file contents.
+/// Keying prevents a leaked state file from confirming guesses about file contents.
 pub fn fingerprint(plaintext: []const u8, fingerprint_key: [key_length]u8) [fingerprint_length]u8 {
     return keyedMac(plaintext, fingerprint_key);
 }
 
-/// Identity of a complete ciphertext, a MAC under its own derived key.
+/// Identify an entire ciphertext with a MAC under a dedicated derived key.
 ///
-/// The nonce and the tag alone do not identify the bytes: a flipped body byte keeps both and only fails at decryption.
-/// A MAC over everything does.
-/// Only a key holder could craft a second preimage, and a key holder can already write any valid ciphertext, so a MAC is enough.
+/// This catches body changes that leave the nonce and authentication tag intact.
+/// A key holder can already create valid ciphertext, so a MAC provides the needed guarantee.
 pub fn ciphertextId(encrypted: []const u8, cipher_id_key: [key_length]u8) [cipher_id_length]u8 {
     return keyedMac(encrypted, cipher_id_key);
 }
 
-/// MAC of any data under one of the derived keys.
+/// Authenticate arbitrary data with one derived key.
 pub fn keyedMac(data: []const u8, key: [key_length]u8) [mac_length]u8 {
     var mac: [mac_length]u8 = undefined;
     Aegis128X2Mac_128.create(&mac, data, &key);
     return mac;
 }
 
-/// MAC = Aegis128X2Mac_128(header_mac_key, "TC01" || nonce).
+/// Authenticate the nonce with a format marker so headers cannot cross file-format versions.
 fn computeHeaderMac(nonce: [nonce_length]u8, header_mac_key: [key_length]u8) [mac_length]u8 {
     var msg: [domain_separator.len + nonce_length]u8 = undefined;
     @memcpy(msg[0..domain_separator.len], domain_separator);
@@ -116,7 +118,7 @@ fn parseEncrypted(encrypted: []const u8) !ParsedEncrypted {
     const ciphertext = encrypted[header_size..][0..ciphertext_len];
     const tag = encrypted[header_size + ciphertext_len ..][0..tag_length];
 
-    return ParsedEncrypted{
+    return .{
         .nonce = nonce,
         .stored_mac = stored_mac,
         .ciphertext = ciphertext,
@@ -124,26 +126,25 @@ fn parseEncrypted(encrypted: []const u8) !ParsedEncrypted {
     };
 }
 
-/// Output layout: nonce (16) || header_mac (16) || ciphertext || tag (16).
+/// Return a self-contained ciphertext with its nonce, header authentication, and tag.
 pub fn encrypt(
+    gpa: Allocator,
+    io: Io,
     plaintext: []const u8,
     derived_keys: DerivedKeys,
-    allocator: std.mem.Allocator,
-    io: std.Io,
 ) ![]u8 {
-    return encryptBound(plaintext, "", derived_keys, allocator, io);
+    return encryptBound(gpa, io, plaintext, "", derived_keys);
 }
 
-/// Encrypt a file that belongs to a fixed relative path.
+/// Encrypt a file for one fixed relative path.
 ///
-/// The path is authenticated as associated data, so the ciphertext only decrypts at that path.
-/// Moving or swapping entries is detected.
+/// Authenticate the path so moving or swapping entries is detected during decryption.
 pub fn encryptBound(
+    gpa: Allocator,
+    io: Io,
     plaintext: []const u8,
     path: []const u8,
     derived_keys: DerivedKeys,
-    allocator: std.mem.Allocator,
-    io: std.Io,
 ) ![]u8 {
     var nonce: [nonce_length]u8 = undefined;
     io.random(&nonce);
@@ -154,8 +155,8 @@ pub fn encryptBound(
     const output_size = std.math.add(usize, overhead, plaintext.len) catch {
         return error.OutputTooLarge;
     };
-    const output = try allocator.alloc(u8, output_size);
-    errdefer allocator.free(output);
+    const output = try gpa.alloc(u8, output_size);
+    errdefer gpa.free(output);
 
     const ciphertext = output[header_size..][0..plaintext.len];
 
@@ -176,14 +177,15 @@ pub fn encryptBound(
     return output;
 }
 
-/// Like encrypt, but into a caller buffer of exactly plaintext.len + overhead_size bytes.
+/// Encrypt into caller-provided storage.
+/// The output must include room for the plaintext and encryption overhead.
 pub fn encryptZeroCopy(
+    io: Io,
     output: []u8,
     plaintext: []const u8,
     derived_keys: DerivedKeys,
-    io: std.Io,
 ) void {
-    std.debug.assert(output.len == plaintext.len + overhead_size);
+    assert(output.len == plaintext.len + overhead_size);
 
     var nonce: [nonce_length]u8 = undefined;
     io.random(&nonce);
@@ -197,7 +199,7 @@ pub fn encryptZeroCopy(
         ciphertext,
         &tag,
         plaintext,
-        &[_]u8{},
+        &.{},
         nonce,
         derived_keys.encryption_key,
     );
@@ -207,21 +209,21 @@ pub fn encryptZeroCopy(
     @memcpy(output[header_size + plaintext.len ..][0..tag_length], &tag);
 }
 
-/// A wrong key fails with InvalidHeaderMac, a damaged body with AuthenticationFailed.
+/// Distinguish a wrong key from ciphertext damage before returning plaintext.
 pub fn decrypt(
+    gpa: Allocator,
     encrypted: []const u8,
     derived_keys: DerivedKeys,
-    allocator: std.mem.Allocator,
 ) ![]u8 {
-    return decryptBound(encrypted, "", derived_keys, allocator);
+    return decryptBound(gpa, encrypted, "", derived_keys);
 }
 
-/// Decrypt a file that was encrypted with encryptBound for the same path.
+/// Decrypt a file only when it was encrypted for the same path.
 pub fn decryptBound(
+    gpa: Allocator,
     encrypted: []const u8,
     path: []const u8,
     derived_keys: DerivedKeys,
-    allocator: std.mem.Allocator,
 ) ![]u8 {
     const parsed = try parseEncrypted(encrypted);
 
@@ -230,8 +232,8 @@ pub fn decryptBound(
         return error.InvalidHeaderMac;
     }
 
-    const plaintext = try allocator.alloc(u8, parsed.ciphertext.len);
-    errdefer allocator.free(plaintext);
+    const plaintext = try gpa.alloc(u8, parsed.ciphertext.len);
+    errdefer gpa.free(plaintext);
 
     try Aegis128X2.decrypt(
         plaintext,
@@ -245,7 +247,8 @@ pub fn decryptBound(
     return plaintext;
 }
 
-/// Like decrypt, but into a caller buffer of exactly encrypted.len - overhead_size bytes.
+/// Decrypt into caller-provided storage.
+/// The output must match the ciphertext length without encryption overhead.
 pub fn decryptZeroCopy(
     output: []u8,
     encrypted: []const u8,
@@ -253,7 +256,7 @@ pub fn decryptZeroCopy(
 ) !void {
     const parsed = try parseEncrypted(encrypted);
 
-    std.debug.assert(output.len == parsed.ciphertext.len);
+    assert(output.len == parsed.ciphertext.len);
 
     const expected_mac = computeHeaderMac(parsed.nonce.*, derived_keys.header_mac_key);
     if (!std.crypto.timing_safe.eql([mac_length]u8, expected_mac, parsed.stored_mac.*)) {
@@ -264,13 +267,14 @@ pub fn decryptZeroCopy(
         output,
         parsed.ciphertext,
         parsed.tag.*,
-        &[_]u8{},
+        &.{},
         parsed.nonce.*,
         derived_keys.encryption_key,
     );
 }
 
-/// Checks the key through the header MAC only. A damaged body still passes.
+/// Check whether the key matches without reading the ciphertext body.
+/// This intentionally does not detect body damage.
 pub fn verifyHeaderOnly(
     encrypted: []const u8,
     derived_keys: DerivedKeys,
@@ -283,11 +287,11 @@ pub fn verifyHeaderOnly(
     }
 }
 
-/// Checks the header MAC and the tag without keeping the plaintext.
+/// Verify the key, header, and ciphertext without retaining plaintext.
 pub fn verify(
+    gpa: Allocator,
     encrypted: []const u8,
     derived_keys: DerivedKeys,
-    allocator: std.mem.Allocator,
 ) !void {
     const parsed = try parseEncrypted(encrypted);
 
@@ -296,43 +300,41 @@ pub fn verify(
         return error.InvalidHeaderMac;
     }
 
-    // The AEGIS API cannot check the tag without decryption, so the plaintext goes to a scratch buffer.
-    const plaintext = try allocator.alloc(u8, parsed.ciphertext.len);
-    defer allocator.free(plaintext);
+    // Verification must decrypt, so discard the plaintext after checking its tag.
+    const plaintext = try gpa.alloc(u8, parsed.ciphertext.len);
+    defer gpa.free(plaintext);
 
     try Aegis128X2.decrypt(
         plaintext,
         parsed.ciphertext,
         parsed.tag.*,
-        &[_]u8{},
+        &.{},
         parsed.nonce.*,
         derived_keys.encryption_key,
     );
 }
 
-test "encrypt/decrypt round-trip" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "encrypt and decrypt round trip" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Hello, World! This is a test message.";
 
-    const encrypted = try encrypt(plaintext, derived, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try encrypt(gpa, io, plaintext, derived);
+    defer gpa.free(encrypted);
 
     try testing.expectEqual(plaintext.len + overhead_size, encrypted.len);
 
-    const decrypted = try decrypt(encrypted, derived, allocator);
-    defer allocator.free(decrypted);
+    const decrypted = try decrypt(gpa, encrypted, derived);
+    defer gpa.free(decrypted);
 
     try testing.expectEqualStrings(plaintext, decrypted);
 }
 
-test "decrypt with wrong key fails" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "decrypt and verify fail with a wrong key" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
     const key1: [key_length]u8 = @splat(1);
@@ -341,142 +343,98 @@ test "decrypt with wrong key fails" {
     const derived2 = deriveKeys(key2, null);
     const plaintext = "Secret message";
 
-    const encrypted = try encrypt(plaintext, derived1, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try encrypt(gpa, io, plaintext, derived1);
+    defer gpa.free(encrypted);
 
-    const result = decrypt(encrypted, derived2, allocator);
-    try testing.expectError(error.InvalidHeaderMac, result);
+    try testing.expectError(error.InvalidHeaderMac, decrypt(gpa, encrypted, derived2));
+    try testing.expectError(error.InvalidHeaderMac, verify(gpa, encrypted, derived2));
 }
 
-test "decrypt corrupted ciphertext fails" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "decrypt and verify fail on a corrupted ciphertext" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Test message";
 
-    const encrypted = try encrypt(plaintext, derived, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try encrypt(gpa, io, plaintext, derived);
+    defer gpa.free(encrypted);
 
     encrypted[header_size] ^= 0xFF;
 
-    const result = decrypt(encrypted, derived, allocator);
-    try testing.expectError(error.AuthenticationFailed, result);
+    try testing.expectError(error.AuthenticationFailed, decrypt(gpa, encrypted, derived));
+    try testing.expectError(error.AuthenticationFailed, verify(gpa, encrypted, derived));
 }
 
-test "decrypt invalid file size" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "decrypt rejects input shorter than the overhead" {
+    const gpa = testing.allocator;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const too_small: [32]u8 = @splat(0);
 
-    const result = decrypt(&too_small, derived, allocator);
-    try testing.expectError(error.InvalidFileSize, result);
+    try testing.expectError(error.InvalidFileSize, decrypt(gpa, &too_small, derived));
 }
 
-test "empty plaintext encryption" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "empty plaintext round trip" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "";
 
-    const encrypted = try encrypt(plaintext, derived, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try encrypt(gpa, io, plaintext, derived);
+    defer gpa.free(encrypted);
 
     try testing.expectEqual(overhead_size, encrypted.len);
 
-    const decrypted = try decrypt(encrypted, derived, allocator);
-    defer allocator.free(decrypted);
+    const decrypted = try decrypt(gpa, encrypted, derived);
+    defer gpa.free(decrypted);
 
     try testing.expectEqual(0, decrypted.len);
 }
 
-test "large data encryption" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "one megabyte round trip" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
     const key: [key_length]u8 = @splat(42);
     const derived = deriveKeys(key, null);
 
     const data_size = 1024 * 1024;
-    const plaintext = try allocator.alloc(u8, data_size);
-    defer allocator.free(plaintext);
+    const plaintext = try gpa.alloc(u8, data_size);
+    defer gpa.free(plaintext);
 
     for (plaintext, 0..) |*byte, i| {
         byte.* = @intCast(i % 256);
     }
 
-    const encrypted = try encrypt(plaintext, derived, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try encrypt(gpa, io, plaintext, derived);
+    defer gpa.free(encrypted);
 
-    const decrypted = try decrypt(encrypted, derived, allocator);
-    defer allocator.free(decrypted);
+    const decrypted = try decrypt(gpa, encrypted, derived);
+    defer gpa.free(decrypted);
 
     try testing.expectEqualSlices(u8, plaintext, decrypted);
 }
 
-test "verify valid encrypted data" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "verify accepts valid ciphertext" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
     const key: [key_length]u8 = @splat(1);
     const derived = deriveKeys(key, null);
     const plaintext = "Test message for verification";
 
-    const encrypted = try encrypt(plaintext, derived, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try encrypt(gpa, io, plaintext, derived);
+    defer gpa.free(encrypted);
 
-    try verify(encrypted, derived, allocator);
-}
-
-test "verify with wrong key fails" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-    const io = testing.io;
-
-    const key1: [key_length]u8 = @splat(1);
-    const key2: [key_length]u8 = @splat(2);
-    const derived1 = deriveKeys(key1, null);
-    const derived2 = deriveKeys(key2, null);
-    const plaintext = "Secret message";
-
-    const encrypted = try encrypt(plaintext, derived1, allocator, io);
-    defer allocator.free(encrypted);
-
-    const result = verify(encrypted, derived2, allocator);
-    try testing.expectError(error.InvalidHeaderMac, result);
-}
-
-test "verify corrupted ciphertext fails" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-    const io = testing.io;
-
-    const key: [key_length]u8 = @splat(1);
-    const derived = deriveKeys(key, null);
-    const plaintext = "Test message";
-
-    const encrypted = try encrypt(plaintext, derived, allocator, io);
-    defer allocator.free(encrypted);
-
-    encrypted[header_size] ^= 0xFF;
-
-    const result = verify(encrypted, derived, allocator);
-    try testing.expectError(error.AuthenticationFailed, result);
+    try verify(gpa, encrypted, derived);
 }
 
 test "derived keys keep their first 48 bytes" {
-    const testing = std.testing;
-
     const key: [key_length]u8 = @splat(7);
     const derived = deriveKeys(key, "ctx");
 
@@ -494,19 +452,15 @@ test "derived keys keep their first 48 bytes" {
 }
 
 test "key id is stable and key dependent" {
-    const testing = std.testing;
-
     const a = deriveKeys(@splat(1), null);
     const b = deriveKeys(@splat(2), null);
 
     try testing.expectEqualSlices(u8, &keyId(a.key_id_key), &keyId(a.key_id_key));
-    try testing.expect(!std.mem.eql(u8, &keyId(a.key_id_key), &keyId(b.key_id_key)));
-    try testing.expect(!std.mem.eql(u8, &a.key_id_key, &a.cipher_id_key));
+    try testing.expect(!mem.eql(u8, &keyId(a.key_id_key), &keyId(b.key_id_key)));
+    try testing.expect(!mem.eql(u8, &a.key_id_key, &a.cipher_id_key));
 }
 
 test "fingerprint is stable and key dependent" {
-    const testing = std.testing;
-
     const a = deriveKeys(@splat(1), null);
     const b = deriveKeys(@splat(2), null);
 
@@ -516,42 +470,43 @@ test "fingerprint is stable and key dependent" {
     const fp4 = fingerprint("private notes", b.fingerprint_key);
 
     try testing.expectEqualSlices(u8, &fp1, &fp2);
-    try testing.expect(!std.mem.eql(u8, &fp1, &fp3));
-    try testing.expect(!std.mem.eql(u8, &fp1, &fp4));
+    try testing.expect(!mem.eql(u8, &fp1, &fp3));
+    try testing.expect(!mem.eql(u8, &fp1, &fp4));
 }
 
 test "ciphertext id sees a flipped body byte" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+    const gpa = testing.allocator;
     const io = testing.io;
 
     const derived = deriveKeys(@splat(3), null);
-    const encrypted = try encrypt("some content that is long enough", derived, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try encrypt(gpa, io, "some content that is long enough", derived);
+    defer gpa.free(encrypted);
 
     const before = ciphertextId(encrypted, derived.cipher_id_key);
     encrypted[header_size + 4] ^= 0x01;
     const after = ciphertextId(encrypted, derived.cipher_id_key);
 
-    try testing.expect(!std.mem.eql(u8, &before, &after));
+    try testing.expect(!mem.eql(u8, &before, &after));
     try verifyHeaderOnly(encrypted, derived);
-    try testing.expectError(error.AuthenticationFailed, decrypt(encrypted, derived, allocator));
+    try testing.expectError(error.AuthenticationFailed, decrypt(gpa, encrypted, derived));
 }
 
 test "bound ciphertext only decrypts at its path" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+    const gpa = testing.allocator;
     const io = testing.io;
 
     const derived = deriveKeys(@splat(4), null);
-    const encrypted = try encryptBound("deploy notes", "docs/internal.md", derived, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try encryptBound(gpa, io, "deploy notes", "docs/internal.md", derived);
+    defer gpa.free(encrypted);
 
-    const plain = try decryptBound(encrypted, "docs/internal.md", derived, allocator);
-    defer allocator.free(plain);
+    const plain = try decryptBound(gpa, encrypted, "docs/internal.md", derived);
+    defer gpa.free(plain);
     try testing.expectEqualStrings("deploy notes", plain);
 
     try verifyHeaderOnly(encrypted, derived);
-    try testing.expectError(error.AuthenticationFailed, decryptBound(encrypted, "docs/other.md", derived, allocator));
-    try testing.expectError(error.AuthenticationFailed, decrypt(encrypted, derived, allocator));
+    try testing.expectError(
+        error.AuthenticationFailed,
+        decryptBound(gpa, encrypted, "docs/other.md", derived),
+    );
+    try testing.expectError(error.AuthenticationFailed, decrypt(gpa, encrypted, derived));
 }

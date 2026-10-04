@@ -1,29 +1,31 @@
 const std = @import("std");
+const testing = std.testing;
+const Io = std.Io;
 
-/// Thread-safe progress counters with a background display.
+/// Tracks progress safely while a background thread refreshes the display.
 pub const Tracker = struct {
     files_processed: std.atomic.Value(u64),
     files_failed: std.atomic.Value(u64),
     bytes_processed: std.atomic.Value(u64),
     total_files: std.atomic.Value(u64),
     total_bytes: std.atomic.Value(u64),
-    start_time: std.Io.Clock.Timestamp,
+    start_time: Io.Clock.Timestamp,
     display_thread: ?std.Thread,
     should_stop: std.atomic.Value(bool),
-    mutex: std.Io.Mutex,
-    io: std.Io,
+    mutex: Io.Mutex,
+    io: Io,
 
-    pub fn init(total_files: u64, total_bytes: u64, io: std.Io) Tracker {
-        return Tracker{
-            .files_processed = std.atomic.Value(u64).init(0),
-            .files_failed = std.atomic.Value(u64).init(0),
-            .bytes_processed = std.atomic.Value(u64).init(0),
-            .total_files = std.atomic.Value(u64).init(total_files),
-            .total_bytes = std.atomic.Value(u64).init(total_bytes),
-            .start_time = std.Io.Clock.Timestamp.now(io, .awake),
+    pub fn init(io: Io, total_files: u64, total_bytes: u64) Tracker {
+        return .{
+            .files_processed = .init(0),
+            .files_failed = .init(0),
+            .bytes_processed = .init(0),
+            .total_files = .init(total_files),
+            .total_bytes = .init(total_bytes),
+            .start_time = .now(io, .awake),
             .display_thread = null,
-            .should_stop = std.atomic.Value(bool).init(false),
-            .mutex = std.Io.Mutex.init,
+            .should_stop = .init(false),
+            .mutex = .init,
             .io = io,
         };
     }
@@ -72,7 +74,7 @@ pub const Tracker = struct {
         return self.bytes_processed.load(.monotonic);
     }
 
-    /// Throughput since the start, in megabits per second.
+    /// Returns average throughput since tracking began, in megabits per second.
     pub fn getThroughput(self: *Tracker) f64 {
         const elapsed = self.start_time.untilNow(self.io);
         const elapsed_ns = elapsed.raw.nanoseconds;
@@ -89,13 +91,14 @@ pub const Tracker = struct {
         const fb: f64 = @floatFromInt(bytes);
 
         if (bytes < 1024) {
-            return std.fmt.bufPrint(buf, "{d} B", .{bytes}) catch "? B";
+            return std.mem.print(buf, "{d} B", .{bytes}) catch "? B";
         } else if (bytes < 1024 * 1024) {
-            return std.fmt.bufPrint(buf, "{d:.1} KB", .{fb / 1024.0}) catch "? KB";
+            return std.mem.print(buf, "{d:.1} KB", .{fb / 1024.0}) catch "? KB";
         } else if (bytes < 1024 * 1024 * 1024) {
-            return std.fmt.bufPrint(buf, "{d:.1} MB", .{fb / (1024.0 * 1024.0)}) catch "? MB";
+            return std.mem.print(buf, "{d:.1} MB", .{fb / (1024.0 * 1024.0)}) catch "? MB";
         } else {
-            return std.fmt.bufPrint(buf, "{d:.2} GB", .{fb / (1024.0 * 1024.0 * 1024.0)}) catch "? GB";
+            const gb = fb / (1024.0 * 1024.0 * 1024.0);
+            return std.mem.print(buf, "{d:.2} GB", .{gb}) catch "? GB";
         }
     }
 
@@ -118,7 +121,7 @@ pub const Tracker = struct {
         const bytes_done_str = formatBytes(bytes_done, &bytes_done_buf);
         const total_bytes_str = formatBytes(total_bytes, &total_bytes_buf);
 
-        // The lock only keeps the output of the two display functions from interleaving.
+        // Keep live and final status output from mixing together.
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
@@ -174,7 +177,7 @@ pub const Tracker = struct {
     fn displayUpdateThread(self: *Tracker) void {
         while (!self.should_stop.load(.acquire)) {
             self.display();
-            self.io.sleep(std.Io.Duration.fromMilliseconds(100), .awake) catch {};
+            self.io.sleep(.fromMilliseconds(100), .awake) catch {};
         }
     }
 
@@ -192,11 +195,10 @@ pub const Tracker = struct {
     }
 };
 
-test "progress tracker basic operations" {
-    const testing = std.testing;
+test "tracker counts processed files, bytes and failures" {
     const io = testing.io;
 
-    var tracker = Tracker.init(100, 1024 * 1024 * 100, io);
+    var tracker = Tracker.init(io, 100, 1024 * 1024 * 100);
 
     try testing.expectEqual(0, tracker.getFilesProcessed());
     try testing.expectEqual(0, tracker.getFilesFailed());

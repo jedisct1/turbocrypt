@@ -1,35 +1,42 @@
-//! The table of open nodes, shared by the two mount backends.
+//! Share open-node ownership between the two mount backends.
 //!
-//! Share nodes by backing path and keep their paths consistent across renames.
+//! One backing path maps to one node, even as it is renamed.
 //!
-//! A node type gives the table these members:
+//! A node type must provide the following state:
 //!
-//! +------------------+-----------------------------------------------------------------+
-//! | Member           | Type and behavior                                               |
-//! +------------------+-----------------------------------------------------------------+
-//! | path             | []u8, relative to the backing root; the table owns it            |
-//! | refs             | usize, initially 1; protected by the table mutex                 |
-//! | mutex            | std.Io.Mutex, initially .init                                    |
-//! | unlinked         | std.atomic.Value(bool), initially false                          |
-//! | retainAtZeroRefs | fn (*const Node) bool; called with both mutexes held             |
-//! | deinitData       | fn (*Node, *Table(Node)) void; frees what the node owns          |
-//! +------------------+-----------------------------------------------------------------+
+//! `path` is owned by the table and stays relative to the backing root.
+//! `refs` starts at one and is protected by the table mutex.
+//! `mutex` starts initialized and guards node-specific state.
+//! `unlinked` starts false and tells the table to omit the node.
+//! `retainAtZeroRefs` decides retention while both locks are held.
+//! `deinitData` releases the node resources when the table drops it.
 //!
-//! Nodes are initialized with `.{ .path = owned_path }`; all other fields need safe defaults.
+//!
+//!
+//!
+//!
+//! New nodes start as `.{ .path = owned_path }`, so every other field needs a safe default.
 
 const std = @import("std");
+const mem = std.mem;
+const testing = std.testing;
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
-/// Limit plaintext staging across v1 files. RAF nodes leave the budget untouched.
+/// Bound v1 plaintext staging across all open files.
+/// RAF nodes do not charge this budget.
 pub const Budget = struct {
     limit: usize,
     charged: std.atomic.Value(usize) = .init(0),
 
+    /// Reject a charge without changing the total when it would exceed the budget.
     pub fn charge(self: *Budget, amount: usize) bool {
         var current = self.charged.load(.monotonic);
         while (true) {
             const next = std.math.add(usize, current, amount) catch return false;
             if (next > self.limit) return false;
-            current = self.charged.cmpxchgWeak(current, next, .monotonic, .monotonic) orelse return true;
+            current = self.charged.cmpxchgWeak(current, next, .monotonic, .monotonic) orelse
+                return true;
         }
     }
 
@@ -46,31 +53,31 @@ pub fn Table(comptime NodeType: type) type {
     return struct {
         pub const Node = NodeType;
 
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        mutex: std.Io.Mutex = .init,
+        gpa: Allocator,
+        io: Io,
+        mutex: Io.Mutex = .init,
         nodes: std.ArrayList(*NodeType) = .empty,
         budget: Budget,
         max_file_size: usize,
 
-        /// Keep node paths consistent with a backing rename until commit or abort.
+        /// Hold node paths steady while a backing rename is either committed or abandoned.
         pub const Rekey = struct {
             table: *Table(NodeType),
             nodes: std.ArrayList(*NodeType) = .empty,
             paths: std.ArrayList([]u8) = .empty,
-            /// Open or retained destination displaced by the rename.
+            /// The rename's displaced destination, if it remains open or retained.
             target: ?*NodeType = null,
 
-            /// Call only after the backing rename succeeds.
+            /// Commit only after the backing rename succeeds.
             pub fn commit(self: *Rekey) void {
-                const allocator = self.table.allocator;
+                const gpa = self.table.gpa;
                 for (self.nodes.items, self.paths.items) |node, path| {
-                    allocator.free(node.path);
+                    gpa.free(node.path);
                     node.path = path;
                 }
                 if (self.target) |target| {
                     target.unlinked.store(true, .release);
-                    // No open handle remains to release this displaced node.
+                    // No handle remains to release this displaced node.
                     if (target.refs == 0) {
                         target.mutex.unlock(self.table.io);
                         self.table.removeLocked(target);
@@ -82,35 +89,40 @@ pub fn Table(comptime NodeType: type) type {
             }
 
             pub fn abort(self: *Rekey) void {
-                for (self.paths.items) |path| self.table.allocator.free(path);
+                for (self.paths.items) |path| self.table.gpa.free(path);
                 self.finish();
             }
 
             fn finish(self: *Rekey) void {
                 for (self.nodes.items) |node| node.mutex.unlock(self.table.io);
                 if (self.target) |target| target.mutex.unlock(self.table.io);
-                self.nodes.deinit(self.table.allocator);
-                self.paths.deinit(self.table.allocator);
+                self.nodes.deinit(self.table.gpa);
+                self.paths.deinit(self.table.gpa);
                 self.table.mutex.unlock(self.table.io);
             }
         };
 
-        pub fn init(allocator: std.mem.Allocator, io: std.Io, max_file_size: usize, memory_limit: usize) Table(NodeType) {
+        pub fn init(
+            gpa: Allocator,
+            io: Io,
+            max_file_size: usize,
+            memory_limit: usize,
+        ) Table(NodeType) {
             return .{
-                .allocator = allocator,
+                .gpa = gpa,
                 .io = io,
                 .budget = .{ .limit = memory_limit },
                 .max_file_size = max_file_size,
             };
         }
 
-        /// Call with no callbacks running.
+        /// Tear down the table only after all callbacks have stopped.
         pub fn deinit(self: *Table(NodeType)) void {
             for (self.nodes.items) |node| self.destroyNode(node);
-            self.nodes.deinit(self.allocator);
+            self.nodes.deinit(self.gpa);
         }
 
-        /// Share the linked node for this path, or create one; the caller owns a reference.
+        /// Reuse a linked node for this path, or create one and return the caller's reference.
         pub fn attach(self: *Table(NodeType), path: []const u8) error{OutOfMemory}!*NodeType {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -118,15 +130,15 @@ pub fn Table(comptime NodeType: type) type {
                 node.refs += 1;
                 return node;
             }
-            const node = try self.allocator.create(NodeType);
-            errdefer self.allocator.destroy(node);
-            node.* = .{ .path = try self.allocator.dupe(u8, path) };
-            errdefer self.allocator.free(node.path);
-            try self.nodes.append(self.allocator, node);
+            const node = try self.gpa.create(NodeType);
+            errdefer self.gpa.destroy(node);
+            node.* = .{ .path = try self.gpa.dupe(u8, path) };
+            errdefer self.gpa.free(node.path);
+            try self.nodes.append(self.gpa, node);
             return node;
         }
 
-        /// Acquire a reference without creating a node.
+        /// Add a reference only if the node already exists.
         pub fn pin(self: *Table(NodeType), path: []const u8) ?*NodeType {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -135,16 +147,18 @@ pub fn Table(comptime NodeType: type) type {
             return node;
         }
 
-        /// Keep nodes alive during enumeration; the caller releases each reference and frees the list.
-        pub fn pinAll(self: *Table(NodeType), allocator: std.mem.Allocator) error{OutOfMemory}![]*NodeType {
+        /// Pin each node so it survives the caller's iteration.
+        /// The caller releases every pin and frees the returned list.
+        pub fn pinAll(self: *Table(NodeType), gpa: Allocator) error{OutOfMemory}![]*NodeType {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
-            const list = try allocator.dupe(*NodeType, self.nodes.items);
+            const list = try gpa.dupe(*NodeType, self.nodes.items);
             for (list) |node| node.refs += 1;
             return list;
         }
 
-        /// Release a reference. The node decides whether it survives its last reference.
+        /// Drop a reference.
+        /// The node decides whether zero references should keep it alive.
         pub fn release(self: *Table(NodeType), node: *NodeType) void {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
@@ -158,28 +172,33 @@ pub fn Table(comptime NodeType: type) type {
             self.destroyNode(node);
         }
 
-        /// Reserve paths before the backing rename so committing it cannot fail for lack of memory.
-        /// Hold the table and affected node locks until commit or abort.
+        /// Allocate replacement paths before renaming so memory pressure cannot split backing paths from node paths.
+        /// Keep the table and affected nodes locked until the rename either commits or aborts.
         ///
-        /// Lock the destination too, so its pending write-back cannot overwrite the renamed source.
-        pub fn beginRekey(self: *Table(NodeType), old: []const u8, new: []const u8, is_directory: bool) error{OutOfMemory}!Rekey {
+        /// Lock the destination too, so its pending write-back cannot replace the renamed source.
+        pub fn beginRekey(
+            self: *Table(NodeType),
+            old: []const u8,
+            new: []const u8,
+            is_directory: bool,
+        ) error{OutOfMemory}!Rekey {
             self.mutex.lockUncancelable(self.io);
             errdefer self.mutex.unlock(self.io);
             var rekey: Rekey = .{ .table = self };
-            if (std.mem.eql(u8, old, new)) return rekey;
+            if (mem.eql(u8, old, new)) return rekey;
             errdefer {
-                for (rekey.paths.items) |path| self.allocator.free(path);
-                rekey.paths.deinit(self.allocator);
-                rekey.nodes.deinit(self.allocator);
+                for (rekey.paths.items) |path| self.gpa.free(path);
+                rekey.paths.deinit(self.gpa);
+                rekey.nodes.deinit(self.gpa);
             }
             for (self.nodes.items) |node| {
                 if (node.unlinked.load(.acquire)) continue;
                 if (pathSuffix(node.path, old, is_directory)) |rest| {
-                    try rekey.nodes.append(self.allocator, node);
-                    const path = try std.mem.concat(self.allocator, u8, &.{ new, rest });
-                    errdefer self.allocator.free(path);
-                    try rekey.paths.append(self.allocator, path);
-                } else if (!is_directory and std.mem.eql(u8, node.path, new)) {
+                    try rekey.nodes.append(self.gpa, node);
+                    const path = try mem.concat(self.gpa, u8, &.{ new, rest });
+                    errdefer self.gpa.free(path);
+                    try rekey.paths.append(self.gpa, path);
+                } else if (!is_directory and mem.eql(u8, node.path, new)) {
                     rekey.target = node;
                 }
             }
@@ -190,36 +209,36 @@ pub fn Table(comptime NodeType: type) type {
 
         fn findLocked(self: *Table(NodeType), path: []const u8) ?*NodeType {
             for (self.nodes.items) |node| {
-                if (!node.unlinked.load(.acquire) and std.mem.eql(u8, node.path, path)) return node;
+                if (!node.unlinked.load(.acquire) and mem.eql(u8, node.path, path)) return node;
             }
             return null;
         }
 
         fn removeLocked(self: *Table(NodeType), node: *NodeType) void {
-            const index = std.mem.indexOfScalar(*NodeType, self.nodes.items, node).?;
+            const index = mem.findScalar(*NodeType, self.nodes.items, node).?;
             _ = self.nodes.swapRemove(index);
         }
 
         fn destroyNode(self: *Table(NodeType), node: *NodeType) void {
             node.deinitData(self);
-            self.allocator.free(node.path);
-            self.allocator.destroy(node);
+            self.gpa.free(node.path);
+            self.gpa.destroy(node);
         }
     };
 }
 
-/// Match whole components so a directory rename cannot affect similarly prefixed siblings.
+/// Match complete path components so renaming `a` never catches `ab`.
 pub fn pathSuffix(path: []const u8, prefix: []const u8, is_directory: bool) ?[]const u8 {
-    if (std.mem.eql(u8, path, prefix)) return "";
+    if (mem.eql(u8, path, prefix)) return "";
     if (!is_directory) return null;
-    if (path.len > prefix.len and std.mem.startsWith(u8, path, prefix) and path[prefix.len] == '/') return path[prefix.len..];
+    if (path.len > prefix.len and mem.startsWith(u8, path, prefix) and path[prefix.len] == '/') {
+        return path[prefix.len..];
+    }
     return null;
 }
 
-const testing = std.testing;
-
 const TestNode = struct {
-    mutex: std.Io.Mutex = .init,
+    mutex: Io.Mutex = .init,
     path: []u8,
     refs: usize = 1,
     unlinked: std.atomic.Value(bool) = .init(false),
@@ -287,7 +306,7 @@ test "the generic table re-keys a subtree and displaces a destination" {
     aborted.abort();
     try testing.expectEqualStrings("e/one", file.path);
 
-    // A displaced destination without handles is destroyed at commit.
+    // A displaced target without handles can be destroyed at commit.
     target.retain = true;
     table.release(target);
     try testing.expectEqual(4, table.nodes.items.len);

@@ -1,40 +1,42 @@
+//! Protects encryption keys with passwords using Argon2id.
+
 const std = @import("std");
+const testing = std.testing;
+const Io = std.Io;
+const argon2 = std.crypto.pwhash.argon2;
+
 const crypto = @import("crypto.zig");
 
-const argon2 = std.crypto.pwhash.argon2;
 const key_length = crypto.key_length;
 const derived_key_length = 20;
 const checksum_length = derived_key_length - key_length;
+const salt_length = 16;
 const legacy_salt = "turbocrypt";
 
-const salt_length = 16;
 pub const legacy_protected_key_size = derived_key_length;
 pub const protected_key_size = salt_length + key_length + checksum_length;
 
-/// Derive 20 bytes from a password with Argon2id.
-/// The first 16 bytes mask the key and the last 4 bytes are a checksum.
+/// Derive enough password material to mask a key and verify the password.
 pub fn deriveKey(password: []const u8, salt: []const u8) ![derived_key_length]u8 {
     var key: [derived_key_length]u8 = undefined;
 
-    var threaded_io = std.Io.Threaded.init(std.heap.page_allocator, .{ .environ = .empty });
-    defer threaded_io.deinit();
+    var threaded: Io.Threaded = .init(std.heap.page_allocator, .{ .environ = .empty });
+    defer threaded.deinit();
 
     try argon2.kdf(
         std.heap.page_allocator,
         &key,
         password,
         salt,
-        argon2.Params.interactive_2id,
+        .interactive_2id,
         .argon2id,
-        threaded_io.io(),
+        threaded.io(),
     );
-
     return key;
 }
 
-/// Mask a key with a password.
-/// The result is the salt, 16 masked bytes, and the 4 byte checksum.
-pub fn protectKey(key: [key_length]u8, password: []const u8, io: std.Io) ![protected_key_size]u8 {
+/// Protect a key with a password and a fresh salt to prevent matching password checks.
+pub fn protectKey(io: Io, key: [key_length]u8, password: []const u8) ![protected_key_size]u8 {
     var salt: [salt_length]u8 = undefined;
     io.random(&salt);
 
@@ -52,8 +54,8 @@ pub fn protectKey(key: [key_length]u8, password: []const u8, io: std.Io) ![prote
     return protected;
 }
 
-/// Recover a key masked with protectKey.
-/// A wrong password fails the checksum and returns error.InvalidPassword.
+/// Recover a key protected by `protectKey`.
+/// Reject a wrong password before returning key material.
 pub fn unprotectKey(protected_data: []const u8, password: []const u8) ![key_length]u8 {
     const salt, const payload = if (protected_data.len == protected_key_size)
         .{ protected_data[0..salt_length], protected_data[salt_length..] }
@@ -79,7 +81,7 @@ pub fn unprotectKey(protected_data: []const u8, password: []const u8) ![key_leng
     return key;
 }
 
-/// A key protected by a release that used the fixed salt, for compatibility tests.
+/// Legacy fixed-salt data retained to ensure older protected keys stay readable.
 pub const legacy_test_vector = struct {
     pub const passphrase = "legacy password";
     pub const protected = [legacy_protected_key_size]u8{
@@ -90,14 +92,15 @@ pub const legacy_test_vector = struct {
 };
 
 test "protecting the same key twice uses different salts" {
+    const io = testing.io;
     const key: [key_length]u8 = @splat(0x5a);
-    const first = try protectKey(key, "same password", std.testing.io);
-    const second = try protectKey(key, "same password", std.testing.io);
-
-    try std.testing.expect(!std.mem.eql(u8, first[0..salt_length], second[0..salt_length]));
+    const first = try protectKey(io, key, "same password");
+    const second = try protectKey(io, key, "same password");
+    try testing.expect(!std.mem.eql(u8, first[0..salt_length], second[0..salt_length]));
 }
 
 test "legacy protected keys remain readable" {
-    const v = legacy_test_vector;
-    try std.testing.expectEqualSlices(u8, &v.key, &try unprotectKey(&v.protected, v.passphrase));
+    const legacy = legacy_test_vector;
+    const key = try unprotectKey(&legacy.protected, legacy.passphrase);
+    try testing.expectEqualSlices(u8, &legacy.key, &key);
 }

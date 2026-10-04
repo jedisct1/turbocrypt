@@ -1,6 +1,6 @@
 #! /bin/sh
 
-# Check the entry points needed by the mount in fuse-t on macOS or the supplied Linux binary.
+# Ensure the selected FUSE library exports every entry point the mount needs.
 
 set -u
 

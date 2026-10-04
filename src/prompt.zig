@@ -1,10 +1,15 @@
+//! Password prompts that keep typed passwords out of the terminal output.
+
 const std = @import("std");
-const keygen = @import("keygen.zig");
 const builtin = @import("builtin");
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
+const keygen = @import("keygen.zig");
 
 const max_password_length = 1024;
 
-/// Raw mode needs a Windows console or termios
+/// Raw input is available through Windows consoles or POSIX termios.
 const supports_raw_mode = builtin.os.tag != .wasi;
 
 const TerminalState = if (builtin.os.tag == .windows)
@@ -15,43 +20,45 @@ const TerminalState = if (builtin.os.tag == .windows)
 else
     std.posix.termios;
 
-/// Console mode functions that the standard library no longer declares
-extern "kernel32" fn GetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, lpMode: *std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
-extern "kernel32" fn SetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, dwMode: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+/// Declares the Windows console calls needed to restore password input safely.
+extern "kernel32" fn GetConsoleMode(
+    hConsoleHandle: std.os.windows.HANDLE,
+    lpMode: *std.os.windows.DWORD,
+) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn SetConsoleMode(
+    hConsoleHandle: std.os.windows.HANDLE,
+    dwMode: std.os.windows.DWORD,
+) callconv(.winapi) std.os.windows.BOOL;
 
-/// Ask for a password, twice when confirm is set. The caller frees the result.
-pub fn promptPassword(
-    allocator: std.mem.Allocator,
+/// Prompts for a password and confirms it when requested.
+/// The caller owns the returned memory.
+pub fn password(
+    gpa: Allocator,
+    io: Io,
     prompt_text: []const u8,
     confirm: bool,
-    io: std.Io,
 ) ![]u8 {
-    const stdout = std.Io.File.stdout();
+    const stdout = Io.File.stdout();
 
-    // Read from /dev/tty when possible.
-    // A killed process could echo buffered stdin in clear text.
-    const stdin_file = if (builtin.os.tag == .windows)
-        std.Io.File.stdin()
-    else blk: {
-        const tty = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write }) catch {
-            break :blk std.Io.File.stdin();
-        };
-        break :blk tty;
-    };
+    // Prefer the controlling terminal so an interrupted process cannot echo buffered input in clear text.
+    const input = if (builtin.os.tag == .windows)
+        Io.File.stdin()
+    else
+        Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write }) catch Io.File.stdin();
 
-    const should_close = builtin.os.tag != .windows and stdin_file.handle != std.Io.File.stdin().handle;
-    defer if (should_close) stdin_file.close(io);
+    const should_close = builtin.os.tag != .windows and input.handle != Io.File.stdin().handle;
+    defer if (should_close) input.close(io);
 
-    const is_terminal = stdin_file.isTty(io) catch false;
+    const is_terminal = input.isTty(io) catch false;
 
-    // Raw mode leaves the editing keys to readLine
+    // Let `readLine` handle editing so terminal behavior stays predictable.
     const raw_input = supports_raw_mode and is_terminal;
 
     var original: TerminalState = undefined;
-    if (raw_input) try setRawMode(stdin_file, &original);
+    if (raw_input) try setRawMode(input, &original);
     defer if (is_terminal) {
         stdout.writeStreamingAll(io, "\n") catch {};
-        if (raw_input) restoreMode(stdin_file, original) catch {};
+        if (raw_input) restoreMode(input, original) catch {};
     };
 
     try stdout.writeStreamingAll(io, prompt_text);
@@ -59,26 +66,23 @@ pub fn promptPassword(
 
     var buffer: [max_password_length]u8 = undefined;
     defer std.crypto.secureZero(u8, &buffer);
-    const password1 = buffer[0..try readLine(stdin_file, &buffer, raw_input, io)];
+    const first = buffer[0..try readLine(input, io, &buffer, raw_input)];
 
     if (confirm) {
         try stdout.writeStreamingAll(io, "Confirm password: ");
 
-        var buffer2: [max_password_length]u8 = undefined;
-        defer std.crypto.secureZero(u8, &buffer2);
-        const password2 = buffer2[0..try readLine(stdin_file, &buffer2, raw_input, io)];
-
-        if (!std.mem.eql(u8, password1, password2)) {
-            return error.PasswordMismatch;
-        }
+        var confirm_buffer: [max_password_length]u8 = undefined;
+        defer std.crypto.secureZero(u8, &confirm_buffer);
+        const second = confirm_buffer[0..try readLine(input, io, &confirm_buffer, raw_input)];
+        if (!std.mem.eql(u8, first, second)) return error.PasswordMismatch;
     }
 
-    return try allocator.dupe(u8, password1);
+    return gpa.dupe(u8, first);
 }
 
-/// Read one line into buffer and return its length.
-/// In raw mode, backspace erases, Ctrl-C aborts and Ctrl-D ends the input.
-fn readLine(file: std.Io.File, buffer: []u8, raw: bool, io: std.Io) !usize {
+/// Reads one password line into `buffer` and returns its length.
+/// In raw mode, backspace erases, Ctrl-C aborts, and Ctrl-D ends input.
+fn readLine(file: Io.File, io: Io, buffer: []u8, raw: bool) !usize {
     var pos: usize = 0;
     var read_any = false;
     var byte_buf: [1]u8 = undefined;
@@ -92,9 +96,7 @@ fn readLine(file: std.Io.File, buffer: []u8, raw: bool, io: std.Io) !usize {
         read_any = true;
 
         const byte = byte_buf[0];
-        if (byte == '\n' or byte == '\r') {
-            break;
-        }
+        if (byte == '\n' or byte == '\r') break;
 
         if (raw) {
             switch (byte) {
@@ -104,7 +106,7 @@ fn readLine(file: std.Io.File, buffer: []u8, raw: bool, io: std.Io) !usize {
                     break;
                 },
                 0x08, 0x7f => {
-                    // Step back over one whole UTF-8 sequence
+                    // Erase one character rather than leaving part of a UTF-8 sequence behind.
                     while (pos > 0) {
                         pos -= 1;
                         if ((buffer[pos] & 0xC0) != 0x80) break;
@@ -122,8 +124,8 @@ fn readLine(file: std.Io.File, buffer: []u8, raw: bool, io: std.Io) !usize {
     return pos;
 }
 
-/// Raw mode keeps a killed process from echoing buffered input.
-fn setRawMode(file: std.Io.File, state: *TerminalState) !void {
+/// Disables terminal echo so interrupted password input is not exposed.
+fn setRawMode(file: Io.File, state: *TerminalState) !void {
     if (builtin.os.tag == .windows) {
         const handle = file.handle;
         state.handle = handle;
@@ -132,11 +134,12 @@ fn setRawMode(file: std.Io.File, state: *TerminalState) !void {
             return error.GetConsoleModeFailure;
         }
 
-        // Processed input would let Ctrl-C end the process before the console is restored
+        // Handle Ctrl-C ourselves so the console mode is restored first.
         const ENABLE_PROCESSED_INPUT: std.os.windows.DWORD = 0x0001;
         const ENABLE_LINE_INPUT: std.os.windows.DWORD = 0x0002;
         const ENABLE_ECHO_INPUT: std.os.windows.DWORD = 0x0004;
-        const new_mode = state.original_mode & ~(ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+        const new_mode = state.original_mode &
+            ~(ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
 
         if (SetConsoleMode(handle, new_mode) == .FALSE) {
             return error.SetConsoleModeFailure;
@@ -169,7 +172,7 @@ fn setRawMode(file: std.Io.File, state: *TerminalState) !void {
     }
 }
 
-fn restoreMode(file: std.Io.File, state: TerminalState) !void {
+fn restoreMode(file: Io.File, state: TerminalState) !void {
     if (builtin.os.tag == .windows) {
         if (SetConsoleMode(state.handle, state.original_mode) == .FALSE) {
             return error.SetConsoleModeFailure;
@@ -179,8 +182,9 @@ fn restoreMode(file: std.Io.File, state: TerminalState) !void {
     }
 }
 
-pub fn isKeyPasswordProtected(path: []const u8, io: std.Io) !bool {
-    const file = try std.Io.Dir.openFile(.cwd(), io, path, .{});
+/// Checks the file layout without reading or prompting for its password.
+pub fn isKeyPasswordProtected(io: Io, path: []const u8) !bool {
+    const file = try Io.Dir.openFile(.cwd(), io, path, .{});
     defer file.close(io);
 
     const stat = try file.stat(io);

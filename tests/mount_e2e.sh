@@ -1,7 +1,7 @@
 #! /bin/sh
 
-# Exercise a real mount; skip if the required FUSE runtime is unavailable.
-# Run separately from zig build test because they share temporary fixtures.
+# Exercise a live mount when FUSE is available.
+# Keep this separate from zig build test because both use the same fixtures.
 
 set -u
 
@@ -11,7 +11,7 @@ if [ $# -ge 1 ]; then
 else
     bin="$root/zig-out/bin/turbocrypt"
 fi
-# Some checks run the binary from another directory, so its path must be absolute.
+# Use an absolute path because some checks run from another directory.
 bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")"
 work="$root/tmp/mount_e2e"
 export HOME="$work/home"
@@ -31,7 +31,7 @@ case "$(uname)" in
             exit 0
         fi
         macos=1
-        # Make attribute changes visible immediately.
+        # Disable attribute caching so metadata assertions observe recent changes.
         fresh_attrs="-o noattrcache"
         accepted_opt="noattrcache" ;;
     Linux)
@@ -90,7 +90,7 @@ wait_until() {
 }
 not_mounted() { ! is_mounted; }
 
-# Keep injected faults local to each mount process.
+# Scope injected faults to one mount so scenarios remain independent.
 faults=""
 mount_fs() {
     : > "$mount_log"
@@ -126,7 +126,7 @@ wait_exit() {
     return $status
 }
 
-# The client can report the volume busy for a moment after a burst of file operations.
+# Retry unmounts because the client may briefly keep the volume busy after I/O.
 unmount_fs() {
     n=0
     while ! "$bin" unmount "$mnt" > "$work/unmount.log" 2>&1; do
@@ -268,7 +268,7 @@ expect_eq "$(mtime "$mnt/copied.txt")" "$(mtime "$plain/hello.txt")"
 expect_unmount 0
 expect_eq "$(mtime "$enc/copied.txt")" "$(mtime "$plain/hello.txt")"
 
-# macOS keeps extended attributes in "._" sidecar files, which the mount holds in memory only.
+# Verify that macOS metadata sidecars never reach encrypted storage.
 check_xattrs() {
     mount_fs $fresh_attrs || fail "mount"
     xattr -w user.note hi "$plain/hello.txt"
@@ -432,7 +432,7 @@ rm "$mnt/${long197%m}x"
 ( echo "too long" > "$mnt/$long255" ) 2>&1 | grep -qi "too long" || fail "a 255-byte name was accepted with encrypted names"
 expect_unmount 0
 quiet "$bin" verify --key "$key" "$enc" || fail "verify"
-# An oversized file spelling must not hide a valid directory spelling.
+# An invalid oversized file name must not hide a valid directory.
 fresh_tree --enc-suffix
 mkdir "$enc/$long255" || fail "mkdir in the backing tree"
 mount_fs --enc-suffix || fail "mount"
@@ -441,7 +441,7 @@ mkdir "$mnt/${long255%n}x" || fail "mkdir of a 255-byte name in suffix mode"
 [ -d "$enc/${long255%n}x" ] || fail "the directory was not created under its own name"
 ( echo "too long" > "$mnt/${long255%nnn}" ) 2>&1 | grep -qi "too long" || fail "a 252-byte file name was accepted in suffix mode"
 expect_unmount 0
-# Create through encrypt because the client's conservative name limit rejects this directory at mkdir.
+# Create this directory through encrypt because the client rejects it at mkdir.
 long203=$(printf '%0203d' 0 | tr 0 d)
 rm -rf "$enc" "$plain" "$mnt"
 mkdir -p "$plain/$long203" "$mnt"
@@ -518,7 +518,7 @@ umask 022
 
 if [ "$macos" = 1 ]; then
     step "scenario 37: a file the mount cannot own again is read-only through the mount"
-    # Choose a group the mount can neither inherit nor restore through membership.
+    # Pick a group that exposes files the mount cannot safely restore ownership for.
     other_gid=$(dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '$2 > 100 && $2 < 400 { print $2; exit }')
     dir_gid=$(stat -f %g "$enc")
     if [ -n "$other_gid" ] && [ "$other_gid" != "$dir_gid" ] && ! id -G | tr ' ' '\n' | grep -qx "$other_gid"; then

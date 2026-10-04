@@ -1,4 +1,4 @@
-/* Check Zig's FUSE layouts and callback signatures against the C headers. */
+/* Keep the Zig bindings compatible with the FUSE headers used at build time. */
 
 #define FUSE_USE_VERSION 31
 #include <fuse.h>
@@ -30,7 +30,7 @@ typedef int (*access_t)(const char *, int);
 typedef int (*create_t)(const char *, mode_t, struct fuse_file_info *);
 typedef int (*utimens_t)(const char *, const struct timespec[2], struct fuse_file_info *);
 
-/* -Werror turns a callback signature mismatch into a build failure. */
+/* Make incompatible callback signatures fail at compile time. */
 #define SIG(type, name) type name = op->name; (void)name
 
 static void check_signatures(const struct fuse_operations *op)

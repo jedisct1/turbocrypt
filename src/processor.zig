@@ -1,11 +1,18 @@
+//! File processing and the safe write path shared by the rest of the program.
+
 const std = @import("std");
-const crypto = @import("crypto.zig");
 const builtin = @import("builtin");
+const mem = std.mem;
+const testing = std.testing;
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
+const crypto = @import("crypto.zig");
 const io_hints = @import("io_hints.zig");
 
 const mmap_threshold: u64 = 1024 * 1024;
 
-fn readAll(file: std.Io.File, io: std.Io, buffer: []u8) !usize {
+fn readAll(file: Io.File, io: Io, buffer: []u8) !usize {
     var file_reader = file.reader(io, &.{});
     return file_reader.interface.readSliceShort(buffer) catch |err| switch (err) {
         error.ReadFailed => return file_reader.err.?,
@@ -18,17 +25,18 @@ const tmp_prefix = ".tc-";
 const tmp_suffix = ".tmp";
 pub const tmp_name_length = tmp_prefix.len + 16 + tmp_suffix.len;
 
-/// Keep temporary names short enough to fit beside destinations at the filesystem's name limit.
+/// Keep staging names short enough to fit beside the longest valid destination name.
 pub fn tmpName(random: u64) [tmp_name_length]u8 {
     var name: [tmp_name_length]u8 = undefined;
-    _ = std.fmt.bufPrint(&name, tmp_prefix ++ "{x:0>16}" ++ tmp_suffix, .{random}) catch unreachable;
+    const format = tmp_prefix ++ "{x:0>16}" ++ tmp_suffix;
+    _ = mem.print(&name, format, .{random}) catch unreachable;
     return name;
 }
 
-/// Recognize temporary files that the mount must hide, including leftovers from a crash.
+/// Hide staging files from mounts, including ones left behind by an interrupted write.
 pub fn isTmpName(name: []const u8) bool {
     if (name.len != tmp_name_length) return false;
-    if (!std.mem.startsWith(u8, name, tmp_prefix) or !std.mem.endsWith(u8, name, tmp_suffix)) return false;
+    if (!mem.startsWith(u8, name, tmp_prefix) or !mem.endsWith(u8, name, tmp_suffix)) return false;
     for (name[tmp_prefix.len .. name.len - tmp_suffix.len]) |c| {
         if (!std.ascii.isHex(c) or std.ascii.isUpper(c)) return false;
     }
@@ -36,19 +44,18 @@ pub fn isTmpName(name: []const u8) bool {
 }
 
 pub const TmpFile = struct {
-    file: std.Io.File,
+    file: Io.File,
     name: [tmp_name_length]u8,
 };
 
-/// Create without overwriting existing entries, retrying name collisions.
-/// The caller owns the handle and must publish or remove the temporary file.
-pub fn createTmpIn(dir: std.Io.Dir, options: std.Io.Dir.CreateFileOptions, io: std.Io) !TmpFile {
+/// Reserve a new staging file without replacing someone else's entry.
+/// The caller must publish it or clean it up.
+pub fn createTmpIn(dir: Io.Dir, io: Io, options: Io.Dir.CreateFileOptions) !TmpFile {
     var opts = options;
     opts.exclusive = true;
-    var attempt: u32 = 0;
-    while (attempt < max_tmp_attempts) : (attempt += 1) {
+    for (0..max_tmp_attempts) |_| {
         var random: u64 = undefined;
-        io.random(std.mem.asBytes(&random));
+        io.random(mem.asBytes(&random));
         const name = tmpName(random);
         const file = dir.createFile(io, &name, opts) catch |err| switch (err) {
             error.PathAlreadyExists => continue,
@@ -59,143 +66,150 @@ pub fn createTmpIn(dir: std.Io.Dir, options: std.Io.Dir.CreateFileOptions, io: s
     return error.TmpFileCollision;
 }
 
-/// Publish a complete file by renaming it over the destination.
-/// The temporary file lives next to the destination unless a directory is given, which keeps plain temporary files out of a git working tree.
+/// Replace the destination only after its new contents are complete.
+///
+/// A separate staging directory keeps temporary plain files out of a Git worktree.
 pub const AtomicOutput = struct {
-    file: std.Io.File,
-    /// Anchors tmp_path; the caller keeps this handle open through deinit.
-    tmp_dir: std.Io.Dir,
+    file: Io.File,
+    /// This stays open until cleanup so the staging path cannot be redirected.
+    tmp_dir: Io.Dir,
     tmp_path: []u8,
     dest_path: []const u8,
-    allocator: std.mem.Allocator,
+    gpa: Allocator,
 
     pub fn init(
+        gpa: Allocator,
+        io: Io,
         dest_path: []const u8,
-        options: std.Io.Dir.CreateFileOptions,
+        options: Io.Dir.CreateFileOptions,
         tmp_dir: ?[]const u8,
-        allocator: std.mem.Allocator,
-        io: std.Io,
     ) !AtomicOutput {
-        const dir = tmp_dir orelse (std.fs.path.dirname(dest_path) orelse ".");
-        return initWith(.cwd(), dir, dest_path, options, allocator, io);
+        const dir = tmp_dir orelse (Io.Dir.path.dirname(dest_path) orelse ".");
+        return initWith(.cwd(), gpa, io, dir, dest_path, options);
     }
 
-    /// Stage through a directory handle so symlink changes cannot redirect the write.
+    /// Use a directory handle when the caller has already established a safe destination.
     pub fn initIn(
-        dir: std.Io.Dir,
-        options: std.Io.Dir.CreateFileOptions,
-        allocator: std.mem.Allocator,
-        io: std.Io,
+        dir: Io.Dir,
+        gpa: Allocator,
+        io: Io,
+        options: Io.Dir.CreateFileOptions,
     ) !AtomicOutput {
-        return initWith(dir, null, &.{}, options, allocator, io);
+        return initWith(dir, gpa, io, null, &.{}, options);
     }
 
     fn initWith(
-        tmp_dir: std.Io.Dir,
+        tmp_dir: Io.Dir,
+        gpa: Allocator,
+        io: Io,
         prefix_dir: ?[]const u8,
         dest_path: []const u8,
-        options: std.Io.Dir.CreateFileOptions,
-        allocator: std.mem.Allocator,
-        io: std.Io,
+        options: Io.Dir.CreateFileOptions,
     ) !AtomicOutput {
         var staging = tmp_dir;
         if (prefix_dir) |dir| staging = try tmp_dir.openDir(io, dir, .{});
         defer if (prefix_dir != null) staging.close(io);
-        const tmp = try createTmpIn(staging, options, io);
+        const tmp = try createTmpIn(staging, io, options);
         errdefer {
             tmp.file.close(io);
             staging.deleteFile(io, &tmp.name) catch {};
         }
         const tmp_path = if (prefix_dir) |dir|
-            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, tmp.name })
+            try gpa.print("{s}/{s}", .{ dir, tmp.name })
         else
-            try allocator.dupe(u8, &tmp.name);
+            try gpa.dupe(u8, &tmp.name);
         return .{
             .file = tmp.file,
             .tmp_dir = tmp_dir,
             .tmp_path = tmp_path,
             .dest_path = dest_path,
-            .allocator = allocator,
+            .gpa = gpa,
         };
     }
 
-    pub fn setPermissions(self: *AtomicOutput, io: std.Io, permissions: std.Io.File.Permissions) !void {
+    pub fn setPermissions(self: *AtomicOutput, io: Io, permissions: Io.File.Permissions) !void {
         if (builtin.os.tag == .windows) return;
         try self.file.setPermissions(io, permissions);
     }
 
-    pub fn finalize(self: *AtomicOutput, io: std.Io) !void {
-        try self.finalizeInto(.cwd(), self.dest_path, io);
+    pub fn finalize(self: *AtomicOutput, io: Io) !void {
+        try self.finalizeInto(io, .cwd(), self.dest_path);
     }
 
-    /// Move the file into an already open directory.
-    /// The handle, not a path, decides where the file lands, so a symbolic link planted in the tree after the checks cannot redirect it.
-    pub fn finalizeInto(self: *AtomicOutput, dest_dir: std.Io.Dir, dest_name: []const u8, io: std.Io) !void {
-        try std.Io.Dir.rename(self.tmp_dir, self.tmp_path, dest_dir, dest_name, io);
+    /// Publish through an already-checked directory.
+    ///
+    /// The open handle keeps a later symlink change from sending the file elsewhere.
+    pub fn finalizeInto(
+        self: *AtomicOutput,
+        io: Io,
+        dest_dir: Io.Dir,
+        dest_name: []const u8,
+    ) !void {
+        try Io.Dir.rename(self.tmp_dir, self.tmp_path, dest_dir, dest_name, io);
         self.keep();
     }
 
-    /// Keep the temporary file at deinit instead of deleting it.
+    /// Mark the staging file as published so cleanup leaves it alone.
     pub fn keep(self: *AtomicOutput) void {
-        self.allocator.free(self.tmp_path);
+        self.gpa.free(self.tmp_path);
         self.tmp_path = &.{};
     }
 
-    pub fn deinit(self: *AtomicOutput, io: std.Io) void {
+    pub fn deinit(self: *AtomicOutput, io: Io) void {
         self.file.close(io);
         if (self.tmp_path.len != 0) {
             self.tmp_dir.deleteFile(io, self.tmp_path) catch {};
-            self.allocator.free(self.tmp_path);
+            self.gpa.free(self.tmp_path);
         }
     }
 };
 
-/// Write a whole file so that it appears complete or not at all.
+/// Publish a complete file without ever exposing a partial replacement.
 pub fn writeFileAtomic(
+    gpa: Allocator,
+    io: Io,
     dest_path: []const u8,
     data: []const u8,
-    permissions: ?std.Io.File.Permissions,
+    permissions: ?Io.File.Permissions,
     tmp_dir: ?[]const u8,
-    allocator: std.mem.Allocator,
-    io: std.Io,
 ) !void {
-    const dir = tmp_dir orelse (std.fs.path.dirname(dest_path) orelse ".");
-    try writeFileAtomicIn(.cwd(), dest_path, data, permissions, dir, allocator, io);
+    const dir = tmp_dir orelse (Io.Dir.path.dirname(dest_path) orelse ".");
+    try writeFileAtomicIn(.cwd(), gpa, io, dest_path, data, permissions, dir);
 }
 
-/// Like writeFileAtomic, with the destination given as an open directory and a name inside it.
-/// By default, stage through the destination handle to prevent path redirection.
+/// Publish within an open directory instead of trusting a destination path.
+/// Staging through that handle keeps a changed path from redirecting the write.
 pub fn writeFileAtomicIn(
-    dest_dir: std.Io.Dir,
+    dest_dir: Io.Dir,
+    gpa: Allocator,
+    io: Io,
     dest_name: []const u8,
     data: []const u8,
-    permissions: ?std.Io.File.Permissions,
+    permissions: ?Io.File.Permissions,
     tmp_dir: ?[]const u8,
-    allocator: std.mem.Allocator,
-    io: std.Io,
 ) !void {
-    var options: std.Io.Dir.CreateFileOptions = .{};
+    var options: Io.Dir.CreateFileOptions = .{};
     if (permissions) |p| options.permissions = p;
     var atomic = if (tmp_dir) |dir|
-        try AtomicOutput.init(dest_name, options, dir, allocator, io)
+        try AtomicOutput.init(gpa, io, dest_name, options, dir)
     else
-        try AtomicOutput.initIn(dest_dir, options, allocator, io);
+        try AtomicOutput.initIn(dest_dir, gpa, io, options);
     defer atomic.deinit(io);
 
     try atomic.file.writeStreamingAll(io, data);
-    // Synced before the rename, so a crash leaves the old file or the whole new one.
+    // Finish the data before publishing so a crash cannot replace a good file with a partial one.
     try atomic.file.sync(io);
     if (permissions) |p| {
         try atomic.setPermissions(io, p);
     }
-    try atomic.finalizeInto(dest_dir, dest_name, io);
+    try atomic.finalizeInto(io, dest_dir, dest_name);
 }
 
-fn readBuffered(file: std.Io.File, file_size: u64, allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+fn readBuffered(file: Io.File, gpa: Allocator, io: Io, file_size: u64) ![]u8 {
     io_hints.adviseFile(file, 0, @intCast(file_size), .sequential);
 
-    const buffer = try allocator.alloc(u8, file_size);
-    errdefer allocator.free(buffer);
+    const buffer = try gpa.alloc(u8, file_size);
+    errdefer gpa.free(buffer);
 
     const bytes_read = try readAll(file, io, buffer);
     if (bytes_read != file_size) {
@@ -206,42 +220,66 @@ fn readBuffered(file: std.Io.File, file_size: u64, allocator: std.mem.Allocator,
 }
 
 pub fn encryptFile(
+    gpa: Allocator,
+    io: Io,
     source_path: []const u8,
     dest_path: []const u8,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
-    io: std.Io,
 ) !void {
-    const input_file = try std.Io.Dir.openFile(.cwd(), io, source_path, .{});
+    const input_file = try Io.Dir.openFile(.cwd(), io, source_path, .{});
     defer input_file.close(io);
 
     const input_stat = try input_file.stat(io);
     const file_size = input_stat.size;
 
     if (file_size >= mmap_threshold and builtin.os.tag != .windows) {
-        try encryptFileZeroCopy(input_file, file_size, dest_path, derived_keys, allocator, input_stat.permissions, io);
+        try encryptFileZeroCopy(
+            input_file,
+            gpa,
+            io,
+            file_size,
+            dest_path,
+            derived_keys,
+            input_stat.permissions,
+        );
     } else {
-        try encryptFileBuffered(input_file, file_size, dest_path, derived_keys, allocator, input_stat.permissions, io);
+        try encryptFileBuffered(
+            input_file,
+            gpa,
+            io,
+            file_size,
+            dest_path,
+            derived_keys,
+            input_stat.permissions,
+        );
     }
 }
 
 fn encryptFileZeroCopy(
-    input_file: std.Io.File,
+    input_file: Io.File,
+    gpa: Allocator,
+    io: Io,
     file_size: u64,
     dest_path: []const u8,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
-    permissions: std.Io.File.Permissions,
-    io: std.Io,
+    permissions: Io.File.Permissions,
 ) !void {
     io_hints.adviseFile(input_file, 0, @intCast(file_size), .sequential);
 
-    var input_map = std.Io.File.MemoryMap.create(io, input_file, .{
+    var input_map = Io.File.MemoryMap.create(io, input_file, .{
         .len = file_size,
         .protection = .{ .read = true, .write = false },
         .populate = true,
     }) catch {
-        return encryptFileBuffered(input_file, file_size, dest_path, derived_keys, allocator, permissions, io);
+        return encryptFileBuffered(
+            input_file,
+            gpa,
+            io,
+            file_size,
+            dest_path,
+            derived_keys,
+            permissions,
+        );
     };
     defer input_map.destroy(io);
 
@@ -252,13 +290,13 @@ fn encryptFileZeroCopy(
         return error.FileTooLarge;
     };
 
-    var atomic = try AtomicOutput.init(dest_path, .{ .read = true }, null, allocator, io);
+    var atomic = try AtomicOutput.init(gpa, io, dest_path, .{ .read = true }, null);
     defer atomic.deinit(io);
 
     try atomic.file.setLength(io, output_size);
 
     {
-        var output_map = try std.Io.File.MemoryMap.create(io, atomic.file, .{
+        var output_map = try Io.File.MemoryMap.create(io, atomic.file, .{
             .len = output_size,
             .protection = .{ .read = true, .write = true },
             .undefined_contents = true,
@@ -268,7 +306,7 @@ fn encryptFileZeroCopy(
 
         io_hints.adviseMemory(output_map.memory.ptr, output_size, .sequential);
 
-        crypto.encryptZeroCopy(output_map.memory, input_map.memory, derived_keys, io);
+        crypto.encryptZeroCopy(io, output_map.memory, input_map.memory, derived_keys);
 
         io_hints.adviseMemory(input_map.memory.ptr, file_size, .dont_need);
 
@@ -280,21 +318,21 @@ fn encryptFileZeroCopy(
 }
 
 fn encryptFileBuffered(
-    input_file: std.Io.File,
+    input_file: Io.File,
+    gpa: Allocator,
+    io: Io,
     file_size: u64,
     dest_path: []const u8,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
-    permissions: std.Io.File.Permissions,
-    io: std.Io,
+    permissions: Io.File.Permissions,
 ) !void {
-    const plaintext = try readBuffered(input_file, file_size, allocator, io);
-    defer allocator.free(plaintext);
+    const plaintext = try readBuffered(input_file, gpa, io, file_size);
+    defer gpa.free(plaintext);
 
-    const encrypted = try crypto.encrypt(plaintext, derived_keys, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try crypto.encrypt(gpa, io, plaintext, derived_keys);
+    defer gpa.free(encrypted);
 
-    var atomic = try AtomicOutput.init(dest_path, .{}, null, allocator, io);
+    var atomic = try AtomicOutput.init(gpa, io, dest_path, .{}, null);
     defer atomic.deinit(io);
 
     try atomic.file.writeStreamingAll(io, encrypted);
@@ -304,42 +342,66 @@ fn encryptFileBuffered(
 }
 
 pub fn decryptFile(
+    gpa: Allocator,
+    io: Io,
     source_path: []const u8,
     dest_path: []const u8,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
-    io: std.Io,
 ) !void {
-    const input_file = try std.Io.Dir.openFile(.cwd(), io, source_path, .{});
+    const input_file = try Io.Dir.openFile(.cwd(), io, source_path, .{});
     defer input_file.close(io);
 
     const input_stat = try input_file.stat(io);
     const file_size = input_stat.size;
 
     if (file_size >= mmap_threshold and builtin.os.tag != .windows) {
-        try decryptFileZeroCopy(input_file, file_size, dest_path, derived_keys, allocator, input_stat.permissions, io);
+        try decryptFileZeroCopy(
+            input_file,
+            gpa,
+            io,
+            file_size,
+            dest_path,
+            derived_keys,
+            input_stat.permissions,
+        );
     } else {
-        try decryptFileBuffered(input_file, file_size, dest_path, derived_keys, allocator, input_stat.permissions, io);
+        try decryptFileBuffered(
+            input_file,
+            gpa,
+            io,
+            file_size,
+            dest_path,
+            derived_keys,
+            input_stat.permissions,
+        );
     }
 }
 
 fn decryptFileZeroCopy(
-    input_file: std.Io.File,
+    input_file: Io.File,
+    gpa: Allocator,
+    io: Io,
     file_size: u64,
     dest_path: []const u8,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
-    permissions: std.Io.File.Permissions,
-    io: std.Io,
+    permissions: Io.File.Permissions,
 ) !void {
     io_hints.adviseFile(input_file, 0, @intCast(file_size), .sequential);
 
-    var input_map = std.Io.File.MemoryMap.create(io, input_file, .{
+    var input_map = Io.File.MemoryMap.create(io, input_file, .{
         .len = file_size,
         .protection = .{ .read = true, .write = false },
         .populate = true,
     }) catch {
-        return decryptFileBuffered(input_file, file_size, dest_path, derived_keys, allocator, permissions, io);
+        return decryptFileBuffered(
+            input_file,
+            gpa,
+            io,
+            file_size,
+            dest_path,
+            derived_keys,
+            permissions,
+        );
     };
     defer input_map.destroy(io);
 
@@ -351,13 +413,19 @@ fn decryptFileZeroCopy(
     }
     const output_size = file_size - crypto.overhead_size;
 
-    var atomic = try AtomicOutput.init(dest_path, .{ .read = true, .permissions = permissions }, null, allocator, io);
+    var atomic = try AtomicOutput.init(
+        gpa,
+        io,
+        dest_path,
+        .{ .read = true, .permissions = permissions },
+        null,
+    );
     defer atomic.deinit(io);
 
     try atomic.file.setLength(io, output_size);
 
     {
-        var output_map = try std.Io.File.MemoryMap.create(io, atomic.file, .{
+        var output_map = try Io.File.MemoryMap.create(io, atomic.file, .{
             .len = output_size,
             .protection = .{ .read = true, .write = true },
             .undefined_contents = true,
@@ -379,21 +447,21 @@ fn decryptFileZeroCopy(
 }
 
 fn decryptFileBuffered(
-    input_file: std.Io.File,
+    input_file: Io.File,
+    gpa: Allocator,
+    io: Io,
     file_size: u64,
     dest_path: []const u8,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
-    permissions: std.Io.File.Permissions,
-    io: std.Io,
+    permissions: Io.File.Permissions,
 ) !void {
-    const encrypted = try readBuffered(input_file, file_size, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try readBuffered(input_file, gpa, io, file_size);
+    defer gpa.free(encrypted);
 
-    const plaintext = try crypto.decrypt(encrypted, derived_keys, allocator);
-    defer allocator.free(plaintext);
+    const plaintext = try crypto.decrypt(gpa, encrypted, derived_keys);
+    defer gpa.free(plaintext);
 
-    var atomic = try AtomicOutput.init(dest_path, .{ .permissions = permissions }, null, allocator, io);
+    var atomic = try AtomicOutput.init(gpa, io, dest_path, .{ .permissions = permissions }, null);
     defer atomic.deinit(io);
 
     try atomic.file.writeStreamingAll(io, plaintext);
@@ -402,44 +470,44 @@ fn decryptFileBuffered(
     try atomic.finalize(io);
 }
 
-/// Check an encrypted file without writing anything.
-/// With quick, only the header MAC is checked, so corrupt data still passes.
+/// Check an encrypted file without changing it.
+/// Quick checks confirm the key and header, but not the rest of the file.
 pub fn verifyFile(
+    gpa: Allocator,
+    io: Io,
     source_path: []const u8,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
     quick: bool,
-    io: std.Io,
 ) !void {
-    const input_file = try std.Io.Dir.openFile(.cwd(), io, source_path, .{});
+    const input_file = try Io.Dir.openFile(.cwd(), io, source_path, .{});
     defer input_file.close(io);
 
     const input_stat = try input_file.stat(io);
     const file_size = input_stat.size;
 
     if (file_size >= mmap_threshold and builtin.os.tag != .windows) {
-        try verifyFileZeroCopy(input_file, file_size, derived_keys, allocator, quick, io);
+        try verifyFileZeroCopy(input_file, gpa, io, file_size, derived_keys, quick);
     } else {
-        try verifyFileBuffered(input_file, file_size, derived_keys, allocator, quick, io);
+        try verifyFileBuffered(input_file, gpa, io, file_size, derived_keys, quick);
     }
 }
 
 fn verifyFileZeroCopy(
-    input_file: std.Io.File,
+    input_file: Io.File,
+    gpa: Allocator,
+    io: Io,
     file_size: u64,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
     quick: bool,
-    io: std.Io,
 ) !void {
     io_hints.adviseFile(input_file, 0, @intCast(file_size), .sequential);
 
-    var input_map = std.Io.File.MemoryMap.create(io, input_file, .{
+    var input_map = Io.File.MemoryMap.create(io, input_file, .{
         .len = file_size,
         .protection = .{ .read = true, .write = false },
         .populate = true,
     }) catch {
-        return verifyFileBuffered(input_file, file_size, derived_keys, allocator, quick, io);
+        return verifyFileBuffered(input_file, gpa, io, file_size, derived_keys, quick);
     };
     defer {
         io_hints.adviseMemory(input_map.memory.ptr, file_size, .dont_need);
@@ -452,283 +520,187 @@ fn verifyFileZeroCopy(
     if (quick) {
         try crypto.verifyHeaderOnly(input_map.memory, derived_keys);
     } else {
-        try crypto.verify(input_map.memory, derived_keys, allocator);
+        try crypto.verify(gpa, input_map.memory, derived_keys);
     }
 }
 
 fn verifyFileBuffered(
-    input_file: std.Io.File,
+    input_file: Io.File,
+    gpa: Allocator,
+    io: Io,
     file_size: u64,
     derived_keys: crypto.DerivedKeys,
-    allocator: std.mem.Allocator,
     quick: bool,
-    io: std.Io,
 ) !void {
-    const encrypted = try readBuffered(input_file, file_size, allocator, io);
-    defer allocator.free(encrypted);
+    const encrypted = try readBuffered(input_file, gpa, io, file_size);
+    defer gpa.free(encrypted);
 
     if (quick) {
         try crypto.verifyHeaderOnly(encrypted, derived_keys);
     } else {
-        try crypto.verify(encrypted, derived_keys, allocator);
+        try crypto.verify(gpa, encrypted, derived_keys);
     }
 }
 
-test "encrypt and decrypt file" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "a file survives an encrypt and decrypt round trip" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
-    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/processor_round_trip");
+    defer Io.Dir.deleteTree(.cwd(), io, "tmp/processor_round_trip") catch {};
 
     const test_data = "Hello, World! This is test data for file encryption.";
-    const source_path = "tmp/test_input.txt";
-    const encrypted_path = "tmp/test_encrypted.bin";
-    const decrypted_path = "tmp/test_decrypted.txt";
+    const source_path = "tmp/processor_round_trip/input.txt";
+    const encrypted_path = "tmp/processor_round_trip/encrypted.bin";
+    const decrypted_path = "tmp/processor_round_trip/decrypted.txt";
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source_path, .data = test_data });
 
-    {
-        const file = try std.Io.Dir.createFile(.cwd(), io, source_path, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io, test_data);
-    }
-    defer std.Io.Dir.deleteFile(.cwd(), io, source_path) catch {};
+    const derived = crypto.deriveKeys(@splat(42), null);
 
-    const key: [crypto.key_length]u8 = @splat(42);
-    const derived = crypto.deriveKeys(key, null);
+    try encryptFile(gpa, io, source_path, encrypted_path, derived);
+    const encrypted_stat = try Io.Dir.statFile(.cwd(), io, encrypted_path, .{});
+    try testing.expectEqual(test_data.len + crypto.overhead_size, encrypted_stat.size);
 
-    try encryptFile(source_path, encrypted_path, derived, allocator, io);
-    defer std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
-
-    {
-        const file = try std.Io.Dir.openFile(.cwd(), io, encrypted_path, .{});
-        defer file.close(io);
-        const size = (try file.stat(io)).size;
-        try testing.expect(size == test_data.len + crypto.overhead_size);
-    }
-
-    try decryptFile(encrypted_path, decrypted_path, derived, allocator, io);
-    defer std.Io.Dir.deleteFile(.cwd(), io, decrypted_path) catch {};
-
-    {
-        const file = try std.Io.Dir.openFile(.cwd(), io, decrypted_path, .{});
-        defer file.close(io);
-        const size = (try file.stat(io)).size;
-        const content = try allocator.alloc(u8, size);
-        defer allocator.free(content);
-        _ = try readAll(file, io, content);
-        try testing.expectEqualStrings(test_data, content);
-    }
+    try decryptFile(gpa, io, encrypted_path, decrypted_path, derived);
+    const content = try Io.Dir.readFileAlloc(.cwd(), io, decrypted_path, gpa, .limited(1024));
+    defer gpa.free(content);
+    try testing.expectEqualStrings(test_data, content);
 }
 
-test "decrypt with wrong key fails" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "decrypting with the wrong key fails and writes nothing" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
-    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/processor_wrong_key");
+    defer Io.Dir.deleteTree(.cwd(), io, "tmp/processor_wrong_key") catch {};
 
-    const test_data = "Secret data";
-    const source_path = "tmp/test_wrong_key_input.txt";
-    const encrypted_path = "tmp/test_wrong_key_encrypted.bin";
-    const decrypted_path = "tmp/test_wrong_key_decrypted.txt";
+    const source_path = "tmp/processor_wrong_key/input.txt";
+    const encrypted_path = "tmp/processor_wrong_key/encrypted.bin";
+    const decrypted_path = "tmp/processor_wrong_key/decrypted.txt";
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source_path, .data = "Secret data" });
 
-    {
-        const file = try std.Io.Dir.createFile(.cwd(), io, source_path, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io, test_data);
-    }
-    defer std.Io.Dir.deleteFile(.cwd(), io, source_path) catch {};
+    const right_key = crypto.deriveKeys(@splat(1), null);
+    const wrong_key = crypto.deriveKeys(@splat(2), null);
 
-    const key1: [crypto.key_length]u8 = @splat(1);
-    const key2: [crypto.key_length]u8 = @splat(2);
-    const derived1 = crypto.deriveKeys(key1, null);
-    const derived2 = crypto.deriveKeys(key2, null);
-
-    try encryptFile(source_path, encrypted_path, derived1, allocator, io);
-    defer std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
-
-    const result = decryptFile(encrypted_path, decrypted_path, derived2, allocator, io);
-    try testing.expectError(error.InvalidHeaderMac, result);
-
-    const file_result = std.Io.Dir.openFile(.cwd(), io, decrypted_path, .{});
-    try testing.expectError(error.FileNotFound, file_result);
+    try encryptFile(gpa, io, source_path, encrypted_path, right_key);
+    try testing.expectError(
+        error.InvalidHeaderMac,
+        decryptFile(gpa, io, encrypted_path, decrypted_path, wrong_key),
+    );
+    try testing.expectError(error.FileNotFound, Io.Dir.openFile(.cwd(), io, decrypted_path, .{}));
 }
 
-test "in-place encrypt/decrypt works with absolute path" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "a file can be encrypted and decrypted in place through an absolute path" {
+    const gpa = testing.allocator;
     const io = testing.io;
 
-    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/processor_in_place");
+    defer Io.Dir.deleteTree(.cwd(), io, "tmp/processor_in_place") catch {};
 
-    const relative_path = "tmp/in_place_absolute.txt";
+    const relative_path = "tmp/processor_in_place/data.txt";
     const plaintext = "absolute path data";
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = relative_path, .data = plaintext });
 
-    {
-        const file = try std.Io.Dir.createFile(.cwd(), io, relative_path, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io, plaintext);
-    }
-    defer std.Io.Dir.deleteFile(.cwd(), io, relative_path) catch {};
+    const abs_path = try Io.Dir.realPathFileAlloc(.cwd(), io, relative_path, gpa);
+    defer gpa.free(abs_path);
 
-    const abs_path = try std.Io.Dir.realPathFileAlloc(.cwd(), io, relative_path, allocator);
-    defer allocator.free(abs_path);
+    const derived = crypto.deriveKeys(@splat(9), null);
 
-    const key: [crypto.key_length]u8 = @splat(9);
-    const derived = crypto.deriveKeys(key, null);
+    try encryptFile(gpa, io, abs_path, abs_path, derived);
+    const encrypted_stat = try Io.Dir.statFile(.cwd(), io, relative_path, .{});
+    try testing.expectEqual(plaintext.len + crypto.overhead_size, encrypted_stat.size);
 
-    try encryptFile(abs_path, abs_path, derived, allocator, io);
-
-    {
-        const file = try std.Io.Dir.openFile(.cwd(), io, relative_path, .{});
-        defer file.close(io);
-        const stat = try file.stat(io);
-        try testing.expectEqual(plaintext.len + crypto.overhead_size, stat.size);
-    }
-
-    try decryptFile(abs_path, abs_path, derived, allocator, io);
-
-    {
-        const file = try std.Io.Dir.openFile(.cwd(), io, relative_path, .{});
-        defer file.close(io);
-        const buf = try allocator.alloc(u8, plaintext.len);
-        defer allocator.free(buf);
-        const n = try readAll(file, io, buf);
-        try testing.expectEqual(plaintext.len, n);
-        try testing.expectEqualStrings(plaintext, buf);
-    }
+    try decryptFile(gpa, io, abs_path, abs_path, derived);
+    const content = try Io.Dir.readFileAlloc(.cwd(), io, relative_path, gpa, .limited(1024));
+    defer gpa.free(content);
+    try testing.expectEqualStrings(plaintext, content);
 }
 
 test "destination with .enc suffix keeps the source file" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+    const gpa = testing.allocator;
     const io = testing.io;
 
-    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/processor_keep_source");
+    defer Io.Dir.deleteTree(.cwd(), io, "tmp/processor_keep_source") catch {};
 
-    const source_path = "tmp/keep_source.txt";
-    const encrypted_path = "tmp/keep_source.txt.enc";
+    const source_path = "tmp/processor_keep_source/keep_source.txt";
+    const encrypted_path = "tmp/processor_keep_source/keep_source.txt.enc";
     const plaintext = "the source must survive";
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source_path, .data = plaintext });
 
-    {
-        const file = try std.Io.Dir.createFile(.cwd(), io, source_path, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io, plaintext);
-    }
-    defer std.Io.Dir.deleteFile(.cwd(), io, source_path) catch {};
+    const derived = crypto.deriveKeys(@splat(3), null);
 
-    const key: [crypto.key_length]u8 = @splat(3);
-    const derived = crypto.deriveKeys(key, null);
+    try encryptFile(gpa, io, source_path, encrypted_path, derived);
+    _ = try Io.Dir.statFile(.cwd(), io, source_path, .{});
 
-    try encryptFile(source_path, encrypted_path, derived, allocator, io);
-    defer std.Io.Dir.deleteFile(.cwd(), io, encrypted_path) catch {};
-    _ = try std.Io.Dir.statFile(.cwd(), io, source_path, .{});
-
-    try decryptFile(encrypted_path, source_path, derived, allocator, io);
-    _ = try std.Io.Dir.statFile(.cwd(), io, encrypted_path, .{});
+    try decryptFile(gpa, io, encrypted_path, source_path, derived);
+    _ = try Io.Dir.statFile(.cwd(), io, encrypted_path, .{});
 }
 
 test "symlink at output path does not hijack writes" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
-    const testing = std.testing;
-    const allocator = testing.allocator;
+    const gpa = testing.allocator;
     const io = testing.io;
 
-    std.Io.Dir.createDir(.cwd(), io, "tmp", .default_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
+    Io.Dir.deleteTree(.cwd(), io, "tmp/processor_symlink") catch {};
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/processor_symlink");
+    defer Io.Dir.deleteTree(.cwd(), io, "tmp/processor_symlink") catch {};
 
-    const source_path = "tmp/symhijack_input.txt";
-    const sentinel_path = "tmp/symhijack_sentinel.txt";
-    const dest_path = "tmp/symhijack_output.bin";
+    const source_path = "tmp/processor_symlink/input.txt";
+    const sentinel_path = "tmp/processor_symlink/sentinel.txt";
+    const dest_path = "tmp/processor_symlink/output.bin";
     const sentinel_content = "DO NOT OVERWRITE ME";
     const plaintext = "secret payload that must land in output_path only";
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source_path, .data = plaintext });
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = sentinel_path, .data = sentinel_content });
+    try Io.Dir.symLink(.cwd(), io, "sentinel.txt", dest_path, .{});
 
-    std.Io.Dir.deleteFile(.cwd(), io, dest_path) catch {};
-    std.Io.Dir.deleteFile(.cwd(), io, sentinel_path) catch {};
-    std.Io.Dir.deleteFile(.cwd(), io, source_path) catch {};
+    const derived = crypto.deriveKeys(@splat(7), null);
 
-    {
-        const f = try std.Io.Dir.createFile(.cwd(), io, source_path, .{});
-        defer f.close(io);
-        try f.writeStreamingAll(io, plaintext);
-    }
-    defer std.Io.Dir.deleteFile(.cwd(), io, source_path) catch {};
+    try encryptFile(gpa, io, source_path, dest_path, derived);
 
-    {
-        const f = try std.Io.Dir.createFile(.cwd(), io, sentinel_path, .{});
-        defer f.close(io);
-        try f.writeStreamingAll(io, sentinel_content);
-    }
-    defer std.Io.Dir.deleteFile(.cwd(), io, sentinel_path) catch {};
+    const sentinel = try Io.Dir.readFileAlloc(.cwd(), io, sentinel_path, gpa, .limited(1024));
+    defer gpa.free(sentinel);
+    try testing.expectEqualStrings(sentinel_content, sentinel);
 
-    try std.Io.Dir.symLink(.cwd(), io, "symhijack_sentinel.txt", dest_path, .{});
-    defer std.Io.Dir.deleteFile(.cwd(), io, dest_path) catch {};
-
-    const key: [crypto.key_length]u8 = @splat(7);
-    const derived = crypto.deriveKeys(key, null);
-
-    try encryptFile(source_path, dest_path, derived, allocator, io);
-
-    {
-        const f = try std.Io.Dir.openFile(.cwd(), io, sentinel_path, .{});
-        defer f.close(io);
-        const buf = try allocator.alloc(u8, sentinel_content.len);
-        defer allocator.free(buf);
-        const n = try readAll(f, io, buf);
-        try testing.expectEqual(sentinel_content.len, n);
-        try testing.expectEqualStrings(sentinel_content, buf);
-    }
-
-    {
-        const f = try std.Io.Dir.openFile(.cwd(), io, dest_path, .{});
-        defer f.close(io);
-        const stat = try f.stat(io);
-        try testing.expectEqual(plaintext.len + crypto.overhead_size, stat.size);
-    }
+    const dest_stat = try Io.Dir.statFile(.cwd(), io, dest_path, .{});
+    try testing.expectEqual(plaintext.len + crypto.overhead_size, dest_stat.size);
 }
 
 test "writeFileAtomic keeps temporary files in the given directory" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+    const gpa = testing.allocator;
     const io = testing.io;
 
-    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_dest");
-    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_dest") catch {};
-    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_tmp");
-    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_tmp") catch {};
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_tmp_dir/dest");
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_tmp_dir/staging");
+    defer Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_tmp_dir") catch {};
 
-    const permissions: ?std.Io.File.Permissions = if (builtin.os.tag == .windows) null else .fromMode(0o600);
-    try writeFileAtomic("tmp/atomic_dest/note.md", "hello", permissions, "tmp/atomic_tmp", allocator, io);
+    const dest_path = "tmp/atomic_tmp_dir/dest/note.md";
+    const permissions: ?Io.File.Permissions =
+        if (builtin.os.tag == .windows) null else .fromMode(0o600);
+    try writeFileAtomic(gpa, io, dest_path, "hello", permissions, "tmp/atomic_tmp_dir/staging");
 
-    const content = try std.Io.Dir.readFileAlloc(.cwd(), io, "tmp/atomic_dest/note.md", allocator, .limited(64));
-    defer allocator.free(content);
+    const content = try Io.Dir.readFileAlloc(.cwd(), io, dest_path, gpa, .limited(64));
+    defer gpa.free(content);
     try testing.expectEqualStrings("hello", content);
 
-    var dest_dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/atomic_dest", .{ .iterate = true });
+    var dest_dir = try Io.Dir.openDir(.cwd(), io, "tmp/atomic_tmp_dir/dest", .{ .iterate = true });
     defer dest_dir.close(io);
-    var it = dest_dir.iterate();
+    var dest_it = dest_dir.iterate();
     var count: usize = 0;
-    while (try it.next(io)) |_| count += 1;
+    while (try dest_it.next(io)) |_| count += 1;
     try testing.expectEqual(1, count);
 
-    var tmp_dir = try std.Io.Dir.openDir(.cwd(), io, "tmp/atomic_tmp", .{ .iterate = true });
-    defer tmp_dir.close(io);
-    var tmp_it = tmp_dir.iterate();
-    try testing.expectEqual(null, try tmp_it.next(io));
+    var staging_dir = try Io.Dir.openDir(.cwd(), io, "tmp/atomic_tmp_dir/staging", .{
+        .iterate = true,
+    });
+    defer staging_dir.close(io);
+    var staging_it = staging_dir.iterate();
+    try testing.expectEqual(null, try staging_it.next(io));
 }
 
-test "temporary names have one shape" {
-    const testing = std.testing;
+test "isTmpName accepts only names made by tmpName" {
     const name = tmpName(0x0123456789abcdef);
     try testing.expectEqualStrings(".tc-0123456789abcdef.tmp", &name);
     try testing.expect(isTmpName(&name));
@@ -740,47 +712,45 @@ test "temporary names have one shape" {
 }
 
 test "the temporary file fits next to a 255-byte destination" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+    const gpa = testing.allocator;
     const io = testing.io;
 
-    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_long");
-    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_long") catch {};
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_long");
+    defer Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_long") catch {};
 
     const long_name: [255]u8 = @splat('n');
     const dest_path = "tmp/atomic_long/" ++ long_name;
-    try writeFileAtomic(dest_path, "data", null, null, allocator, io);
-    const content = try std.Io.Dir.readFileAlloc(.cwd(), io, dest_path, allocator, .limited(16));
-    defer allocator.free(content);
+    try writeFileAtomic(gpa, io, dest_path, "data", null, null);
+    const content = try Io.Dir.readFileAlloc(.cwd(), io, dest_path, gpa, .limited(16));
+    defer gpa.free(content);
     try testing.expectEqualStrings("data", content);
 }
 
 test "initIn stages and publishes through directory handles" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+    const gpa = testing.allocator;
     const io = testing.io;
 
-    try std.Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_in/dest");
-    defer std.Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_in") catch {};
-    var stage = try std.Io.Dir.openDir(.cwd(), io, "tmp/atomic_in", .{ .iterate = true });
+    try Io.Dir.createDirPath(.cwd(), io, "tmp/atomic_in/dest");
+    defer Io.Dir.deleteTree(.cwd(), io, "tmp/atomic_in") catch {};
+    var stage = try Io.Dir.openDir(.cwd(), io, "tmp/atomic_in", .{ .iterate = true });
     defer stage.close(io);
-    var dest = try std.Io.Dir.openDir(.cwd(), io, "tmp/atomic_in/dest", .{ .iterate = true });
+    var dest = try Io.Dir.openDir(.cwd(), io, "tmp/atomic_in/dest", .{ .iterate = true });
     defer dest.close(io);
 
     {
-        var atomic = try AtomicOutput.initIn(stage, .{}, allocator, io);
+        var atomic = try AtomicOutput.initIn(stage, gpa, io, .{});
         defer atomic.deinit(io);
         try testing.expect(isTmpName(atomic.tmp_path));
         _ = try stage.statFile(io, atomic.tmp_path, .{});
         try atomic.file.writeStreamingAll(io, "moved");
-        try atomic.finalizeInto(dest, "final", io);
+        try atomic.finalizeInto(io, dest, "final");
     }
-    const content = try std.Io.Dir.readFileAlloc(.cwd(), io, "tmp/atomic_in/dest/final", allocator, .limited(16));
-    defer allocator.free(content);
+    const content = try dest.readFileAlloc(io, "final", gpa, .limited(16));
+    defer gpa.free(content);
     try testing.expectEqualStrings("moved", content);
 
     {
-        var atomic = try AtomicOutput.initIn(stage, .{}, allocator, io);
+        var atomic = try AtomicOutput.initIn(stage, gpa, io, .{});
         atomic.deinit(io);
     }
     var it = stage.iterate();

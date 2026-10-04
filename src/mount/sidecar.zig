@@ -1,34 +1,41 @@
-//! AppleDouble files that the mount accepts but never stores.
+//! Handle AppleDouble files without writing them to the encrypted backing store.
 //!
-//! On a volume without extended attributes of its own, macOS keeps them in a "._" file next to each file.
-//! The encrypted files have no place for them, and the "._" files confuse users.
-//! So the mount keeps the sidecars in memory for the life of the mount, and nothing reaches the encrypted folder.
+//! On volumes without native extended attributes,
+//! macOS puts them in neighboring files named `._*`.
+//! Encrypted backing files cannot carry those sidecars, and exposing them confuses people.
+//! Keep them in memory for the mount's lifetime,
+//! so the encrypted directory stays free of AppleDouble files.
 //!
-//! A sidecar must outlive its last close.
-//! The kernel keeps the vnode in its name cache, and a later attribute write on a vanished file fails with EPERM.
+//! A sidecar must survive after its last handle closes.
+//! The kernel may retain its vnode in the name cache,
+//! and a later attribute update would otherwise fail with EPERM.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const table_mod = @import("table.zig");
+const testing = std.testing;
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
+const pathSuffix = @import("table.zig").pathSuffix;
 
 pub const Error = error{ FileNotFound, NoSpaceLeft, OutOfMemory };
 
-/// Above this many bytes, the oldest closed sidecars go away first.
+/// Evict the oldest closed sidecars once storage grows beyond this limit.
 pub const default_limit: usize = 64 * 1024 * 1024;
 
-/// The kernel names a sidecar after its file, or "._." for the root directory.
-pub fn isSidecar(path: []const u8) bool {
+/// macOS names sidecars after their files, using `._.` for the root.
+pub fn matches(path: []const u8) bool {
     if (builtin.os.tag != .macos) return false;
-    return std.mem.startsWith(u8, std.fs.path.basename(path), "._");
+    return std.mem.startsWith(u8, Io.Dir.path.basename(path), "._");
 }
 
 pub const Entry = struct {
-    data: std.ArrayListUnmanaged(u8) = .empty,
+    data: std.ArrayList(u8) = .empty,
     uid: std.c.uid_t,
     gid: std.c.gid_t,
     mtime: std.c.timespec,
     opens: usize = 1,
-    /// Removed from the store while still open, so the last close frees it.
+    /// Keep it until the last open handle closes after removal.
     unlinked: bool = false,
 };
 
@@ -40,24 +47,32 @@ pub const Stat = struct {
 };
 
 pub const Store = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
+    gpa: Allocator,
+    io: Io,
     limit: usize = default_limit,
-    mutex: std.Io.Mutex = .init,
+    mutex: Io.Mutex = .init,
     bytes: usize = 0,
-    /// Insertion order is eviction order. The store owns the keys.
-    entries: std.StringArrayHashMapUnmanaged(*Entry) = .empty,
+    /// Preserve insertion order for eviction; the store owns each key.
+    entries: std.array_hash_map.String(*Entry) = .empty,
 
     pub fn deinit(s: *Store) void {
         for (s.entries.keys(), s.entries.values()) |path, entry| {
-            s.allocator.free(path);
+            s.gpa.free(path);
             s.destroy(entry);
         }
-        s.entries.deinit(s.allocator);
+        s.entries.deinit(s.gpa);
     }
 
-    /// A missing sidecar is created when the caller intends to write.
-    pub fn open(s: *Store, path: []const u8, uid: std.c.uid_t, gid: std.c.gid_t, writable: bool, truncate: bool, now: std.c.timespec) Error!*Entry {
+    /// Create a missing sidecar only for a caller that will write it.
+    pub fn open(
+        s: *Store,
+        path: []const u8,
+        uid: std.c.uid_t,
+        gid: std.c.gid_t,
+        writable: bool,
+        truncate: bool,
+        now: std.c.timespec,
+    ) Error!*Entry {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
         if (s.entries.get(path)) |entry| {
@@ -71,12 +86,12 @@ pub const Store = struct {
         }
         if (!writable) return error.FileNotFound;
         try s.makeRoom(path.len);
-        const entry = try s.allocator.create(Entry);
-        errdefer s.allocator.destroy(entry);
+        const entry = try s.gpa.create(Entry);
+        errdefer s.gpa.destroy(entry);
         entry.* = .{ .uid = uid, .gid = gid, .mtime = now };
-        const key = try s.allocator.dupe(u8, path);
-        errdefer s.allocator.free(key);
-        try s.entries.put(s.allocator, key, entry);
+        const key = try s.gpa.dupe(u8, path);
+        errdefer s.gpa.free(key);
+        try s.entries.put(s.gpa, key, entry);
         s.bytes += key.len;
         return entry;
     }
@@ -98,7 +113,12 @@ pub const Store = struct {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
         const entry = s.entries.get(path) orelse return null;
-        return .{ .size = entry.data.items.len, .uid = entry.uid, .gid = entry.gid, .mtime = entry.mtime };
+        return .{
+            .size = entry.data.items.len,
+            .uid = entry.uid,
+            .gid = entry.gid,
+            .mtime = entry.mtime,
+        };
     }
 
     pub fn chown(s: *Store, path: []const u8, uid: std.c.uid_t, gid: std.c.gid_t) Error!void {
@@ -125,7 +145,13 @@ pub const Store = struct {
         return n;
     }
 
-    pub fn write(s: *Store, entry: *Entry, bytes: []const u8, offset: u64, now: std.c.timespec) Error!void {
+    pub fn write(
+        s: *Store,
+        entry: *Entry,
+        bytes: []const u8,
+        offset: u64,
+        now: std.c.timespec,
+    ) Error!void {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
         const end = offset + bytes.len;
@@ -149,66 +175,70 @@ pub const Store = struct {
         entry.mtime = now;
     }
 
-    /// Drop one sidecar. It stays readable through its open handles.
+    /// Remove this name but keep open handles readable.
     pub fn remove(s: *Store, path: []const u8) void {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
         if (s.entries.getIndex(path)) |index| s.removeAt(index);
     }
 
-    /// Drop every sidecar below a removed directory.
+    /// Remove every sidecar stored below a deleted directory.
     pub fn forget(s: *Store, dir: []const u8) void {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
         s.forgetTree(dir);
     }
 
-    /// Follow a rename. Whatever the target had before goes away.
-    /// A rename that fails halfway drops every sidecar rather than leave the index wrong.
+    /// Move sidecars with their file or directory, replacing any target sidecars.
+    /// If the move cannot finish, discard sidecars instead of leaving stale paths.
     pub fn move(s: *Store, from: []const u8, to: []const u8) Error!void {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
         if (s.entries.fetchSwapRemove(from)) |kv| {
             errdefer s.drop(kv.key, kv.value);
             s.forgetTree(to);
-            const key = try s.allocator.dupe(u8, to);
-            errdefer s.allocator.free(key);
-            try s.entries.put(s.allocator, key, kv.value);
+            const key = try s.gpa.dupe(u8, to);
+            errdefer s.gpa.free(key);
+            try s.entries.put(s.gpa, key, kv.value);
             s.bytes = s.bytes - kv.key.len + key.len;
-            s.allocator.free(kv.key);
+            s.gpa.free(kv.key);
             return;
         }
         for (s.entries.keys()) |path| {
-            if (table_mod.pathSuffix(path, from, true) != null) break;
+            if (pathSuffix(path, from, true) != null) break;
         } else return error.FileNotFound;
         s.forgetTree(to);
         errdefer s.forgetTree("");
         for (s.entries.keys()) |*key| {
-            const rest = table_mod.pathSuffix(key.*, from, true) orelse continue;
-            const moved = try std.mem.concat(s.allocator, u8, &.{ to, rest });
+            const rest = pathSuffix(key.*, from, true) orelse continue;
+            const moved = try std.mem.concat(s.gpa, u8, &.{ to, rest });
             s.bytes = s.bytes - key.len + moved.len;
-            s.allocator.free(key.*);
+            s.gpa.free(key.*);
             key.* = moved;
         }
-        try s.entries.reIndex(s.allocator);
+        try s.entries.reIndex(s.gpa);
     }
 
     fn forgetTree(s: *Store, root: []const u8) void {
         var index: usize = 0;
         while (index < s.entries.count()) {
-            if (table_mod.pathSuffix(s.entries.keys()[index], root, true) != null) s.removeAt(index) else index += 1;
+            if (pathSuffix(s.entries.keys()[index], root, true) != null) {
+                s.removeAt(index);
+            } else {
+                index += 1;
+            }
         }
     }
 
     fn resizeLocked(s: *Store, entry: *Entry, size: u64) Error!void {
         const old = entry.data.items.len;
         if (size > old) try s.makeRoom(@intCast(size - old));
-        try entry.data.resize(s.allocator, @intCast(size));
+        try entry.data.resize(s.gpa, @intCast(size));
         if (size > old) @memset(entry.data.items[old..], 0);
         s.bytes = s.bytes - old + entry.data.items.len;
     }
 
-    /// Evict the oldest closed sidecars until the growth fits.
+    /// Evict the oldest closed sidecars until the requested growth fits.
     fn makeRoom(s: *Store, growth: usize) Error!void {
         var index: usize = 0;
         while (s.bytes + growth > s.limit and index < s.entries.count()) {
@@ -226,19 +256,18 @@ pub const Store = struct {
 
     fn drop(s: *Store, path: []const u8, entry: *Entry) void {
         s.bytes -= path.len;
-        s.allocator.free(path);
+        s.gpa.free(path);
         if (entry.opens == 0) s.destroy(entry) else entry.unlinked = true;
     }
 
-    /// The data stays counted until it is really gone, since an unlinked sidecar keeps it while open.
+    /// Keep its bytes charged until the last open handle truly releases it.
     fn destroy(s: *Store, entry: *Entry) void {
         s.bytes -= entry.data.items.len;
-        entry.data.deinit(s.allocator);
-        s.allocator.destroy(entry);
+        entry.data.deinit(s.gpa);
+        s.gpa.destroy(entry);
     }
 };
 
-const testing = std.testing;
 const epoch: std.c.timespec = .{ .sec = 0, .nsec = 0 };
 
 fn sizeOf(s: *Store, path: []const u8) ?u64 {
@@ -251,7 +280,7 @@ fn openClosed(s: *Store, path: []const u8) !void {
 }
 
 test "a sidecar outlives its last close and keeps what was written" {
-    var s: Store = .{ .allocator = testing.allocator, .io = testing.io };
+    var s: Store = .{ .gpa = testing.allocator, .io = testing.io };
     defer s.deinit();
     try testing.expectError(error.FileNotFound, s.open("/._a", 1, 2, false, false, epoch));
     const entry = try s.open("/._a", 1, 2, true, false, epoch);
@@ -278,7 +307,7 @@ test "a sidecar outlives its last close and keeps what was written" {
 }
 
 test "a rename moves one sidecar or a tree of them, and a removal drops them" {
-    var s: Store = .{ .allocator = testing.allocator, .io = testing.io };
+    var s: Store = .{ .gpa = testing.allocator, .io = testing.io };
     defer s.deinit();
     try openClosed(&s, "/._d");
     try openClosed(&s, "/d/._f");
@@ -302,7 +331,7 @@ test "a rename moves one sidecar or a tree of them, and a removal drops them" {
 }
 
 test "an open sidecar survives its removal until the last close" {
-    var s: Store = .{ .allocator = testing.allocator, .io = testing.io };
+    var s: Store = .{ .gpa = testing.allocator, .io = testing.io };
     defer s.deinit();
     const entry = try s.open("/._a", 0, 0, true, false, epoch);
     try s.write(entry, "data", 0, epoch);
@@ -316,7 +345,7 @@ test "an open sidecar survives its removal until the last close" {
 }
 
 test "the oldest closed sidecars are evicted first, and open ones stay" {
-    var s: Store = .{ .allocator = testing.allocator, .io = testing.io, .limit = 40 };
+    var s: Store = .{ .gpa = testing.allocator, .io = testing.io, .limit = 40 };
     defer s.deinit();
     const held = try s.open("/._a", 0, 0, true, false, epoch);
     try s.write(held, "0123456789", 0, epoch);
@@ -334,10 +363,10 @@ test "the oldest closed sidecars are evicted first, and open ones stay" {
 
 test "only file names with the AppleDouble prefix are sidecars, and only on macOS" {
     const expected = builtin.os.tag == .macos;
-    try testing.expectEqual(expected, isSidecar("/._a"));
-    try testing.expectEqual(expected, isSidecar("/dir/._a.txt"));
-    try testing.expectEqual(expected, isSidecar("/._."));
-    try testing.expect(!isSidecar("/dir/a.txt"));
-    try testing.expect(!isSidecar("/._dir/a.txt"));
-    try testing.expect(!isSidecar("/.hidden"));
+    try testing.expectEqual(expected, matches("/._a"));
+    try testing.expectEqual(expected, matches("/dir/._a.txt"));
+    try testing.expectEqual(expected, matches("/._."));
+    try testing.expect(!matches("/dir/a.txt"));
+    try testing.expect(!matches("/._dir/a.txt"));
+    try testing.expect(!matches("/.hidden"));
 }

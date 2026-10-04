@@ -1,6 +1,12 @@
+//! Background workers for file encryption, decryption, and verification.
+
 const std = @import("std");
-const processor = @import("processor.zig");
+const testing = std.testing;
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
 const crypto = @import("crypto.zig");
+const processor = @import("processor.zig");
 const progress = @import("progress.zig");
 
 pub fn printErrorDetails(err: anyerror, is_encrypt: bool) void {
@@ -61,7 +67,7 @@ fn handleJobError(
     error_prefix: []const u8,
     is_encrypt: bool,
 ) void {
-    // Print outside the error mutex.
+    // Keep slow terminal output from blocking other workers that hit an error.
     std.debug.print("\n{s} {s}\n", .{ error_prefix, job.source_path });
     printErrorDetails(err, is_encrypt);
 
@@ -77,25 +83,26 @@ pub const Operation = enum {
 
 pub const FileJob = struct {
     source_path: []const u8,
-    dest_path: ?[]const u8, // null for verify operations
+    /// Verification reads the source and does not need a destination.
+    dest_path: ?[]const u8,
     operation: Operation,
     file_size: u64,
-    /// Remove the source file once the output is complete
+    /// Suffix mode removes the old name after its replacement is safely published.
     delete_source: bool = false,
 };
 
 const WorkQueue = struct {
-    mutex: std.Io.Mutex,
+    mutex: Io.Mutex,
     jobs: std.ArrayList(FileJob),
-    allocator: std.mem.Allocator,
+    gpa: Allocator,
     done: bool,
-    io: std.Io,
+    io: Io,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io) WorkQueue {
+    pub fn init(gpa: Allocator, io: Io) WorkQueue {
         return .{
-            .mutex = std.Io.Mutex.init,
+            .mutex = .init,
             .jobs = .empty,
-            .allocator = allocator,
+            .gpa = gpa,
             .done = false,
             .io = io,
         };
@@ -103,32 +110,32 @@ const WorkQueue = struct {
 
     pub fn deinit(self: *WorkQueue) void {
         for (self.jobs.items) |job| {
-            self.allocator.free(job.source_path);
-            if (job.dest_path) |dest_path| self.allocator.free(dest_path);
+            self.gpa.free(job.source_path);
+            if (job.dest_path) |dest_path| self.gpa.free(dest_path);
         }
-        self.jobs.deinit(self.allocator);
+        self.jobs.deinit(self.gpa);
     }
 
     pub fn push(self: *WorkQueue, job: FileJob) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        try self.jobs.append(self.allocator, job);
+        try self.jobs.append(self.gpa, job);
     }
 
-    /// Null means the queue is done. An empty slice means more jobs can still come.
-    /// The caller frees the result.
+    /// Wait for a batch, returning null only after no more jobs can arrive.
+    /// The caller frees each returned batch.
     pub fn popBatch(self: *WorkQueue, max_count: usize) !?[]FileJob {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
         if (self.jobs.items.len == 0) {
             if (self.done) return null;
-            return try self.allocator.alloc(FileJob, 0);
+            return try self.gpa.alloc(FileJob, 0);
         }
 
         const batch_size = @min(max_count, self.jobs.items.len);
 
-        const batch = try self.allocator.alloc(FileJob, batch_size);
+        const batch = try self.gpa.alloc(FileJob, batch_size);
         @memcpy(batch, self.jobs.items[0..batch_size]);
 
         const remaining = self.jobs.items.len - batch_size;
@@ -157,40 +164,40 @@ const max_batch_size: usize = 16;
 const progress_update_interval: usize = 10;
 
 pub const Pool = struct {
-    allocator: std.mem.Allocator,
+    gpa: Allocator,
     work_queue: WorkQueue,
     threads: []std.Thread,
     spawned_count: usize,
     thread_count: u32,
     derived_keys: crypto.DerivedKeys,
     progress_tracker: *progress.Tracker,
-    error_mutex: std.Io.Mutex,
+    error_mutex: Io.Mutex,
     has_errors: bool,
     quick_verify: bool,
     dry_run: bool,
-    io: std.Io,
+    io: Io,
 
     pub fn init(
-        allocator: std.mem.Allocator,
+        gpa: Allocator,
+        io: Io,
         thread_count: u32,
         derived_keys: crypto.DerivedKeys,
         progress_tracker: *progress.Tracker,
         quick_verify: bool,
         dry_run: bool,
-        io: std.Io,
     ) !Pool {
-        const threads = try allocator.alloc(std.Thread, thread_count);
-        errdefer allocator.free(threads);
+        const threads = try gpa.alloc(std.Thread, thread_count);
+        errdefer gpa.free(threads);
 
-        return Pool{
-            .allocator = allocator,
-            .work_queue = WorkQueue.init(allocator, io),
+        return .{
+            .gpa = gpa,
+            .work_queue = .init(gpa, io),
             .threads = threads,
             .spawned_count = 0,
             .thread_count = thread_count,
             .derived_keys = derived_keys,
             .progress_tracker = progress_tracker,
-            .error_mutex = std.Io.Mutex.init,
+            .error_mutex = .init,
             .has_errors = false,
             .quick_verify = quick_verify,
             .dry_run = dry_run,
@@ -198,20 +205,20 @@ pub const Pool = struct {
         };
     }
 
-    /// Threads still running would touch the queue after it is gone, so they are joined first.
+    /// Stop the workers before freeing the queue they still use.
     pub fn deinit(self: *Pool) void {
         self.finish();
         self.work_queue.deinit();
-        self.allocator.free(self.threads);
+        self.gpa.free(self.threads);
     }
 
     fn workerThread(pool: *Pool) void {
-        // A thread-local arena keeps the workers from contending on the allocator.
-        var thread_arena = std.heap.ArenaAllocator.init(pool.allocator);
-        defer thread_arena.deinit();
-        const thread_allocator = thread_arena.allocator();
+        // Give each worker private scratch space instead of making them compete for allocations.
+        var arena_state = std.heap.ArenaAllocator.init(pool.gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
 
-        // Local counters keep the atomic traffic low.
+        // Report progress in batches so bookkeeping does not dominate small jobs.
         var local_files_processed: u64 = 0;
         var local_bytes_processed: u64 = 0;
 
@@ -223,27 +230,27 @@ pub const Pool = struct {
             };
 
             const batch = maybe_batch orelse break;
-            defer pool.allocator.free(batch);
+            defer pool.gpa.free(batch);
 
             if (batch.len == 0) {
-                pool.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {};
+                pool.io.sleep(.fromNanoseconds(1_000_000), .awake) catch {};
                 continue;
             }
 
             for (batch, 0..) |job, i| {
-                // The job owns its paths.
-                defer pool.allocator.free(job.source_path);
-                defer if (job.dest_path) |dest| pool.allocator.free(dest);
+                // Free these paths here because the queue transferred ownership to this worker.
+                defer pool.gpa.free(job.source_path);
+                defer if (job.dest_path) |dest| pool.gpa.free(dest);
 
                 if (!pool.dry_run) {
                     switch (job.operation) {
                         .encrypt => {
                             processor.encryptFile(
+                                arena,
+                                pool.io,
                                 job.source_path,
                                 job.dest_path.?,
                                 pool.derived_keys,
-                                thread_allocator,
-                                pool.io,
                             ) catch |err| {
                                 handleJobError(pool, job, err, "[ERROR] Failed to encrypt:", true);
                                 continue;
@@ -251,11 +258,11 @@ pub const Pool = struct {
                         },
                         .decrypt => {
                             processor.decryptFile(
+                                arena,
+                                pool.io,
                                 job.source_path,
                                 job.dest_path.?,
                                 pool.derived_keys,
-                                thread_allocator,
-                                pool.io,
                             ) catch |err| {
                                 handleJobError(pool, job, err, "[ERROR] Failed to decrypt:", false);
                                 continue;
@@ -263,11 +270,11 @@ pub const Pool = struct {
                         },
                         .verify => {
                             processor.verifyFile(
+                                arena,
+                                pool.io,
                                 job.source_path,
                                 pool.derived_keys,
-                                thread_allocator,
                                 pool.quick_verify,
-                                pool.io,
                             ) catch |err| {
                                 handleJobError(pool, job, err, "[VERIFY FAILED]", false);
                                 continue;
@@ -276,8 +283,14 @@ pub const Pool = struct {
                     }
 
                     if (job.delete_source) {
-                        std.Io.Dir.deleteFile(.cwd(), pool.io, job.source_path) catch |err| {
-                            handleJobError(pool, job, err, "[ERROR] Failed to remove source file:", job.operation == .encrypt);
+                        Io.Dir.deleteFile(.cwd(), pool.io, job.source_path) catch |err| {
+                            handleJobError(
+                                pool,
+                                job,
+                                err,
+                                "[ERROR] Failed to remove source file:",
+                                job.operation == .encrypt,
+                            );
                             continue;
                         };
                     }
@@ -296,7 +309,7 @@ pub const Pool = struct {
                 }
             }
 
-            _ = thread_arena.reset(.retain_capacity);
+            _ = arena_state.reset(.retain_capacity);
         }
 
         if (local_files_processed > 0) {
@@ -309,7 +322,8 @@ pub const Pool = struct {
         try self.work_queue.push(job);
     }
 
-    /// Fewer threads than asked for is a warning. None at all is an error, since the jobs would never run.
+    /// Keep working if some workers cannot start.
+    /// Fail only when there is no worker left to process the queue.
     pub fn start(self: *Pool) !void {
         for (self.threads[0..self.thread_count]) |*thread| {
             thread.* = std.Thread.spawn(.{}, workerThread, .{self}) catch |err| {
@@ -317,14 +331,19 @@ pub const Pool = struct {
                     std.debug.print("[ERROR] Failed to spawn worker thread: {}\n", .{err});
                     return err;
                 }
-                std.debug.print("[WARNING] Could not start worker thread {d} of {d}, continuing with {d}: {}\n", .{ self.spawned_count + 1, self.thread_count, self.spawned_count, err });
+                std.debug.print("[WARNING] Could not start worker thread {d} of {d}, continuing with {d}: {}\n", .{
+                    self.spawned_count + 1,
+                    self.thread_count,
+                    self.spawned_count,
+                    err,
+                });
                 break;
             };
             self.spawned_count += 1;
         }
 
-        // Give the workers time to start.
-        self.io.sleep(std.Io.Duration.fromNanoseconds(1_000_000), .awake) catch {};
+        // Let the workers begin before the caller adds more work.
+        self.io.sleep(.fromNanoseconds(1_000_000), .awake) catch {};
     }
 
     pub fn finish(self: *Pool) void {
@@ -336,7 +355,7 @@ pub const Pool = struct {
         self.spawned_count = 0;
     }
 
-    /// Start the threads and wait for every job, for callers that queue all their jobs first.
+    /// Run a queue that was filled before any worker started.
     pub fn waitAll(self: *Pool) !void {
         try self.start();
         self.finish();
@@ -355,34 +374,30 @@ pub const Pool = struct {
     }
 };
 
-test "worker pool initialization" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "a new pool has no errors" {
+    const gpa = testing.allocator;
     const io = testing.io;
+    const derived = crypto.deriveKeys(@splat(42), null);
+    var tracker = progress.Tracker.init(io, 0, 0);
 
-    const key: [crypto.key_length]u8 = @splat(42);
-    const derived = crypto.deriveKeys(key, null);
-    var tracker = progress.Tracker.init(0, 0, io);
-
-    var pool = try Pool.init(allocator, 4, derived, &tracker, false, false, io);
+    var pool = try Pool.init(gpa, io, 4, derived, &tracker, false, false);
     defer pool.deinit();
 
     try testing.expect(!pool.hadErrors());
 }
 
-test "worker pool releases jobs that were never started" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+test "pool frees jobs that were never started" {
+    const gpa = testing.allocator;
     const io = testing.io;
     const derived = crypto.deriveKeys(@splat(42), null);
-    var tracker = progress.Tracker.init(0, 0, io);
-    var pool = try Pool.init(allocator, 1, derived, &tracker, false, false, io);
+    var tracker = progress.Tracker.init(io, 0, 0);
+    var pool = try Pool.init(gpa, io, 1, derived, &tracker, false, false);
     defer pool.deinit();
 
-    const source = try allocator.dupe(u8, "source");
-    errdefer allocator.free(source);
-    const dest = try allocator.dupe(u8, "destination");
-    errdefer allocator.free(dest);
+    const source = try gpa.dupe(u8, "source");
+    errdefer gpa.free(source);
+    const dest = try gpa.dupe(u8, "destination");
+    errdefer gpa.free(dest);
     try pool.submitJob(.{
         .source_path = source,
         .dest_path = dest,

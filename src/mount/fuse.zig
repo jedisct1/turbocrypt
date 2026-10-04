@@ -1,9 +1,15 @@
-//! FUSE ABI bindings for fuse-t and libfuse, with optional static linking on macOS.
+//! Bind the FUSE ABI used by fuse-t and libfuse.
 //!
-//! Access only fields with stable layouts; tests/fuse_abi.sh checks them against the C headers.
+//! Describe only fields whose layouts stay compatible.
+//! `tests/fuse_abi.sh` compares those layouts with the C headers.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const mem = std.mem;
+const testing = std.testing;
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
+
 const build_options = @import("build_options");
 
 pub const Error = error{
@@ -20,7 +26,8 @@ pub const ConnInfo = opaque {};
 pub const mode_t = std.c.mode_t;
 pub const off_t = std.c.off_t;
 
-/// Match libfuse's C stat ABI, which the standard library does not expose on Linux.
+/// Mirror the C `struct stat` that libfuse passes to callbacks.
+/// Zig does not expose this Linux layout.
 pub const Stat = switch (builtin.os.tag) {
     .macos => std.c.Stat,
     .linux => LinuxStat,
@@ -90,7 +97,8 @@ const LinuxStat = switch (builtin.cpu.arch) {
     else => @compileError("the mount supports x86_64 and aarch64 on Linux"),
 };
 
-/// Inspect the entry itself, never a symlink target; false on failure.
+/// Read metadata for the entry itself, never for a symlink target.
+/// Return false when the platform call fails.
 pub fn statAt(dirfd: std.c.fd_t, path: [*:0]const u8, st: *Stat) bool {
     return switch (builtin.os.tag) {
         .macos => std.c.fstatat(dirfd, path, st, std.c.AT.SYMLINK_NOFOLLOW) == 0,
@@ -110,7 +118,7 @@ pub fn statFd(fd: std.c.fd_t) error{Unexpected}!Stat {
     return st;
 }
 
-/// Use statx to avoid glibc version dependencies in fstatat symbols.
+/// Use statx so the binary does not depend on versioned glibc fstatat symbols.
 fn statxInto(dirfd: std.c.fd_t, path: [*:0]const u8, flags: u32, st: *Stat) bool {
     const linux = std.os.linux;
     const request: linux.STATX = .{
@@ -146,11 +154,12 @@ fn statxInto(dirfd: std.c.fd_t, path: [*:0]const u8, flags: u32, st: *Stat) bool
     return true;
 }
 
-/// Match the device-number encoding shared by glibc and musl.
+/// Build device numbers in the form glibc and musl expect.
 fn linuxDev(major: u32, minor: u32) u64 {
     const ma: u64 = major;
     const mi: u64 = minor;
-    return ((ma & 0xfffff000) << 32) | ((ma & 0xfff) << 8) | ((mi & 0xffffff00) << 12) | (mi & 0xff);
+    return ((ma & 0xfffff000) << 32) | ((ma & 0xfff) << 8) |
+        ((mi & 0xffffff00) << 12) | (mi & 0xff);
 }
 
 pub const rename_noreplace: c_uint = 1;
@@ -162,7 +171,8 @@ pub const Args = extern struct {
     allocated: c_int = 0,
 };
 
-/// Allocated by libfuse; avoid the version-dependent bit word after `flags`.
+/// libfuse allocates this structure.
+/// Do not read the bit word after `flags` because its layout varies by version.
 pub const FileInfo = extern struct {
     flags: i32,
     bits: u32,
@@ -185,7 +195,8 @@ pub const Context = extern struct {
     umask: mode_t,
 };
 
-/// Bind only the stable prefix; later fuse_config fields moved between versions.
+/// Declare only the stable prefix of `fuse_config`.
+/// The rest changes across libfuse releases.
 pub const Config = extern struct {
     set_gid: i32,
     gid: u32,
@@ -207,7 +218,7 @@ pub const Config = extern struct {
     auto_cache: i32,
 };
 
-/// Match the platform C ABI used by fstatvfs.
+/// Match the platform's `struct statvfs` returned by fstatvfs.
 pub const Statvfs = switch (builtin.os.tag) {
     .macos => extern struct {
         bsize: c_ulong,
@@ -278,7 +289,7 @@ pub const CopyFileRangeFn = *const fn ([*:0]const u8, *FileInfo, off_t, [*:0]con
 pub const LseekFn = *const fn ([*:0]const u8, off_t, c_int, *FileInfo) callconv(.c) off_t;
 pub const StatxFn = *const fn ([*:0]const u8, c_int, c_int, ?*anyopaque, ?*FileInfo) callconv(.c) c_int;
 
-/// Older libfuse versions copy only the supported prefix of this layout.
+/// Keep this to the prefix supported by older libfuse versions.
 pub const Operations = extern struct {
     getattr: ?GetattrFn = null,
     readlink: ?ReadlinkFn = null,
@@ -328,7 +339,7 @@ pub const Operations = extern struct {
 
 pub const GetgroupsFn = *const fn (c_int, [*]std.c.gid_t) callconv(.c) c_int;
 
-/// Omit unused trailing fields to avoid warnings from older libfuse versions.
+/// Omit the unused tail so older libfuse headers do not warn.
 pub const operations_size = @offsetOf(Operations, "statx");
 
 const static = struct {
@@ -398,16 +409,32 @@ pub const Library = struct {
         return .{
             .dyn = dyn,
             .optAddArg = try lookup(&dyn, @FieldType(Library, "optAddArg"), "fuse_opt_add_arg"),
-            .optFreeArgs = try lookup(&dyn, @FieldType(Library, "optFreeArgs"), "fuse_opt_free_args"),
+            .optFreeArgs = try lookup(
+                &dyn,
+                @FieldType(Library, "optFreeArgs"),
+                "fuse_opt_free_args",
+            ),
             .new = dyn.lookup(@FieldType(Library, "new"), "fuse_new_31") orelse
                 try lookup(&dyn, @FieldType(Library, "new"), "fuse_new"),
             .mount = try lookup(&dyn, @FieldType(Library, "mount"), "fuse_mount"),
             .unmount = try lookup(&dyn, @FieldType(Library, "unmount"), "fuse_unmount"),
             .destroy = try lookup(&dyn, @FieldType(Library, "destroy"), "fuse_destroy"),
             .getSession = try lookup(&dyn, @FieldType(Library, "getSession"), "fuse_get_session"),
-            .setSignalHandlers = try lookup(&dyn, @FieldType(Library, "setSignalHandlers"), "fuse_set_signal_handlers"),
-            .removeSignalHandlers = try lookup(&dyn, @FieldType(Library, "removeSignalHandlers"), "fuse_remove_signal_handlers"),
-            .sessionExit = try lookup(&dyn, @FieldType(Library, "sessionExit"), "fuse_session_exit"),
+            .setSignalHandlers = try lookup(
+                &dyn,
+                @FieldType(Library, "setSignalHandlers"),
+                "fuse_set_signal_handlers",
+            ),
+            .removeSignalHandlers = try lookup(
+                &dyn,
+                @FieldType(Library, "removeSignalHandlers"),
+                "fuse_remove_signal_handlers",
+            ),
+            .sessionExit = try lookup(
+                &dyn,
+                @FieldType(Library, "sessionExit"),
+                "fuse_session_exit",
+            ),
             .loop = try lookup(&dyn, @FieldType(Library, "loop"), "fuse_loop"),
             .loopMt = try lookup(&dyn, @FieldType(Library, "loopMt"), "fuse_loop_mt_31"),
             .getContext = try lookup(&dyn, @FieldType(Library, "getContext"), "fuse_get_context"),
@@ -432,18 +459,18 @@ pub const Library = struct {
 };
 
 pub const RunOptions = struct {
-    /// Include the program name and pass options as "-o" pairs.
+    /// Include the program name and pass options as `-o` pairs.
     args: []const []const u8,
-    /// Must be absolute for mount-table comparisons.
+    /// Require an absolute path so mount-table checks compare reliably.
     mountpoint: []const u8,
     operations: *const Operations,
     private_data: ?*anyopaque,
     single_thread: bool,
 };
 
-/// Captured before unmount so cleanup cannot hide an unexpected session exit.
+/// Record this before unmounting so cleanup cannot mask an unexpected exit.
 pub const Outcome = struct {
-    /// Diagnostic only; fuse-t can report a nonzero result after a normal unmount.
+    /// For diagnostics only: fuse-t may return nonzero after a normal unmount.
     loop_result: c_int,
     signaled: bool,
     still_mounted: bool,
@@ -451,7 +478,7 @@ pub const Outcome = struct {
 
 var exit_session: ?*Session = null;
 var exit_fn: ?*const fn (*Session) callconv(.c) void = null;
-var signal_seen = std.atomic.Value(bool).init(false);
+var signal_seen: std.atomic.Value(bool) = .init(false);
 
 fn onSignal(_: std.c.SIG) callconv(.c) void {
     signal_seen.store(true, .seq_cst);
@@ -460,19 +487,24 @@ fn onSignal(_: std.c.SIG) callconv(.c) void {
 
 const stop_signals = [_]std.c.SIG{ .TERM, .INT, .HUP };
 
-/// Run the session through cleanup so failure counters are final when this returns.
-pub fn run(lib: *const Library, allocator: std.mem.Allocator, io: std.Io, options: RunOptions) Error!Outcome {
+/// Run cleanup before returning so the caller sees final failure counts.
+pub fn run(lib: *const Library, gpa: Allocator, io: Io, options: RunOptions) Error!Outcome {
     var args: Args = .{};
     defer lib.optFreeArgs(&args);
     for (options.args) |arg| {
-        const arg_z = try allocator.dupeSentinel(u8, arg, 0);
-        defer allocator.free(arg_z);
+        const arg_z = try gpa.dupeSentinel(u8, arg, 0);
+        defer gpa.free(arg_z);
         if (lib.optAddArg(&args, arg_z) != 0) return error.OutOfMemory;
     }
-    const mountpoint_z = try allocator.dupeSentinel(u8, options.mountpoint, 0);
-    defer allocator.free(mountpoint_z);
+    const mountpoint_z = try gpa.dupeSentinel(u8, options.mountpoint, 0);
+    defer gpa.free(mountpoint_z);
 
-    const fuse = lib.new(&args, options.operations, operations_size, options.private_data) orelse return error.CreateFailed;
+    const fuse = lib.new(
+        &args,
+        options.operations,
+        operations_size,
+        options.private_data,
+    ) orelse return error.CreateFailed;
     defer lib.destroy(fuse);
     if (lib.mount(fuse, mountpoint_z) != 0) return error.MountFailed;
 
@@ -494,7 +526,7 @@ pub fn run(lib: *const Library, allocator: std.mem.Allocator, io: std.Io, option
     const outcome: Outcome = .{
         .loop_result = loop_result,
         .signaled = signal_seen.load(.seq_cst),
-        .still_mounted = isMounted(allocator, io, options.mountpoint),
+        .still_mounted = isMounted(gpa, io, options.mountpoint),
     };
 
     for (stop_signals, 0..) |sig, i| std.posix.sigaction(sig, &saved[i], null);
@@ -504,25 +536,32 @@ pub fn run(lib: *const Library, allocator: std.mem.Allocator, io: std.Io, option
     return outcome;
 }
 
-/// Consult the mount table without accessing a mountpoint that could hang after server failure.
-pub fn isMounted(allocator: std.mem.Allocator, io: std.Io, mountpoint: []const u8) bool {
+/// Read the mount table rather than touching the mountpoint.
+/// The mountpoint may hang if its server has already failed.
+pub fn isMounted(gpa: Allocator, io: Io, mountpoint: []const u8) bool {
     switch (builtin.os.tag) {
         .macos => {
             var list: ?[*]darwin.Statfs = null;
             const count = darwin.mountList(&list, darwin.mnt_nowait);
             if (count <= 0) return false;
             for (list.?[0..@intCast(count)]) |*entry| {
-                const name = std.mem.sliceTo(&entry.mntonname, 0);
-                if (std.mem.eql(u8, name, mountpoint)) return true;
+                const name = mem.sliceTo(&entry.mntonname, 0);
+                if (mem.eql(u8, name, mountpoint)) return true;
             }
             return false;
         },
         .linux => {
-            const table = std.Io.Dir.readFileAlloc(.cwd(), io, "/proc/self/mounts", allocator, .limited(1 << 20)) catch return false;
-            defer allocator.free(table);
-            var lines = std.mem.splitScalar(u8, table, '\n');
+            const table = Io.Dir.readFileAlloc(
+                .cwd(),
+                io,
+                "/proc/self/mounts",
+                gpa,
+                .limited(1 << 20),
+            ) catch return false;
+            defer gpa.free(table);
+            var lines = mem.splitScalar(u8, table, '\n');
             while (lines.next()) |line| {
-                var fields = std.mem.splitScalar(u8, line, ' ');
+                var fields = mem.splitScalar(u8, line, ' ');
                 _ = fields.next() orelse continue;
                 const escaped = fields.next() orelse continue;
                 if (mountEntryMatches(escaped, mountpoint)) return true;
@@ -533,7 +572,7 @@ pub fn isMounted(allocator: std.mem.Allocator, io: std.Io, mountpoint: []const u
     }
 }
 
-/// Decode /proc/self/mounts octal escapes before comparing paths.
+/// Compare a mount-table path after decoding its octal escapes.
 fn mountEntryMatches(escaped: []const u8, mountpoint: []const u8) bool {
     var i: usize = 0;
     var j: usize = 0;
@@ -555,7 +594,7 @@ fn mountEntryMatches(escaped: []const u8, mountpoint: []const u8) bool {
 const darwin = struct {
     const mnt_nowait: c_int = 2;
 
-    /// Match Darwin's statfs ABI with 64-bit inode support.
+    /// Mirror Darwin's `struct statfs` with 64-bit inode counts.
     const Statfs = extern struct {
         bsize: u32,
         iosize: i32,
@@ -590,8 +629,8 @@ pub fn privateData(lib: *const Library, comptime T: type) *T {
     return @ptrCast(@alignCast(lib.getContext().private_data.?));
 }
 
-/// Emit ABI measurements for comparison with C headers in tests/fuse_abi.sh.
-pub fn writeAbi(writer: *std.Io.Writer) !void {
+/// Write the offsets that `tests/fuse_abi.sh` checks against C.
+pub fn writeAbi(writer: *Io.Writer) !void {
     try writer.print("offsetof fuse_file_info flags {d}\n", .{@offsetOf(FileInfo, "flags")});
     try writer.print("offsetof fuse_file_info fh {d}\n", .{@offsetOf(FileInfo, "fh")});
     inline for (@typeInfo(Context).@"struct".field_names) |name| {
@@ -601,13 +640,15 @@ pub fn writeAbi(writer: *std.Io.Writer) !void {
         try writer.print("offsetof fuse_config {s} {d}\n", .{ name, @offsetOf(Config, name) });
     }
     inline for (@typeInfo(Operations).@"struct".field_names) |name| {
-        try writer.print("offsetof fuse_operations {s} {d}\n", .{ name, @offsetOf(Operations, name) });
+        try writer.print("offsetof fuse_operations {s} {d}\n", .{
+            name,
+            @offsetOf(Operations, name),
+        });
     }
 }
 
 test "the Linux stat layout matches the C library" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
-    const testing = std.testing;
     const expected: usize = if (builtin.cpu.arch == .x86_64) 144 else 128;
     try testing.expectEqual(expected, @sizeOf(Stat));
     try testing.expectEqual(0x801, linuxDev(8, 1));
@@ -615,7 +656,6 @@ test "the Linux stat layout matches the C library" {
 }
 
 test "FUSE layouts preserve the supported C ABI" {
-    const testing = std.testing;
     try testing.expectEqual(44 * @sizeOf(usize), @sizeOf(Operations));
     try testing.expectEqual(27 * @sizeOf(usize), @offsetOf(Operations, "init"));
     try testing.expectEqual(64, @sizeOf(FileInfo));
@@ -628,7 +668,6 @@ test "FUSE layouts preserve the supported C ABI" {
 }
 
 test "mount table entries are unescaped before comparison" {
-    const testing = std.testing;
     try testing.expect(mountEntryMatches("/mnt/plain", "/mnt/plain"));
     try testing.expect(mountEntryMatches("/mnt/with\\040space", "/mnt/with space"));
     try testing.expect(!mountEntryMatches("/mnt/plain", "/mnt/plain2"));

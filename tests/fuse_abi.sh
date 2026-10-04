@@ -1,6 +1,6 @@
 #! /bin/sh
 
-# Check stable field offsets and version-specific struct sizes against the C headers.
+# Catch ABI drift between the Zig bindings and the FUSE headers used for this build.
 
 set -u
 
@@ -13,7 +13,7 @@ fi
 
 fail() { printf 'fuse_abi: %s\n' "$*" >&2; exit 1; }
 
-# Prefer headers matching the runtime: installed fuse-t on macOS, bundled libfuse on Linux.
+# Use headers that match the FUSE implementation exercised on each platform.
 if [ "$(uname)" = Darwin ]; then
     candidates="/usr/local/include/fuse3 /Library/Application\ Support/fuse-t/include/fuse3 $(ls -d "$root"/zig-pkg/*/include 2>/dev/null)"
 else
