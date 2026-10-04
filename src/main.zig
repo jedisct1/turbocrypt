@@ -377,6 +377,10 @@ fn cmdKeygen(args: []const []const u8, allocator: std.mem.Allocator, io: std.Io,
         std.debug.print("Usage: turbocrypt keygen [--password] <output-file>\n", .{});
         return error.InvalidArguments;
     }
+    if (opts.dry_run) {
+        std.debug.print("Error: --dry-run does not apply to keygen\n", .{});
+        return error.InvalidArguments;
+    }
 
     const output_path = parsed.positional[0];
 
@@ -1132,6 +1136,10 @@ fn cmdChangePassword(args: []const []const u8, allocator: std.mem.Allocator, io:
         std.debug.print("Usage: turbocrypt change-password [--remove-password] <key-file>\n", .{});
         return error.InvalidArguments;
     }
+    if (opts.dry_run) {
+        std.debug.print("Error: --dry-run does not apply to change-password\n", .{});
+        return error.InvalidArguments;
+    }
 
     const key_path = parsed.positional[0];
     const remove_password = opts.remove_password;
@@ -1671,7 +1679,7 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-test "commands reject extra positional arguments before side effects" {
+test "commands reject unsupported arguments before side effects" {
     const testing = std.testing;
     const allocator = testing.allocator;
     const io = testing.io;
@@ -1685,6 +1693,7 @@ test "commands reject extra positional arguments before side effects" {
     defer environ_map.deinit();
 
     try testing.expectError(error.InvalidArguments, cmdKeygen(&.{ key_path, "ignored" }, allocator, io, &environ_map));
+    try testing.expectError(error.InvalidArguments, cmdKeygen(&.{ "--dry-run", key_path }, allocator, io, &environ_map));
     try testing.expect(!utils.pathExists(key_path, io));
     try testing.expectError(error.InvalidArguments, cmdProcess(&.{ "source", "destination", "ignored" }, allocator, true, io, &environ_map));
     try testing.expectError(error.InvalidArguments, cmdVerify(&.{ "source", "ignored" }, allocator, io, &environ_map));
@@ -1695,6 +1704,11 @@ test "commands reject extra positional arguments before side effects" {
     defer allocator.free(config_path);
     try testing.expect(!utils.pathExists(config_path, io));
     try testing.expectError(error.InvalidArguments, cmdBench(&.{"ignored"}, allocator, io));
+
+    const key: [keygen.key_length]u8 = @splat(0x5a);
+    try keygen.writeKeyFile(key_path, key, null, allocator, io);
+    try testing.expectError(error.InvalidArguments, cmdChangePassword(&.{ "--dry-run", key_path }, allocator, io, &environ_map));
+    try testing.expectEqualSlices(u8, &key, &try keygen.readKeyFile(key_path, null, io));
 }
 
 test "directory processing returns an error when a worker fails" {
