@@ -351,7 +351,7 @@ fn decryptFileZeroCopy(
     }
     const output_size = file_size - crypto.overhead_size;
 
-    var atomic = try AtomicOutput.init(dest_path, .{ .read = true }, null, allocator, io);
+    var atomic = try AtomicOutput.init(dest_path, .{ .read = true, .permissions = permissions }, null, allocator, io);
     defer atomic.deinit(io);
 
     try atomic.file.setLength(io, output_size);
@@ -393,7 +393,7 @@ fn decryptFileBuffered(
     const plaintext = try crypto.decrypt(encrypted, derived_keys, allocator);
     defer allocator.free(plaintext);
 
-    var atomic = try AtomicOutput.init(dest_path, .{}, null, allocator, io);
+    var atomic = try AtomicOutput.init(dest_path, .{ .permissions = permissions }, null, allocator, io);
     defer atomic.deinit(io);
 
     try atomic.file.writeStreamingAll(io, plaintext);
