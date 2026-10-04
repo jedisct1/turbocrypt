@@ -231,12 +231,12 @@ pub fn writeStoreFiles(repo: *const Repo) !void {
 
     const marker = try std.fs.path.join(allocator, &.{ store, sync.marker_name });
     defer allocator.free(marker);
-    try std.Io.Dir.writeFile(.cwd(), repo.io, .{ .sub_path = marker, .data = sync.marker_text });
+    try processor.writeFileAtomic(marker, sync.marker_text, null, null, allocator, repo.io);
 
     const attributes = try std.fs.path.join(allocator, &.{ store, sync.attributes_name });
     defer allocator.free(attributes);
     // Refresh the generated attributes on init so Git cannot transform ciphertext.
-    try std.Io.Dir.writeFile(.cwd(), repo.io, .{ .sub_path = attributes, .data = sync.attributes_text });
+    try processor.writeFileAtomic(attributes, sync.attributes_text, null, null, allocator, repo.io);
 
     const rel_marker = sync.enc_dir ++ "/" ++ sync.marker_name;
     const rel_attributes = sync.enc_dir ++ "/" ++ sync.attributes_name;

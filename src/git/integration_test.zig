@@ -299,6 +299,62 @@ test "git integration: store round trip, clone, tamper" {
     try testing.expect(!utils.pathExists(mine_b, io));
 }
 
+test "git integration: store control files replace symbolic links" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+    if (!gitAvailable(allocator, io)) return error.SkipZigTest;
+
+    const test_base = "tmp/git_store_file_symlinks";
+    std.Io.Dir.deleteTree(.cwd(), io, test_base) catch {};
+    try std.Io.Dir.createDirPath(.cwd(), io, test_base ++ "/home");
+    defer std.Io.Dir.deleteTree(.cwd(), io, test_base) catch {};
+
+    const base_abs = try std.Io.Dir.realPathFileAlloc(.cwd(), io, test_base, allocator);
+    defer allocator.free(base_abs);
+    const home = try std.fs.path.join(allocator, &.{ base_abs, "home" });
+    defer allocator.free(home);
+    const worktree = try std.fs.path.join(allocator, &.{ base_abs, "repo" });
+    defer allocator.free(worktree);
+    const outside = try std.fs.path.join(allocator, &.{ base_abs, "outside" });
+    defer allocator.free(outside);
+    const store = try std.fs.path.join(allocator, &.{ worktree, sync.enc_dir });
+    defer allocator.free(store);
+    const control_files = .{
+        .{ sync.marker_name, sync.marker_text },
+        .{ sync.attributes_name, sync.attributes_text },
+    };
+
+    var env = try Env.init(allocator, home);
+    defer env.deinit();
+    try gitOk(allocator, io, &env, base_abs, &.{ "init", "-q", "-b", "main", "repo" });
+    try std.Io.Dir.createDir(.cwd(), io, store, .default_dir);
+    inline for (control_files) |file| {
+        try writeFile(io, outside, file[0], "sentinel", allocator);
+        const target = try std.fs.path.join(allocator, &.{ outside, file[0] });
+        defer allocator.free(target);
+        const link = try std.fs.path.join(allocator, &.{ store, file[0] });
+        defer allocator.free(link);
+        std.Io.Dir.symLink(.cwd(), io, target, link, .{}) catch |err| {
+            if (err == error.Unexpected or err == error.AccessDenied) return error.SkipZigTest;
+            return err;
+        };
+    }
+
+    var repo = try Repo.openAt(allocator, io, &env.map, worktree);
+    defer repo.deinit();
+    try cmd.writeStoreFiles(&repo);
+
+    inline for (control_files) |file| {
+        const target = try readFile(io, outside, file[0], allocator);
+        defer allocator.free(target);
+        try testing.expectEqualStrings("sentinel", target);
+        const written = try readFile(io, store, file[0], allocator);
+        defer allocator.free(written);
+        try testing.expectEqualStrings(file[1], written);
+    }
+}
+
 test "git integration: an unencryptable private name aborts before writing" {
     const testing = std.testing;
     const allocator = testing.allocator;

@@ -69,6 +69,15 @@ expect_file .git/hooks/pre-commit
 grep -q '^/.gitprivate$' .git/info/exclude || fail "exclude block missing"
 quiet turbocrypt git init || fail "init twice"
 
+step "init replaces an attributes symlink without changing its target"
+expected_attributes=$(cat .enc/.gitattributes)
+echo "outside attributes" > "$work/attributes-target"
+ln -sf "$work/attributes-target" .enc/.gitattributes || fail "create attributes symlink"
+quiet turbocrypt git init || fail "init with an attributes symlink"
+expect_content "$work/attributes-target" "outside attributes"
+[ ! -L .enc/.gitattributes ] || fail "init kept the attributes symlink"
+expect_content .enc/.gitattributes "$expected_attributes"
+
 step "a changed default does not touch the bound key"
 quiet turbocrypt keygen "$work/other.key" || fail "keygen"
 quiet turbocrypt config set-key "$work/other.key" || fail "set-key"
