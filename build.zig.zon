@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .hctr2 = .{
-            .url = "git+https://github.com/jedisct1/zig-hctr2.git?ref=0.1.8#fcb2771f2be949eda296bbc1f2a2887b67005532",
-            .hash = "hctr2-0.1.6-mu7McdIoAwB4BY7OgLazIChsNvSpyMLbTRgx2Et68FYd",
+            .url = "git+https://github.com/jedisct1/zig-hctr2.git?ref=0.1.9#3ad105c1fd9417bb3f70b717e0d3e6f47d3d16ed",
+            .hash = "hctr2-0.1.9-mu7McRKLAwDyKHlYpPYq2mvyHVjF-unjZ1e4AEqcxZPG",
         },
         .base84 = .{
             .url = "git+https://github.com/jedisct1/zig-base84.git?ref=0.2.0#abf64430414ee462fcd2847c7f694151c5e47caf",
