@@ -243,7 +243,7 @@ pub fn coldSize(file: Io.File, io: Io, backing_size: i64, raf_key: *const [16]u8
     const fallback: ColdSize = .{ .size = backing_size, .source = .backing };
     var storage = Storage.init(file, io);
     const verified = Raf.verify(&storage, raf_key) catch null;
-    const info = verified orelse aegis_raf.probe(&storage) catch return fallback;
+    const info = (verified orelse aegis_raf.probe(&storage)) catch return fallback;
     const size = std.math.cast(i64, info.file_size) orelse return fallback;
     return .{ .size = size, .source = if (verified != null) .authenticated else .probed };
 }
