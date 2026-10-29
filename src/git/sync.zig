@@ -112,12 +112,11 @@ pub const Decision = enum {
     delete_plain,
     record,
     drop_baseline,
-    conflict,
     encrypt,
     warn_missing,
     warn_removed,
-    abort_no_baseline,
-    abort_both_changed,
+    conflict_no_baseline,
+    conflict_both_changed,
     abort_bad,
     abort_plain,
     need_compare,
@@ -132,13 +131,13 @@ fn compareOr(v: Values, equal: Decision, different: Decision) Decision {
 pub fn decideDecrypt(v: Values, force: bool) Decision {
     if (v.old == null and v.new == null) return .none;
     if (v.old == null and v.cur == null) return .write_plain;
-    if (v.old == null) return compareOr(v, .record, if (force) .write_plain else .conflict);
+    if (v.old == null) return compareOr(v, .record, if (force) .write_plain else .conflict_no_baseline);
     if (v.new == null and v.cur == null) return .drop_baseline;
     if (v.new == null) return if (v.curEqlOld() or force) .delete_plain else .warn_removed;
     if (v.cur == null) return .write_plain;
     if (v.newEqlOld()) return .none;
     if (v.curEqlOld()) return .write_plain;
-    return compareOr(v, .record, if (force) .write_plain else .conflict);
+    return compareOr(v, .record, if (force) .write_plain else .conflict_both_changed);
 }
 
 /// Chooses an encrypt action, treating the plain file as the source of truth.
@@ -147,13 +146,13 @@ pub fn decideEncrypt(v: Values, force: bool) Decision {
     if (v.old == null and v.new == null and v.cur == null) return .none;
     if (v.old == null and v.new == null) return .encrypt;
     if (v.old == null and v.cur == null) return .warn_missing;
-    if (v.old == null) return compareOr(v, .record, if (force) .encrypt else .abort_no_baseline);
+    if (v.old == null) return compareOr(v, .record, if (force) .encrypt else .conflict_no_baseline);
     if (v.new == null and v.cur == null) return .drop_baseline;
     if (v.new == null) return if (force) .encrypt else .warn_removed;
     if (v.cur == null) return .warn_missing;
     if (v.newEqlOld()) return if (v.curEqlOld()) .none else .encrypt;
     if (v.curEqlOld()) return .write_plain;
-    return compareOr(v, .record, if (force) .encrypt else .abort_both_changed);
+    return compareOr(v, .record, if (force) .encrypt else .conflict_both_changed);
 }
 
 fn decideFor(v: Values, direction: Direction, force: bool) Decision {
@@ -475,6 +474,8 @@ pub const Options = struct {
     validate_only: bool = false,
     /// Limits a pass to these plain paths.
     only: []const []const u8 = &.{},
+    /// Paths to keep private even if upstream removed them.
+    revive: []const Manifest.Entry = &.{},
 };
 
 const PathInfo = struct {
@@ -1700,46 +1701,46 @@ const Pass = struct {
 };
 
 const merging_detail = "edit the plain file, then run: turbocrypt git encrypt --force <path>";
+const no_baseline_detail = "plain file and entry differ and neither is known to be newer: " ++
+    "keep the plain file with turbocrypt git encrypt --force <path>, " ++
+    "or take the entry with turbocrypt git decrypt --force <path>";
+const both_changed_detail = "changed here and upstream: " ++
+    "keep your version with turbocrypt git encrypt --force <path>, " ++
+    "or take the upstream one with turbocrypt git decrypt --force <path>";
+const removed_detail = "entry removed upstream, plain file kept: " ++
+    "delete it with turbocrypt git decrypt --force <path>, " ++
+    "or keep it private with turbocrypt git add <path>";
+const bad_entry_detail = "entry cannot be committed as it is: " ++
+    "replace it from the plain file with turbocrypt git encrypt --force <path>, " ++
+    "or make the file public with turbocrypt git rm <path>";
+const missing_detail = "entry present, plain file absent: " ++
+    "restore it with turbocrypt git decrypt <path>, " ++
+    "or drop the entry with turbocrypt git rm <path>";
+const other_key_detail = "entry was written with another key or is corrupted: " ++
+    "replace it from the plain file with turbocrypt git encrypt --force <path>";
+
+/// Lets `add` bring back a file that upstream removed, unless its merge is still unresolved.
+fn canRevive(ctx: *const Context, revive: []const Manifest.Entry, plain: []const u8) !bool {
+    if (!Manifest.anyCovers(revive, plain)) return false;
+    const cipher_rel = try filename_crypto.encryptPath(ctx.gpa, plain, ctx.keys.filename_key, '/');
+    defer ctx.gpa.free(cipher_rel);
+    return !ctx.isUnmerged(cipher_rel);
+}
 
 /// Adds a report row for a decision that needs user action.
 /// Returns whether the decision aborts encryption.
 fn reportProblem(gpa: Allocator, info: *const PathInfo, report: *Report) !bool {
     switch (info.decision) {
-        .abort_no_baseline => try report.add(
-            gpa,
-            .conflict,
-            info.plain,
-            "plain file and entry both exist and differ, no baseline: decrypt --force or encrypt --force",
-        ),
-        .abort_both_changed => try report.add(
-            gpa,
-            .conflict,
-            info.plain,
-            "changed here and upstream: decrypt --force or encrypt --force",
-        ),
-        .abort_bad => try report.add(
-            gpa,
-            .conflict,
-            info.plain,
-            "entry cannot be committed as it is: encrypt --force replaces it from the plain file, rm drops it",
-        ),
+        .conflict_no_baseline => try report.add(gpa, .conflict, info.plain, no_baseline_detail),
+        .conflict_both_changed => try report.add(gpa, .conflict, info.plain, both_changed_detail),
+        .abort_bad => try report.add(gpa, .conflict, info.plain, bad_entry_detail),
         .abort_plain => {},
         .warn_missing => {
-            try report.add(
-                gpa,
-                .missing,
-                info.plain,
-                "entry present, plain file absent: decrypt restores it, rm deletes it",
-            );
+            try report.add(gpa, .missing, info.plain, missing_detail);
             return false;
         },
         .warn_removed => {
-            try report.add(
-                gpa,
-                .removed,
-                info.plain,
-                "entry removed upstream, plain file kept: decrypt deletes it, add keeps it",
-            );
+            try report.add(gpa, .removed, info.plain, removed_detail);
             return false;
         },
         else => return false,
@@ -1806,6 +1807,9 @@ pub fn encrypt(
             continue;
         }
         try decide(ctx, info, .encrypt, options.force, report);
+        if (info.decision == .warn_removed and try canRevive(ctx, options.revive, info.plain)) {
+            info.decision = .encrypt;
+        }
         if (try reportProblem(gpa, info, report)) aborted = true;
         switch (info.decision) {
             .encrypt, .write_plain, .record, .delete_plain, .drop_baseline => report.pending += 1,
@@ -1813,12 +1817,7 @@ pub fn encrypt(
         }
         if (info.decision == .encrypt and !options.force) {
             if (info.values.new) |new| if (!new.header_ok) {
-                try report.add(
-                    gpa,
-                    .bad,
-                    info.plain,
-                    "entry was written with another key or is corrupted: encrypt --force replaces it",
-                );
+                try report.add(gpa, .bad, info.plain, other_key_detail);
                 aborted = true;
             };
         }
@@ -1904,18 +1903,7 @@ pub fn decrypt(
                 try report.add(gpa, .ok, info.plain, "");
             },
             .drop_baseline => ctx.state.remove(gpa, info.plain),
-            .conflict => try report.add(
-                gpa,
-                .conflict,
-                info.plain,
-                "changed here and upstream: decrypt --force <path> takes the upstream version",
-            ),
-            .warn_removed => try report.add(
-                gpa,
-                .removed,
-                info.plain,
-                "entry removed upstream, plain file modified and kept",
-            ),
+            .conflict_no_baseline, .conflict_both_changed, .warn_removed => _ = try reportProblem(gpa, info, report),
             .none => if (info.values.new != null and info.values.cur != null) {
                 try report.add(gpa, .ok, info.plain, "");
             },
@@ -2079,7 +2067,7 @@ test "decrypt decisions take upstream changes unless the plain file changed too"
     try testing.expectEqual(.write_plain, decideDecrypt(.{ .old = null, .new = n_same, .cur = null }, false));
     try testing.expectEqual(.need_compare, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same }, false));
     try testing.expectEqual(.record, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = true }, false));
-    try testing.expectEqual(.conflict, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, false));
+    try testing.expectEqual(.conflict_no_baseline, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, false));
     try testing.expectEqual(.write_plain, decideDecrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, true));
     try testing.expectEqual(.drop_baseline, decideDecrypt(.{ .old = b1, .new = null, .cur = null }, false));
     try testing.expectEqual(.delete_plain, decideDecrypt(.{ .old = b1, .new = null, .cur = c_same }, false));
@@ -2091,7 +2079,7 @@ test "decrypt decisions take upstream changes unless the plain file changed too"
     try testing.expectEqual(.write_plain, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_same }, false));
     try testing.expectEqual(.need_compare, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other }, false));
     try testing.expectEqual(.record, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = true }, false));
-    try testing.expectEqual(.conflict, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, false));
+    try testing.expectEqual(.conflict_both_changed, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, false));
     try testing.expectEqual(.write_plain, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, true));
     try testing.expectEqual(.write_plain, decideDecrypt(.{ .old = b1, .new = .{ .id = @splat(9), .exec = true }, .cur = c_same }, false));
     try testing.expectEqual(.need_compare, decideDecrypt(.{ .old = b1, .new = n_other, .cur = c_exec }, false));
@@ -2110,7 +2098,7 @@ test "encrypt decisions stop at a change on both sides unless forced" {
     try testing.expectEqual(.warn_missing, decideEncrypt(.{ .old = null, .new = n_same, .cur = null }, false));
     try testing.expectEqual(.need_compare, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same }, false));
     try testing.expectEqual(.record, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = true }, false));
-    try testing.expectEqual(.abort_no_baseline, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, false));
+    try testing.expectEqual(.conflict_no_baseline, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, false));
     try testing.expectEqual(.encrypt, decideEncrypt(.{ .old = null, .new = n_same, .cur = c_same, .cur_eql_new = false }, true));
     try testing.expectEqual(.drop_baseline, decideEncrypt(.{ .old = b1, .new = null, .cur = null }, false));
     try testing.expectEqual(.warn_removed, decideEncrypt(.{ .old = b1, .new = null, .cur = c_same }, false));
@@ -2122,7 +2110,7 @@ test "encrypt decisions stop at a change on both sides unless forced" {
     try testing.expectEqual(.write_plain, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_same }, false));
     try testing.expectEqual(.need_compare, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other }, false));
     try testing.expectEqual(.record, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = true }, false));
-    try testing.expectEqual(.abort_both_changed, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, false));
+    try testing.expectEqual(.conflict_both_changed, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, false));
     try testing.expectEqual(.encrypt, decideEncrypt(.{ .old = b1, .new = n_other, .cur = c_other, .cur_eql_new = false }, true));
 }
 

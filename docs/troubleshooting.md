@@ -262,6 +262,41 @@ After selecting a version of that entry in Git, `turbocrypt git decrypt --force 
 
 Save your local edits first.
 
+### "neither is known to be newer"
+
+Your readable file and its encrypted copy are different, and turbocrypt can't tell which one is newer.
+
+This usually happens when the file was already there before `turbocrypt git unlock`, or when two clones added the same file separately.
+
+To keep your readable file, run:
+
+```bash
+turbocrypt git encrypt --force NOTES.md
+```
+
+To use the encrypted copy instead, save anything you want to keep from your file first, then run:
+
+```bash
+turbocrypt git decrypt --force NOTES.md
+```
+
+You can pass several files at once.
+
+### "entry removed upstream, plain file kept"
+
+Someone deleted the encrypted copy upstream, usually with `turbocrypt git rm`.
+
+Your copy had local changes, so it was left on disk.
+
+To keep it private, add it again and commit:
+
+```bash
+turbocrypt git add NOTES.md
+git commit -m "Keep private notes"
+```
+
+If you don't need your copy, `turbocrypt git decrypt --force NOTES.md` deletes it.
+
 ### "entry cannot be committed as it is"
 
 An encrypted entry couldn't be read with this checkout's key. It may be damaged or may have been replaced with a file encrypted using another key.

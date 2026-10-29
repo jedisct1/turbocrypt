@@ -571,6 +571,8 @@ fn cmdAdd(
         for (lines.items) |line| gpa.free(line);
         lines.deinit(gpa);
     }
+    var revive: std.ArrayList(Manifest.Entry) = .empty;
+    defer revive.deinit(gpa);
     var refused = false;
     for (flags.positional) |raw_arg| {
         const arg = try repo.canonicalArg(raw_arg);
@@ -603,6 +605,7 @@ fn cmdAdd(
             std.debug.print("Error: {s} is tracked by git. Run: git rm --cached -- '{s}'\n       Earlier commits still contain it in clear.\n", .{ path, path });
             refused = true;
         }
+        try revive.append(gpa, entry);
         try lines.append(gpa, line);
     }
     if (refused) return error.PrivateFileTracked;
@@ -621,7 +624,7 @@ fn cmdAdd(
 
     var report: sync.Report = .{};
     defer report.deinit(gpa);
-    sync.encrypt(&repo, keys, .{}, &report) catch |err| return failSync(&report, err);
+    sync.encrypt(&repo, keys, .{ .revive = revive.items }, &report) catch |err| return failSync(&report, err);
     printReport(&report);
     std.debug.print("{d} entr{s} added, {d} file(s) encrypted and staged\n", .{
         added,

@@ -442,4 +442,10 @@ quiet turbocrypt git unlock --key "$work/secret.key" --force || fail "unlock --f
 cmp -s .git/turbocrypt/key "$work/secret.key" || fail "the new key was not bound"
 expect_content note.md "note"
 
+step "add keeps an edited file private after upstream removed it"
+echo "local edit" > note.md
+cd "$work/r" && quiet turbocrypt git rm note.md && git commit -qm "drop note" || fail "rm upstream"
+cd "$work/r2" && quiet git pull -q && quiet turbocrypt git add note.md || fail "add"
+expect_eq "$(turbocrypt git status 2>&1 | grep -c '  ok         note.md')" "1"
+
 printf 'All git integration steps passed\n'
