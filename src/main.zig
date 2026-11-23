@@ -678,6 +678,24 @@ fn refuseContainerDestination(io: Io, dest_dir: []const u8) !void {
     return error.ContainerInTree;
 }
 
+/// With `--enc-suffix`, `x` becomes `x.enc`.
+/// Refuse when `x.enc` is an input too, since it would be overwritten.
+fn refuseSuffixCollisions(gpa: Allocator, files: []const ScannedFile) !void {
+    var sources: std.StringHashMapUnmanaged(void) = .empty;
+    defer sources.deinit(gpa);
+    try sources.ensureTotalCapacity(gpa, @intCast(files.len));
+    for (files) |file| sources.putAssumeCapacity(file.source_path, {});
+    for (files) |file| {
+        if (!sources.contains(file.dest_path)) continue;
+        std.debug.print("Error: {s} would be written over {s}, which is also an input\n", .{
+            file.source_path,
+            file.dest_path,
+        });
+        std.debug.print("       Move or rename one of them, then run the command again\n", .{});
+        return error.InvalidArguments;
+    }
+}
+
 fn cmdProcess(
     gpa: Allocator,
     io: Io,
@@ -786,6 +804,7 @@ fn cmdProcess(
             };
 
             const scanned = &scan_ctx.mode.scan_only;
+            if (opts.enc_suffix) try refuseSuffixCollisions(gpa, scanned.files.items);
             if (opts.dry_run) {
                 std.debug.print("[DRY RUN] Would process {d} files...\n", .{
                     scanned.files.items.len,
@@ -2150,6 +2169,45 @@ test "a container met during the walk or in the output tree stops the command" {
         cmdProcess(gpa, io, &environ_map, &out_args, true),
     );
     try testing.expect(!fs.pathExists(io, root ++ "/out/ok/a"));
+}
+
+test "in-place suffix mode refuses a file that is both an input and an output" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    const root = "tmp/main_suffix_collision";
+    const source = root ++ "/source";
+    const key_path = root ++ "/key";
+
+    Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try Io.Dir.createDirPath(.cwd(), io, source);
+    defer Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/notes", .data = "notes" });
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/notes.enc", .data = "another file" });
+    try Io.Dir.writeFile(.cwd(), io, .{ .sub_path = source ++ "/notes.enc.enc", .data = "a third" });
+    try keygen.writeKeyFile(gpa, io, key_path, @splat(33), null);
+    var environ_map = try Config.testEnviron(gpa, root);
+    defer environ_map.deinit();
+
+    const args = [_][]const u8{
+        "--in-place", "--enc-suffix", "--threads", "1", "--key", key_path, source,
+    };
+    for ([_]bool{ true, false }) |is_encrypt| {
+        try testing.expectError(
+            error.InvalidArguments,
+            cmdProcess(gpa, io, &environ_map, &args, is_encrypt),
+        );
+    }
+
+    const contents = .{
+        .{ "/notes", "notes" },
+        .{ "/notes.enc", "another file" },
+        .{ "/notes.enc.enc", "a third" },
+    };
+    inline for (contents) |file| {
+        const content = try Io.Dir.readFileAlloc(.cwd(), io, source ++ file[0], gpa, .limited(64));
+        defer gpa.free(content);
+        try testing.expectEqualStrings(file[1], content);
+    }
 }
 
 // Include tests that belong to the command-line dependencies.
