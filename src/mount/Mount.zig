@@ -1762,7 +1762,11 @@ fn rescue(m: *Mount, node: *Node) void {
 /// Opens the rescue directory, creating it and its missing parents for the owner only.
 /// The mount clears its umask, so the default mode would let anyone write there.
 fn openRescueDir(io: Io, path: []const u8) !Io.Dir {
-    var dir = try Io.Dir.createDirPathOpen(.cwd(), io, path, .{ .permissions = .fromMode(0o700) });
+    var dir = try Io.Dir.createDirPathOpen(.cwd(), io, path, .{
+        .permissions = .fromMode(0o700),
+        // Linux refuses to change the mode through a handle that can't iterate.
+        .open_options = .{ .iterate = true },
+    });
     errdefer dir.close(io);
     try dir.setPermissions(io, .fromMode(0o700));
     return dir;
