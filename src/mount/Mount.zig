@@ -1759,12 +1759,19 @@ fn rescue(m: *Mount, node: *Node) void {
     };
 }
 
+/// Opens the rescue directory, creating it and its missing parents for the owner only.
+/// The mount clears its umask, so the default mode would let anyone write there.
+fn openRescueDir(io: Io, path: []const u8) !Io.Dir {
+    var dir = try Io.Dir.createDirPathOpen(.cwd(), io, path, .{ .permissions = .fromMode(0o700) });
+    errdefer dir.close(io);
+    try dir.setPermissions(io, .fromMode(0o700));
+    return dir;
+}
+
 fn rescueNode(m: *Mount, node: *Node) !void {
     const io = m.io;
-    try fs.ensureDir(io, m.options.rescue_dir);
-    var dir = try Io.Dir.openDir(.cwd(), io, m.options.rescue_dir, .{});
+    var dir = try openRescueDir(io, m.options.rescue_dir);
     defer dir.close(io);
-    try dir.setPermissions(io, .fromMode(0o700));
     var rand: u64 = undefined;
     io.random(mem.asBytes(&rand));
     var data_name: [16 + 4]u8 = undefined;
@@ -2085,6 +2092,24 @@ fn testStat(mode: u32, uid: u32, gid: u32) fuse.Stat {
     st.uid = uid;
     st.gid = gid;
     return st;
+}
+
+test "the rescue directory and its new parents are private under a cleared umask" {
+    const io = testing.io;
+    const root = "tmp/mount_rescue_modes";
+    Io.Dir.deleteTree(.cwd(), io, root) catch {};
+    try Io.Dir.createDirPath(.cwd(), io, root);
+    defer Io.Dir.deleteTree(.cwd(), io, root) catch {};
+
+    const previous = std.c.umask(0); // The mount runs with this umask.
+    defer _ = std.c.umask(previous);
+    var dir = try openRescueDir(io, root ++ "/data/turbocrypt/rescue");
+    dir.close(io);
+
+    inline for (.{ "/data", "/data/turbocrypt", "/data/turbocrypt/rescue" }) |sub| {
+        const stat = try Io.Dir.statFile(.cwd(), io, root ++ sub, .{});
+        try testing.expectEqual(0o700, stat.permissions.toMode() & 0o777);
+    }
 }
 
 test "filesystem errors map to client errno values" {
