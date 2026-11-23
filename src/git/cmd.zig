@@ -525,7 +525,8 @@ fn savePlainManifest(repo: *const Repo, manifest: Manifest) !void {
     defer gpa.free(path);
     const text = try manifest.render(gpa);
     defer gpa.free(text);
-    try processor.writeFileAtomic(gpa, repo.io, path, text, null, repo.tmp_dir);
+    const permissions = sync.plain_file_permissions;
+    try processor.writeFileAtomic(gpa, repo.io, path, text, permissions, repo.tmp_dir);
 }
 
 /// Lists index entries under a manifest path as Git sees them.

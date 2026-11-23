@@ -448,4 +448,12 @@ cd "$work/r" && quiet turbocrypt git rm note.md && git commit -qm "drop note" ||
 cd "$work/r2" && quiet git pull -q && quiet turbocrypt git add note.md || fail "add"
 expect_eq "$(turbocrypt git status 2>&1 | grep -c '  ok         note.md')" "1"
 
+step "add keeps the private list readable by its owner only"
+git init -q "$work/p" && cd "$work/p" || fail "git init"
+git commit -qm "initial" --allow-empty || fail "first commit"
+quiet turbocrypt git init --key "$work/secret.key" || fail "init"
+echo "one" > one.md
+quiet turbocrypt git add one.md || fail "add"
+expect_eq "$(mode .gitprivate)" "600"
+
 printf 'All git integration steps passed\n'
