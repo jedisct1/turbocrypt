@@ -367,7 +367,8 @@ expect_content "$work/dec3/daemon.txt" "daemon write"
 is_mounted && fail "mounted after a failed daemon mount"
 
 step "scenario 13: files below 48 bytes show size 0 and give EIO"
-printf 'tiny' > "$enc/short"
+# Not text, or the key check would take the folder for plain files when it reads this one first.
+printf '\001\002\003\004' > "$enc/short"
 mount_fs || fail "mount"
 expect_eq "$(wc -c < "$mnt/short" 2>/dev/null | tr -d ' ')" ""
 cat "$mnt/short" 2>&1 | grep -qi "input/output" || fail "no EIO for a short file"
