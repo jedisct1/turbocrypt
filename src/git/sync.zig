@@ -37,6 +37,7 @@ pub const readme_text = @embedFile("store-readme.txt");
 pub const max_file_size: u64 = 256 * 1024 * 1024;
 
 pub const long_name_detail = "name too long once encrypted, keep components under about 200 bytes";
+const unsafe_name_detail = "name can't be stored as is, avoid backslashes, control characters and decomposed accents";
 pub const pending_detail = "encrypted at the next commit";
 
 const state_version = 1;
@@ -1039,24 +1040,34 @@ fn analyze(ctx: *const Context, only: []const []const u8, report: *Report) ![]Pa
                 },
                 else => return err,
             };
-        } else if (info.values.cur != null and !try nameFits(gpa, ctx.keys, plain)) {
-            try report.add(gpa, .bad, plain, long_name_detail);
-            info.bad = true;
+        } else if (info.values.cur != null) {
+            if (try nameProblem(gpa, ctx.keys, plain)) |detail| {
+                try report.add(gpa, .bad, plain, detail);
+                info.bad = true;
+            }
         }
         try infos.append(gpa, info);
     }
     return infos.toOwnedSlice(gpa);
 }
 
-/// Reports whether every encrypted path component fits the filesystem filename limit.
-pub fn nameFits(gpa: Allocator, keys: crypto.DerivedKeys, plain: []const u8) !bool {
+/// Says why a plain path can't be stored, or returns null when it can.
+///
+/// The encrypted name must fit the filesystem limit and decrypt back to the same path.
+/// Otherwise the next sync would not find the entry and would delete the plain file.
+pub fn nameProblem(gpa: Allocator, keys: crypto.DerivedKeys, plain: []const u8) !?[]const u8 {
     const key = keys.filename_key;
     const cipher = filename_crypto.encryptPath(gpa, plain, key, '/') catch |err| switch (err) {
-        filename_crypto.Error.EncryptedFilenameTooLong => return false,
+        filename_crypto.Error.EncryptedFilenameTooLong => return long_name_detail,
         else => return err,
     };
-    gpa.free(cipher);
-    return true;
+    defer gpa.free(cipher);
+    const restored = filename_crypto.decryptPathStrict(gpa, cipher, key) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return unsafe_name_detail,
+    };
+    defer gpa.free(restored);
+    return if (mem.eql(u8, restored, plain)) null else unsafe_name_detail;
 }
 
 fn freeInfo(gpa: Allocator, info: *PathInfo) void {
@@ -2179,6 +2190,16 @@ test "state survives a round trip and reads as empty under another key" {
     const future = "{\"version\": 2, \"entries\": []}";
     try testing.expectError(Error.InvalidState, State.parse(gpa, future, key_id));
     try testing.expectError(Error.InvalidState, State.parse(gpa, "not json", key_id));
+}
+
+test "a name that is too long or does not decrypt back is a problem" {
+    const gpa = testing.allocator;
+    const keys = crypto.deriveKeys(@splat(5), null);
+    const long: [205]u8 = @splat('a');
+
+    try testing.expectEqual(null, try nameProblem(gpa, keys, "docs/notes.md"));
+    try testing.expectEqualStrings(long_name_detail, (try nameProblem(gpa, keys, "docs/" ++ long)).?);
+    try testing.expectEqualStrings(unsafe_name_detail, (try nameProblem(gpa, keys, "docs/a\\b.md")).?);
 }
 
 test "validateDestination refuses unsafe, tracked, and symlinked destinations" {

@@ -652,9 +652,9 @@ fn checkAddable(repo: *const Repo, keys: crypto.DerivedKeys, plain: []const u8) 
         std.debug.print("Error: {s} is larger than 256 MiB\n", .{plain});
         return sync.Error.FileTooLarge;
     }
-    if (!try sync.nameFits(gpa, keys, plain)) {
-        std.debug.print("Error: {s}: {s}\n", .{ plain, sync.long_name_detail });
-        return filename_crypto.Error.EncryptedFilenameTooLong;
+    if (try sync.nameProblem(gpa, keys, plain)) |detail| {
+        std.debug.print("Error: {s}: {s}\n", .{ plain, detail });
+        return sync.Error.UnsafePath;
     }
 }
 
