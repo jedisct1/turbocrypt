@@ -194,7 +194,7 @@ pub const Store = struct {
     pub fn move(s: *Store, from: []const u8, to: []const u8) Error!void {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
-        if (s.entries.fetchSwapRemove(from)) |kv| {
+        if (s.entries.fetchOrderedRemove(from)) |kv| {
             errdefer s.drop(kv.key, kv.value);
             s.forgetTree(to);
             const key = try s.gpa.dupe(u8, to);
@@ -373,6 +373,20 @@ test "growing a closed sidecar by path does not evict it to make room" {
     s.close(entry);
     try testing.expectError(error.NoSpaceLeft, s.resizeAt("/._a", 38, epoch));
     try testing.expectEqual(10, sizeOf(&s, "/._a"));
+}
+
+test "a rename keeps the other sidecars in their eviction order" {
+    var s: Store = .{ .gpa = testing.allocator, .io = testing.io };
+    defer s.deinit();
+    try openClosed(&s, "/._a");
+    try openClosed(&s, "/._b");
+    try openClosed(&s, "/._c");
+    try s.move("/._a", "/._z");
+
+    s.limit = s.bytes + "/._d".len - 1; // One of the three has to go to fit a fourth.
+    try openClosed(&s, "/._d");
+    try testing.expectEqual(null, sizeOf(&s, "/._b"));
+    try testing.expectEqual(0, sizeOf(&s, "/._c"));
 }
 
 test "only file names with the AppleDouble prefix are sidecars, and only on macOS" {
