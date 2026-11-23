@@ -692,7 +692,7 @@ fn checkKey(
     keys: crypto.DerivedKeys,
 ) !void {
     var walker = try root.walk(gpa);
-    defer walker.deinit();
+    defer walker.deinit(io);
     var skipped: usize = 0;
     for (0..key_check_entries) |_| {
         const entry = (walker.next(io) catch |err| switch (err) {

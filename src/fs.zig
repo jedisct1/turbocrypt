@@ -38,7 +38,7 @@ pub fn walkDir(
     defer dir.close(io);
 
     var walker = try dir.walk(gpa);
-    defer walker.deinit();
+    defer walker.deinit(io);
 
     while (try walker.next(io)) |entry| {
         const full_path = try Io.Dir.path.join(gpa, &.{ base_path, entry.path });
