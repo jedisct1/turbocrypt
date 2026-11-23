@@ -471,4 +471,12 @@ echo "edited" >> one.md
 git commit -qam "edit both" || fail "commit"
 expect_eq "$(git show --name-only --format= HEAD | grep -c '^\.enc/')" "1"
 
+step "a directory with a tracked .gitignore can become private"
+cd "$work/p" || fail "cd"
+mkdir -p ops && printf '*.log\n' > ops/.gitignore && echo "deploy" > ops/deploy.sh
+git add ops/.gitignore && git commit -qm "ignore rules" || fail "commit"
+quiet turbocrypt git add ops/ || fail "add of a directory with a tracked .gitignore"
+git commit -qm "ops" || fail "commit"
+expect_eq "$(turbocrypt git status 2>&1 | grep -c '  ok         ops/deploy.sh')" "1"
+
 printf 'All git integration steps passed\n'

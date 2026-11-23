@@ -603,6 +603,7 @@ fn cmdAdd(
         const tracked = try trackedUnder(&repo, entry);
         defer git.freeList(gpa, tracked);
         for (tracked) |path| {
+            if (Manifest.isReservedPath(path)) continue; // Files like `.gitignore` stay tracked.
             std.debug.print("Error: {s} is tracked by git. Run: git rm --cached -- '{s}'\n       Earlier commits still contain it in clear.\n", .{ path, path });
             refused = true;
         }
