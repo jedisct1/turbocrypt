@@ -232,7 +232,11 @@ pub const Store = struct {
 
     fn resizeLocked(s: *Store, entry: *Entry, size: u64) Error!void {
         const old = entry.data.items.len;
-        if (size > old) try s.makeRoom(@intCast(size - old));
+        if (size > old) {
+            entry.opens += 1; // Count as open, so making room can't evict this entry.
+            defer entry.opens -= 1;
+            try s.makeRoom(@intCast(size - old));
+        }
         try entry.data.resize(s.gpa, @intCast(size));
         if (size > old) @memset(entry.data.items[old..], 0);
         s.bytes = s.bytes - old + entry.data.items.len;
@@ -359,6 +363,16 @@ test "the oldest closed sidecars are evicted first, and open ones stay" {
     try testing.expectError(error.NoSpaceLeft, s.write(c, "01234567890123456789", 10, epoch));
     s.close(c);
     s.close(held);
+}
+
+test "growing a closed sidecar by path does not evict it to make room" {
+    var s: Store = .{ .gpa = testing.allocator, .io = testing.io, .limit = 40 };
+    defer s.deinit();
+    const entry = try s.open("/._a", 0, 0, true, false, epoch);
+    try s.write(entry, "0123456789", 0, epoch);
+    s.close(entry);
+    try testing.expectError(error.NoSpaceLeft, s.resizeAt("/._a", 38, epoch));
+    try testing.expectEqual(10, sizeOf(&s, "/._a"));
 }
 
 test "only file names with the AppleDouble prefix are sidecars, and only on macOS" {
