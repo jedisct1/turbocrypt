@@ -194,7 +194,8 @@ fn runPre(
     defer report.deinit(gpa);
 
     const index_file = environ_map.get("GIT_INDEX_FILE") orelse "";
-    const partial = mem.find(u8, index_file, "next-index") != null;
+    const index_name = Io.Dir.path.basename(index_file); // The checkout path may contain "next-index" too.
+    const partial = mem.startsWith(u8, index_name, "next-index-");
     const temp_index = mem.endsWith(u8, index_file, ".lock");
     const index_was_clean = !partial and isIndexClean(repo);
 

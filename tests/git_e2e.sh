@@ -463,4 +463,12 @@ quiet turbocrypt git add three.md || fail "add with a missing core.excludesFile"
 git commit -qm "three" || fail "commit with a missing core.excludesFile"
 git config --unset core.excludesFile
 
+step "next-index in the checkout path does not make every commit partial"
+git clone -q "$work/p" "$work/next-index-copy" && cd "$work/next-index-copy" || fail "clone"
+quiet turbocrypt git unlock --key "$work/secret.key" || fail "unlock"
+echo "public" > public.md && git add public.md || fail "git add"
+echo "edited" >> one.md
+git commit -qam "edit both" || fail "commit"
+expect_eq "$(git show --name-only --format= HEAD | grep -c '^\.enc/')" "1"
+
 printf 'All git integration steps passed\n'
