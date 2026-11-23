@@ -456,4 +456,11 @@ echo "one" > one.md
 quiet turbocrypt git add one.md || fail "add"
 expect_eq "$(mode .gitprivate)" "600"
 
+step "a missing global excludes file does not stop the sync"
+git config core.excludesFile "$work/no-such-ignore-file"
+echo "three" > three.md
+quiet turbocrypt git add three.md || fail "add with a missing core.excludesFile"
+git commit -qm "three" || fail "commit with a missing core.excludesFile"
+git config --unset core.excludesFile
+
 printf 'All git integration steps passed\n'

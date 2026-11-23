@@ -844,10 +844,13 @@ fn listGitignored(ctx: *const Context, pathspec: []const []const u8) ![][]u8 {
 fn globalExcludesFile(ctx: *const Context) !?[]u8 {
     const gpa = ctx.gpa;
     const env = ctx.repo.environ_map;
-    if (try ctx.repo.configGetPath("core.excludesFile")) |configured| return configured;
     // On Windows, Git uses the profile directory when HOME is unavailable.
     const home = env.get("HOME") orelse env.get("USERPROFILE");
-    const candidate = if (env.get("XDG_CONFIG_HOME")) |xdg|
+    const candidate = if (try ctx.repo.configGetPath("core.excludesFile")) |configured| blk: {
+        if (Io.Dir.path.isAbsolute(configured)) break :blk configured;
+        defer gpa.free(configured);
+        break :blk try ctx.repo.absolutePath(configured); // Git runs from the repository root.
+    } else if (env.get("XDG_CONFIG_HOME")) |xdg|
         try Io.Dir.path.join(gpa, &.{ xdg, "git", "ignore" })
     else if (home) |dir|
         try Io.Dir.path.join(gpa, &.{ dir, ".config", "git", "ignore" })
