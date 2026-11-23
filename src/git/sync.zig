@@ -2219,6 +2219,8 @@ test "validateDestination refuses unsafe, tracked, and symlinked destinations" {
     try testing.expectError(Error.UnsafePath, validateDestination(gpa, io, toplevel, "../up", &tracked));
     try testing.expectError(Error.UnsafePath, validateDestination(gpa, io, toplevel, "a/../b", &tracked));
     try testing.expectError(Error.UnsafePath, validateDestination(gpa, io, toplevel, ".git/config", &tracked));
+    try testing.expectError(Error.UnsafePath, validateDestination(gpa, io, toplevel, ".GIT/config", &tracked));
+    try testing.expectError(Error.UnsafePath, validateDestination(gpa, io, toplevel, "real/.git/config", &tracked));
     try testing.expectError(Error.UnsafePath, validateDestination(gpa, io, toplevel, "tracked.md", &tracked));
     try testing.expectError(Error.UnsafePath, validateDestination(gpa, io, toplevel, "plainfile/child", &tracked));
 

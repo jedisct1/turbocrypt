@@ -91,12 +91,19 @@ pub fn parseLine(line: []const u8) ?Entry {
 
 /// Paths that must stay public because Git or turbocrypt needs them in cleartext.
 /// This protects Git's metadata, the store, and Git's control files.
+///
+/// Case is ignored, because `.GIT` is `.git` on some filesystems.
+/// `.git` is reserved at any depth, since nested repositories have their own.
 pub fn isReservedPath(path: []const u8) bool {
-    const first = if (mem.findScalar(u8, path, '/')) |i| path[0..i] else path;
-    if (mem.eql(u8, first, ".git") or mem.eql(u8, first, ".enc")) return true;
+    const eql = std.ascii.eqlIgnoreCase;
+    var components = mem.splitScalar(u8, path, '/');
+    if (eql(components.peek().?, ".enc")) return true;
+    while (components.next()) |component| {
+        if (eql(component, ".git")) return true;
+    }
     const last = Io.Dir.path.basename(path);
     for (reserved_names) |name| {
-        if (mem.eql(u8, last, name)) return true;
+        if (eql(last, name)) return true;
     }
     return false;
 }
@@ -392,6 +399,12 @@ test "the git and store directories and the git control files are reserved" {
     try testing.expect(isReservedPath("sub/.gitattributes"));
     try testing.expect(!isReservedPath("docs/.gitkeep"));
     try testing.expect(!isReservedPath("AGENT.md"));
+
+    try testing.expect(isReservedPath(".Enc/x"));
+    try testing.expect(isReservedPath("sub/.GitModules"));
+    try testing.expect(isReservedPath("nested/.Git/hooks/pre-push"));
+    try testing.expect(!isReservedPath("docs/.github/workflow.yml"));
+    try testing.expect(!isReservedPath("nested/.enc/x"));
 }
 
 test "manifest keeps comments and reports bad lines" {
