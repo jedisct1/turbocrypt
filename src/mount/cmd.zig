@@ -870,7 +870,7 @@ pub fn runUnmount(gpa: Allocator, io: Io, args: []const []const u8) !void {
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
 
-    if (result.term.success()) return;
+    if (result.term.eql(.success)) return;
     std.debug.print("{s}", .{result.stderr});
     if (std.ascii.findIgnoreCase(result.stderr, "busy") != null) {
         std.debug.print("Error: a program still has a file open on {s}\n", .{mountpoint});

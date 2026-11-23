@@ -87,7 +87,7 @@ fn gitAvailable(gpa: Allocator, io: Io) bool {
     }) catch return false;
     gpa.free(result.stdout);
     gpa.free(result.stderr);
-    return result.term.success();
+    return result.term.eql(.success);
 }
 
 test "a private store round trips through a clone and detects tampering" {
