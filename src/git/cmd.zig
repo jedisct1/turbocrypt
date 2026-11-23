@@ -598,6 +598,12 @@ fn cmdAdd(
         errdefer gpa.free(line);
 
         const entry = Manifest.parseLine(line).?;
+        // Git only knows a file by its real path, so a line through a link would not protect it.
+        var parent = (try fs.openParent(io, repo.toplevel, entry.path, false)) orelse {
+            std.debug.print("Error: {s} is inside a symbolic link, use its real path\n", .{arg});
+            return error.IsSymlink;
+        };
+        parent.close(io);
         if (!entry.is_dir) try checkAddable(&repo, keys, entry.path);
 
         const tracked = try trackedUnder(&repo, entry);

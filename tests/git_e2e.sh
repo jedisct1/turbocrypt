@@ -479,4 +479,9 @@ quiet turbocrypt git add ops/ || fail "add of a directory with a tracked .gitign
 git commit -qm "ops" || fail "commit"
 expect_eq "$(turbocrypt git status 2>&1 | grep -c '  ok         ops/deploy.sh')" "1"
 
+step "a file reached through a symlinked directory is refused"
+mkdir real && echo "secret" > real/secret.md && ln -s real link || fail "setup"
+quiet turbocrypt git add link/secret.md && fail "add through a symlinked directory succeeded"
+grep -q 'link/secret.md' .gitprivate && fail "the private list gained a path git never reports"
+
 printf 'All git integration steps passed\n'
