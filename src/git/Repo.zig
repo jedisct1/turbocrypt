@@ -59,7 +59,7 @@ pub const Output = struct {
     stderr: []u8,
 
     pub fn ok(self: Output) bool {
-        return self.term.eql(.success);
+        return self.term == .exited and self.term.exited == 0;
     }
 
     pub fn deinit(self: Output, gpa: Allocator) void {

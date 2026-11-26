@@ -2,7 +2,7 @@
     .name = .turbocrypt,
     .version = "0.9.10",
     .fingerprint = 0x91314726da0657f0, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.18.0-dev.1276",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .hctr2 = .{
             .url = "git+https://github.com/jedisct1/zig-hctr2.git?ref=0.1.9#3ad105c1fd9417bb3f70b717e0d3e6f47d3d16ed",

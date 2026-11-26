@@ -22,6 +22,16 @@ pub const WalkCallback = *const fn (
     context: *anyopaque,
 ) anyerror!void;
 
+pub fn deinitWalker(walker: *Io.Dir.Walker, io: Io) void {
+    if (@typeInfo(@TypeOf(Io.Dir.Walker.deinit)).@"fn".param_types.len == 2) {
+        walker.deinit(io);
+    } else {
+        // Older walkers free memory in deinit but leave open directories on the stack.
+        while (walker.inner.stack.items.len > 1) walker.leave(io);
+        walker.deinit();
+    }
+}
+
 /// Includes file links unless `ignore_symlinks` is set, but skips directory links to avoid cycles.
 ///
 /// Stops at nested containers so they are not handled as ordinary input.
@@ -38,7 +48,7 @@ pub fn walkDir(
     defer dir.close(io);
 
     var walker = try dir.walk(gpa);
-    defer walker.deinit(io);
+    defer deinitWalker(&walker, io);
 
     while (try walker.next(io)) |entry| {
         const full_path = try Io.Dir.path.join(gpa, &.{ base_path, entry.path });

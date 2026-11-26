@@ -692,7 +692,7 @@ fn checkKey(
     keys: crypto.DerivedKeys,
 ) !void {
     var walker = try root.walk(gpa);
-    defer walker.deinit(io);
+    defer fs.deinitWalker(&walker, io);
     var skipped: usize = 0;
     for (0..key_check_entries) |_| {
         const entry = (walker.next(io) catch |err| switch (err) {
@@ -870,7 +870,7 @@ pub fn runUnmount(gpa: Allocator, io: Io, args: []const []const u8) !void {
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
 
-    if (result.term.eql(.success)) return;
+    if (result.term == .exited and result.term.exited == 0) return;
     std.debug.print("{s}", .{result.stderr});
     if (std.ascii.findIgnoreCase(result.stderr, "busy") != null) {
         std.debug.print("Error: a program still has a file open on {s}\n", .{mountpoint});
